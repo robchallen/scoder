@@ -38,6 +38,7 @@ Supported tools (with built-in presets):
   opencode        OpenCode AI coding assistant
   gh              GitHub CLI
   claude          Claude Code
+  copilot         GitHub Copilot CLI
 
 Any other command can be run by name (no preset, generic sandbox).
 
@@ -54,6 +55,11 @@ Options:
       --allow-infra       Allow write access to all protected infra
       --allow-host-tools  Bind host user tools (~/.local/bin, mise, cargo, etc)
       --restrict-dev      Restrict /dev to essential devices only
+
+Setup (run once, requires sudo):
+  sudo scoder --configure-apparmor
+                          Install AppArmor profile to allow bwrap to create
+                          user namespaces (required on Ubuntu 24.04+)
 
 Git Worktree Lifecycle:
   scoder must be run inside a git repository. On startup it:
@@ -83,6 +89,127 @@ EOF
 
 version() {
     echo "${PROGRAM_NAME} ${PROGRAM_VERSION}"
+}
+
+# ====== AppArmor Configuration ======
+
+readonly APPARMOR_PROFILE_PATH="/etc/apparmor.d/bwrap"
+
+configure_apparmor() {
+    # Install an AppArmor profile that allows bwrap to create user namespaces.
+    # Required on Ubuntu 24.04+ where unprivileged userns is restricted by
+    # AppArmor by default (kernel.apparmor_restrict_unprivileged_userns=1).
+
+    if [[ "$(id -u)" -ne 0 ]]; then
+        error "--configure-apparmor must be run as root"
+        error "Usage: sudo scoder --configure-apparmor"
+        exit 1
+    fi
+
+    if [[ ! -d /etc/apparmor.d ]]; then
+        error "AppArmor does not appear to be installed (/etc/apparmor.d not found)"
+        exit 1
+    fi
+
+    local bwrap_path
+    bwrap_path="$(command -v bwrap 2>/dev/null || true)"
+    if [[ -z "${bwrap_path}" ]]; then
+        error "bwrap not found in PATH"
+        exit 1
+    fi
+    # Resolve to real path in case of symlinks
+    bwrap_path="$(realpath "${bwrap_path}")"
+
+    if [[ -f "${APPARMOR_PROFILE_PATH}" ]]; then
+        info "Existing profile found at ${APPARMOR_PROFILE_PATH}:"
+        cat "${APPARMOR_PROFILE_PATH}"
+        echo ""
+    fi
+
+    local profile
+    profile="$(cat <<PROFILE_EOF
+# AppArmor profile for bubblewrap (bwrap)
+# Installed by scoder to allow unprivileged user namespace creation.
+# This is required on Ubuntu 24.04+ where AppArmor restricts userns.
+# Same approach used by Chrome, Firefox, Flatpak, etc.
+
+abi <abi/4.0>,
+include <tunables/global>
+
+profile bwrap ${bwrap_path} flags=(unconfined) {
+  userns,
+
+  include if exists <local/bwrap>
+}
+PROFILE_EOF
+)"
+
+    echo "${profile}" > "${APPARMOR_PROFILE_PATH}"
+    info "Wrote AppArmor profile to ${APPARMOR_PROFILE_PATH}"
+
+    # Create local override directory (standard AppArmor convention)
+    mkdir -p /etc/apparmor.d/local
+    if [[ ! -f /etc/apparmor.d/local/bwrap ]]; then
+        echo "# Site-specific overrides for bwrap" > /etc/apparmor.d/local/bwrap
+    fi
+
+    # Reload the profile
+    if command -v apparmor_parser >/dev/null 2>&1; then
+        if apparmor_parser -r "${APPARMOR_PROFILE_PATH}" 2>&1; then
+            info "AppArmor profile loaded successfully"
+        else
+            error "Failed to load AppArmor profile"
+            error "Try: sudo apparmor_parser -r ${APPARMOR_PROFILE_PATH}"
+            exit 1
+        fi
+    else
+        warning "apparmor_parser not found — profile written but not loaded"
+        warning "Reload manually or reboot to activate"
+    fi
+
+    # Verify it works
+    echo ""
+    info "Verifying bwrap can create user namespaces..."
+    local test_result
+    if test_result=$(su -c "bwrap --bind / / /bin/echo SUCCESS" "${SUDO_USER:-nobody}" 2>&1) && [[ "${test_result}" == "SUCCESS" ]]; then
+        info "Verification passed — bwrap works for unprivileged users"
+    else
+        warning "Verification inconclusive: ${test_result}"
+        warning "Try running 'scoder --validate' as your normal user"
+    fi
+
+    echo ""
+    info "Done. You can now run scoder as a normal user."
+}
+
+# Check if bwrap is blocked by AppArmor and give actionable advice
+check_bwrap_userns() {
+    # Quick test: can bwrap create a namespace?
+    local test_output
+    test_output=$(bwrap --bind / / /bin/true 2>&1) && return 0
+
+    # It failed — diagnose why
+    if echo "${test_output}" | grep -q "setting up uid map"; then
+        # Check if AppArmor userns restriction is the cause
+        local restrict
+        restrict=$(sysctl -n kernel.apparmor_restrict_unprivileged_userns 2>/dev/null || echo "0")
+        if [[ "${restrict}" -eq 1 ]]; then
+            if [[ -f "${APPARMOR_PROFILE_PATH}" ]]; then
+                error "bwrap cannot create user namespaces"
+                error "An AppArmor profile exists at ${APPARMOR_PROFILE_PATH} but may not be loaded"
+                error "Try: sudo apparmor_parser -r ${APPARMOR_PROFILE_PATH}"
+            else
+                error "bwrap cannot create user namespaces"
+                error "AppArmor is restricting unprivileged user namespaces on this system"
+                error "Fix: sudo scoder --configure-apparmor"
+            fi
+            exit 1
+        fi
+    fi
+
+    # Some other bwrap failure
+    error "bwrap self-test failed: ${test_output}"
+    exit 1
 }
 
 # ====== Tool Presets ======
@@ -199,6 +326,49 @@ preset_claude_validate() {
     # Check node is available (claude code needs it)
     if ! command -v node >/dev/null 2>&1; then
         error "node not found in PATH (required by Claude Code)"
+        return 1
+    fi
+    return 0
+}
+
+preset_copilot() {
+    TOOL_NET_DEFAULT="on"
+    TOOL_ALLOW_GIT_DEFAULT=1
+    TOOL_DESCRIPTION="GitHub Copilot CLI"
+}
+
+preset_copilot_config_binds() {
+    local real_home="${HOME}"
+    local sand_home="/home/scoder"
+
+    # Copilot CLI can authenticate via ~/.config/gh/ (GH_TOKEN / hosts.yml)
+    if [[ -d "${real_home}/.config/gh" ]]; then
+        TOOL_DIRS+=("${sand_home}/.config/gh")
+        TOOL_BINDS+=(--ro-bind "${real_home}/.config/gh" "${sand_home}/.config/gh")
+    fi
+
+    # Copilot CLI's own config directory
+    if [[ -d "${real_home}/.config/github-copilot" ]]; then
+        TOOL_DIRS+=("${sand_home}/.config/github-copilot")
+        TOOL_BINDS+=(--ro-bind "${real_home}/.config/github-copilot" "${sand_home}/.config/github-copilot")
+    fi
+
+    # Copilot CLI stores session data / memories
+    local data_dir="${real_home}/.local/share/github-copilot"
+    mkdir -p "${data_dir}"
+    TOOL_DIRS+=("${sand_home}/.local/share/github-copilot")
+    TOOL_BINDS+=(--bind "${data_dir}" "${sand_home}/.local/share/github-copilot")
+}
+
+preset_copilot_validate() {
+    if ! command -v copilot >/dev/null 2>&1; then
+        error "copilot not found in PATH"
+        error "Install: npm install -g @github/copilot"
+        error "    or:  brew install copilot-cli"
+        return 1
+    fi
+    if ! command -v node >/dev/null 2>&1; then
+        error "node not found in PATH (required by Copilot CLI)"
         return 1
     fi
     return 0
@@ -335,6 +505,7 @@ NET_MODE_EXPLICIT=0  # tracks if user set --no-net explicitly
 FS_MODE="rw"
 QUIET=0
 VALIDATE_MODE=0
+CONFIGURE_APPARMOR=0
 DRY_RUN=0
 ALLOW_HOST_TOOLS=0
 ALLOW_GIT=-1  # -1 = use preset default
@@ -365,6 +536,10 @@ while [[ $# -gt 0 ]]; do
         ;;
     --validate)
         VALIDATE_MODE=1
+        shift
+        ;;
+    --configure-apparmor)
+        CONFIGURE_APPARMOR=1
         shift
         ;;
     --dry-run)
@@ -431,6 +606,17 @@ if ! command -v bwrap >/dev/null 2>&1; then
     error "         dnf install bubblewrap   # Fedora"
     exit 1
 fi
+
+# ====== AppArmor setup (early exit) ======
+
+if [[ "${CONFIGURE_APPARMOR}" -eq 1 ]]; then
+    configure_apparmor
+    exit $?
+fi
+
+# ====== Check bwrap can actually work ======
+
+check_bwrap_userns
 
 # ====== Validation tests ======
 
@@ -595,6 +781,10 @@ gh)
 claude)
     HAS_PRESET=1
     preset_claude
+    ;;
+copilot)
+    HAS_PRESET=1
+    preset_copilot
     ;;
 *)
     # No preset — generic sandbox

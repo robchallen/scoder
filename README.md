@@ -13,6 +13,7 @@ on an isolated git branch via worktrees.
 | `opencode` | Config, data, cache bind-mounts | network on, .git read-only |
 | `gh` | GitHub CLI auth bind-mount | network on, .git writable |
 | `claude` | Claude Code config bind-mount | network on, .git read-only |
+| `copilot` | GitHub Copilot CLI config + data | network on, .git writable |
 | *(any)* | Generic sandbox | network on, .git read-only |
 
 ## How it works
@@ -47,6 +48,7 @@ scoder [options] <tool> [tool-args...]
 scoder opencode                   # sandbox opencode in current repo
 scoder gh pr list                 # sandbox gh (network on, git writable)
 scoder claude                     # sandbox claude code
+scoder copilot                    # sandbox GitHub Copilot CLI
 scoder -n opencode                # opencode with no network
 scoder --allow-git opencode       # opencode with writable .git
 scoder --dry-run opencode         # show bwrap command without running
@@ -97,6 +99,7 @@ scoder: To discard: git worktree remove /tmp/scoder-wt-a1b2c3 && git branch -D s
 - Tool-specific prerequisites must already be set up:
   - `gh`: run `gh auth login` first
   - `claude`: install via `npm install -g @anthropic-ai/claude-code`
+  - `copilot`: install via `npm install -g @github/copilot` or `brew install copilot-cli`
   - `opencode`: install from https://opencode.ai
 
 ## Install
@@ -105,4 +108,26 @@ Copy or symlink the `scoder` script to somewhere in your PATH:
 
 ```bash
 install -m 755 scoder ~/.local/bin/scoder
+```
+
+### AppArmor setup (Ubuntu 24.04+)
+
+On Ubuntu 24.04 and newer, AppArmor restricts unprivileged user namespaces
+by default. bubblewrap needs user namespaces to work, so you must install
+an AppArmor profile to allow it:
+
+```bash
+sudo scoder --configure-apparmor
+```
+
+This installs a profile at `/etc/apparmor.d/bwrap` that grants bwrap the
+`userns` permission (the same approach used by Chrome, Firefox, Flatpak,
+and other sandboxed applications). You only need to run this once.
+
+If you skip this step, scoder will detect the problem and tell you:
+
+```
+scoder: bwrap cannot create user namespaces
+scoder: AppArmor is restricting unprivileged user namespaces on this system
+scoder: Fix: sudo scoder --configure-apparmor
 ```

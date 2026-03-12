@@ -17,6 +17,8 @@ readonly BLUE='\033[0;34m'
 readonly BOLD='\033[1m'
 readonly NC='\033[0m'
 
+SCODER_HOME='/home/scoder'
+
 # ====== Output helpers ======
 
 error() { echo -e "${RED}${PROGRAM_NAME}: $*${NC}" >&2; }
@@ -51,9 +53,9 @@ Options:
       --dry-run           Print the bwrap command without executing
       --ro                Mount worktree read-only
       --rw                Mount worktree read-write (default)
-      --allow-git         Allow write access to .git (default: read-only)
+      --allow-github      Allow write access to .github/ (default: read-only)
       --allow-infra       Allow write access to all protected infra
-      --allow-host-tools  Bind host user tools (~/.local/bin, mise, cargo, etc)
+      --allow-host-tools  Bind host user tools (~/.local/bin, mise, cargo, R packages, maven etc)
       --restrict-dev      Restrict /dev to essential devices only
 
 Setup (run once, requires sudo):
@@ -76,7 +78,7 @@ Examples:
   scoder gh pr list               # sandbox gh with network + git write
   scoder claude                   # sandbox claude code
   scoder -n opencode              # opencode with no network
-  scoder --allow-git opencode     # opencode with writable .git
+  scoder --allow-github opencode  # opencode with writable .git
   scoder --dry-run opencode       # show bwrap command without running
 
 Environment:
@@ -229,7 +231,7 @@ preset_opencode() {
 
 preset_opencode_config_binds() {
     local real_home="${HOME}"
-    local sand_home="/home/scoder"
+    local sand_home="${SCODER_HOME}"
 
     # Config: ~/.config/opencode/ (read-only)
     if [[ -d "${real_home}/.config/opencode" ]]; then
@@ -267,7 +269,7 @@ preset_gh() {
 
 preset_gh_config_binds() {
     local real_home="${HOME}"
-    local sand_home="/home/scoder"
+    local sand_home="${SCODER_HOME}"
 
     # Config: ~/.config/gh/ (read-only — contains auth tokens)
     if [[ -d "${real_home}/.config/gh" ]]; then
@@ -299,7 +301,7 @@ preset_claude() {
 
 preset_claude_config_binds() {
     local real_home="${HOME}"
-    local sand_home="/home/scoder"
+    local sand_home="${SCODER_HOME}"
 
     # Config: ~/.claude/ (read-only)
     if [[ -d "${real_home}/.claude" ]]; then
@@ -339,18 +341,27 @@ preset_copilot() {
 
 preset_copilot_config_binds() {
     local real_home="${HOME}"
-    local sand_home="/home/scoder"
+    local sand_home="${SCODER_HOME}"
 
     # Copilot CLI can authenticate via ~/.config/gh/ (GH_TOKEN / hosts.yml)
     if [[ -d "${real_home}/.config/gh" ]]; then
         TOOL_DIRS+=("${sand_home}/.config/gh")
         TOOL_BINDS+=(--ro-bind "${real_home}/.config/gh" "${sand_home}/.config/gh")
+    else
+        warning "gh config not found at ~/.config/gh/"
+        warning "Run 'gh auth login' first to authenticate"
     fi
 
     # Copilot CLI's own config directory
     if [[ -d "${real_home}/.config/github-copilot" ]]; then
         TOOL_DIRS+=("${sand_home}/.config/github-copilot")
-        TOOL_BINDS+=(--ro-bind "${real_home}/.config/github-copilot" "${sand_home}/.config/github-copilot")
+        TOOL_BINDS+=(--bind "${real_home}/.config/github-copilot" "${sand_home}/.config/github-copilot")
+    fi
+
+    # Copilot CLI's own config directory writeable for session state
+    if [[ -d "${real_home}/.copilot" ]]; then
+        TOOL_DIRS+=("${sand_home}/.copilot")
+        TOOL_BINDS+=(--bind "${real_home}/.copilot" "${sand_home}/.copilot")
     fi
 
     # Copilot CLI stores session data / memories
@@ -381,9 +392,11 @@ WORKTREE_BRANCH=""
 WORKTREE_BASE_COMMIT=""
 GIT_DIR=""
 ORIG_DIR=""
+PROJ_DIR=""
 
 setup_git_worktree() {
     ORIG_DIR="${PWD}"
+
 
     # Verify we are in a git repo
     if ! git rev-parse --git-dir >/dev/null 2>&1; then
@@ -395,39 +408,64 @@ setup_git_worktree() {
     GIT_DIR="$(git rev-parse --absolute-git-dir)"
     local repo_root
     repo_root="$(git rev-parse --show-toplevel)"
+    proj_name="$(basename $repo_root)"
+    PROJ_DIR="$(realpath -m --relative-to=$HOME $repo_root)"
 
     # Check for uncommitted changes — warn but don't block
     if ! git diff-index --quiet HEAD -- 2>/dev/null; then
-        warning "You have uncommitted changes in your working tree"
-        warning "The worktree branch will be based on HEAD (committed state)"
+        error "You have uncommitted changes in your working tree"
+        error "You must commit (or stash) them before running scoder"
+        exit 1
     fi
 
     # Generate branch name: scoder/<tool>/<date>-<random>
-    local date_str
-    date_str="$(date +%Y-%m-%d)"
-    local rand_id
-    rand_id="$(head -c 4 /dev/urandom | od -An -tx1 | tr -d ' \n')"
-    local tool_label
-    tool_label="$(basename "${TOOL_NAME}")"
-    WORKTREE_BRANCH="scoder/${tool_label}/${date_str}-${rand_id}"
+    # local date_str
+    # date_str="$(date +%Y-%m-%d)"
+    # local rand_id
+    # rand_id="$(head -c 4 /dev/urandom | od -An -tx1 | tr -d ' \n')"
+    # local tool_label
+    # tool_label="$(basename "${TOOL_NAME}")"
+    # WORKTREE_BRANCH="scoder/${tool_label}/${date_str}-${rand_id}"
+
+    # Generate branch name: scoder/<git-proj-name>
+    WORKTREE_BRANCH="scoder/${proj_name}"
+
+    if ! git branch | grep "$WORKTREE_BRANCH" >/dev/null; then
+        # There is no branch named scoder/${proj_name}
+
+        WORKTREE_DIR="/tmp/scoder/${PROJ_DIR}"
+        info "Creating worktree branch: ${WORKTREE_BRANCH}"
+        info "Worktree path: ${WORKTREE_DIR}"
+
+        local wt_output
+        if ! wt_output=$(git worktree add -b "${WORKTREE_BRANCH}" "${WORKTREE_DIR}" HEAD 2>&1); then
+            error "Failed to create git worktree"
+            error "${wt_output}"
+            exit 1
+        fi
+
+        info "Worktree created successfully"
+
+    fi
+
+    if git worktree list --porcelain | grep  "^branch refs/heads/$WORKTREE_BRANCH" >/dev/null; then
+
+        # It is a worktree: read the current directory associated with it.
+        WORKTREE_DIR="$(git worktree list --porcelain | grep -B2 "^branch refs/heads/$WORKTREE_BRANCH" | head -1 | cut -d' ' -f 2)"
+
+    fi
+
+    if [ -z "$WORKTREE_DIR" ]; then
+        error "Branch $WORKTREE_BRANCH is not a git worktree - you'll need to manually delete it."
+        exit 1
+    fi
 
     # Create worktree directory
-    WORKTREE_DIR="/tmp/scoder-wt-${rand_id}"
+    # WORKTREE_DIR="/tmp/scoder-wt-${rand_id}"
 
     # Record the base commit so we can compare against it later in the summary
     WORKTREE_BASE_COMMIT="$(git rev-parse HEAD)"
 
-    info "Creating worktree branch: ${WORKTREE_BRANCH}"
-    info "Worktree path: ${WORKTREE_DIR}"
-
-    local wt_output
-    if ! wt_output=$(git worktree add -b "${WORKTREE_BRANCH}" "${WORKTREE_DIR}" HEAD 2>&1); then
-        error "Failed to create git worktree"
-        error "${wt_output}"
-        exit 1
-    fi
-
-    info "Worktree created successfully"
 }
 
 cleanup_worktree_summary() {
@@ -440,6 +478,9 @@ cleanup_worktree_summary() {
     if [[ -z "${WORKTREE_DIR}" || ! -d "${WORKTREE_DIR}" ]]; then
         return "${exit_code}"
     fi
+
+    git -C "${WORKTREE_DIR}" add -A
+    git -C "${WORKTREE_DIR}" commit -m "Committing session by ${TOOL_DESCRIPTION}."
 
     echo "" >&2
     info_blue "====== Session Summary ======"
@@ -493,6 +534,8 @@ cleanup_worktree_summary() {
     echo "" >&2
     info "To review:  git log ${WORKTREE_BRANCH}"
     info "To merge:   git merge ${WORKTREE_BRANCH}"
+    info "To rebase:  git rebase main ${WORKTREE_BRANCH}"
+    info "View diff:  git diff main..${WORKTREE_BRANCH}"
     info "To discard: git worktree remove ${WORKTREE_DIR} && git branch -D ${WORKTREE_BRANCH}"
 
     return "${exit_code}"
@@ -561,7 +604,7 @@ while [[ $# -gt 0 ]]; do
         FS_MODE="rw"
         shift
         ;;
-    --allow-git)
+    --allow-github)
         ALLOW_GIT=1
         shift
         ;;
@@ -669,7 +712,7 @@ run_validation() {
     info "Test 1: HOME isolation"
     local t1
     t1=$(run_scoder -q /bin/bash -c 'echo $HOME')
-    run_test "HOME is /home/scoder" "${t1}" "/home/scoder"
+    run_test "HOME is ${SCODER_HOME}" "${t1}" "${SCODER_HOME}"
 
     # Test 2: System files read-only
     info "Test 2: System file protection"
@@ -699,13 +742,10 @@ run_validation() {
     # In a worktree, .git is a file pointing to the main .git/worktrees/<name>.
     # --allow-git makes the main .git dir writable, so we test by writing a temp
     # file in the git dir.
-    info "Test 6: --allow-git override"
+    info "Test 6: --allow-github override"
     local t6
-    t6=$(run_scoder -q --allow-git /bin/bash -c '
-        gitdir=$(git rev-parse --git-dir)
-        touch "${gitdir}/scoder-test" && rm -f "${gitdir}/scoder-test" && echo WRITABLE
-    ')
-    run_test "--allow-git makes git dir writable" "${t6}" "WRITABLE"
+    t6=$(run_scoder -q --allow-github /bin/bash -c 'touch .github/test && echo SUCCESS')
+    run_test "--allow-github makes .github dir writable" "${t6}" "SUCCESS"
 
     # Test 7: Network restriction
     info "Test 7: Network restriction (--no-net)"
@@ -726,7 +766,7 @@ run_validation() {
     fi
 
     # Cleanup: remove worktrees and branches
-    for wt in $(git -C "${test_repo}" worktree list --porcelain 2>/dev/null | grep "^worktree /tmp/scoder-wt-" | cut -d' ' -f2); do
+    for wt in $(git -C "${test_repo}" worktree list --porcelain 2>/dev/null | grep "^worktree /tmp/scoder" | cut -d' ' -f2); do
         git -C "${test_repo}" worktree remove --force "${wt}" 2>/dev/null || true
     done
     for br in $(git -C "${test_repo}" branch --list 'scoder/*' 2>/dev/null | tr -d ' *'); do
@@ -837,6 +877,7 @@ fi
 
 # GIT_DIR was already set in setup_git_worktree() — reuse it
 WORKTREE_DIR_REAL="$(realpath "${WORKTREE_DIR}")"
+SCODER_PROJ_DIR="$SCODER_HOME/$PROJ_DIR"
 
 # ====== Build sandbox PATH ======
 
@@ -848,41 +889,48 @@ if [[ "${ALLOW_HOST_TOOLS}" -eq 1 ]]; then
     info "Binding host development tools (--allow-host-tools)"
 
     if [[ -d "${HOME}/.local/bin" ]]; then
-        EXTRA_BINDS+=(--ro-bind "${HOME}/.local/bin" "/home/scoder/.local/bin")
-        SANDBOX_PATH="${SANDBOX_PATH}:/home/scoder/.local/bin"
+        EXTRA_BINDS+=(--ro-bind-try "${HOME}/.local/bin" "${SCODER_HOME}/.local/bin")
+        SANDBOX_PATH="${SANDBOX_PATH}:${SCODER_HOME}/.local/bin"
     fi
 
+    # R
+    [[ -d "${HOME}/R" ]] && EXTRA_BINDS+=(--ro-bind "${HOME}/R" "${SCODER_HOME}/R")
+    [[ -e "${HOME}/.Rprofile" ]] && EXTRA_BINDS+=(--ro-bind "${HOME}/.Rprofile" "${SCODER_HOME}/.Rprofile")
+
+    # Java
+    [[ -d "${HOME}/.m2" ]] && EXTRA_BINDS+=(--ro-bind "${HOME}/.m2" "${SCODER_HOME}/.m2")
+
     # Mise
-    [[ -d "${HOME}/.local/share/mise" ]] && EXTRA_BINDS+=(--ro-bind "${HOME}/.local/share/mise" "/home/scoder/.local/share/mise")
-    [[ -d "${HOME}/.config/mise" ]] && EXTRA_BINDS+=(--ro-bind "${HOME}/.config/mise" "/home/scoder/.config/mise")
-    [[ -d "${HOME}/.local/share/mise/shims" ]] && SANDBOX_PATH="${SANDBOX_PATH}:/home/scoder/.local/share/mise/shims"
+    [[ -d "${HOME}/.local/share/mise" ]] && EXTRA_BINDS+=(--ro-bind "${HOME}/.local/share/mise" "${SCODER_HOME}/.local/share/mise")
+    [[ -d "${HOME}/.config/mise" ]] && EXTRA_BINDS+=(--ro-bind "${HOME}/.config/mise" "${SCODER_HOME}/.config/mise")
+    [[ -d "${HOME}/.local/share/mise/shims" ]] && SANDBOX_PATH="${SANDBOX_PATH}:${SCODER_HOME}/.local/share/mise/shims"
 
     # Rust
-    [[ -d "${HOME}/.rustup" ]] && EXTRA_BINDS+=(--ro-bind "${HOME}/.rustup" "/home/scoder/.rustup")
+    [[ -d "${HOME}/.rustup" ]] && EXTRA_BINDS+=(--ro-bind "${HOME}/.rustup" "${SCODER_HOME}/.rustup")
     if [[ -d "${HOME}/.cargo/bin" ]]; then
-        EXTRA_BINDS+=(--ro-bind "${HOME}/.cargo/bin" "/home/scoder/.cargo/bin")
-        SANDBOX_PATH="${SANDBOX_PATH}:/home/scoder/.cargo/bin"
+        EXTRA_BINDS+=(--ro-bind "${HOME}/.cargo/bin" "${SCODER_HOME}/.cargo/bin")
+        SANDBOX_PATH="${SANDBOX_PATH}:${SCODER_HOME}/.cargo/bin"
     fi
 
     # Config files
-    [[ -f "${HOME}/.npmrc" ]] && EXTRA_BINDS+=(--ro-bind "${HOME}/.npmrc" "/home/scoder/.npmrc")
-    [[ -f "${HOME}/.pypirc" ]] && EXTRA_BINDS+=(--ro-bind "${HOME}/.pypirc" "/home/scoder/.pypirc")
+    [[ -f "${HOME}/.npmrc" ]] && EXTRA_BINDS+=(--ro-bind "${HOME}/.npmrc" "${SCODER_HOME}/.npmrc")
+    [[ -f "${HOME}/.pypirc" ]] && EXTRA_BINDS+=(--ro-bind "${HOME}/.pypirc" "${SCODER_HOME}/.pypirc")
 fi
 
 # Worktree-local tool paths
 if [[ -d "${WORKTREE_DIR_REAL}/.venv/bin" ]]; then
-    SANDBOX_PATH="${WORKTREE_DIR_REAL}/.venv/bin:${SANDBOX_PATH}"
+    SANDBOX_PATH="${SCODER_PROJ_DIR}/.venv/bin:${SANDBOX_PATH}"
 fi
 if [[ -d "${WORKTREE_DIR_REAL}/node_modules/.bin" ]]; then
-    SANDBOX_PATH="${WORKTREE_DIR_REAL}/node_modules/.bin:${SANDBOX_PATH}"
+    SANDBOX_PATH="${SCODER_PROJ_DIR}/node_modules/.bin:${SANDBOX_PATH}"
 fi
 if [[ -d "${WORKTREE_DIR_REAL}/bin" && -f "${WORKTREE_DIR_REAL}/go.mod" ]]; then
-    SANDBOX_PATH="${WORKTREE_DIR_REAL}/bin:${SANDBOX_PATH}"
+    SANDBOX_PATH="${SCODER_PROJ_DIR}/bin:${SANDBOX_PATH}"
 fi
 
 # ====== Infrastructure Protection ======
 
-PROTECTED_DIRS=(".github")
+PROTECTED_DIRS=()
 PROTECTED_FILES=(".gitignore" "package-lock.json" "poetry.lock" "Cargo.lock" "pnpm-lock.yaml" "yarn.lock")
 
 SAFE_BINDS=()
@@ -893,20 +941,20 @@ SAFE_BINDS=()
 if [[ "${ALLOW_GIT}" -eq 0 && "${ALLOW_INFRA}" -eq 0 ]]; then
     # The worktree .git is a file, not a directory. We make the main
     # .git dir read-only to protect git internals.
-    info "Protecting git repository (read-only)"
+    PROTECTED_DIRS+=(".github")
 fi
 
 if [[ "${ALLOW_INFRA}" -eq 0 ]]; then
     for dir in "${PROTECTED_DIRS[@]}"; do
         if [[ -d "${WORKTREE_DIR_REAL}/${dir}" ]]; then
-            SAFE_BINDS+=(--ro-bind "${WORKTREE_DIR_REAL}/${dir}" "${WORKTREE_DIR_REAL}/${dir}")
+            SAFE_BINDS+=(--ro-bind "${WORKTREE_DIR_REAL}/${dir}" "${SCODER_PROJ_DIR}/${dir}")
             info "Protecting ${dir}/ (read-only)"
         fi
     done
 
     for file in "${PROTECTED_FILES[@]}"; do
         if [[ -f "${WORKTREE_DIR_REAL}/${file}" ]]; then
-            SAFE_BINDS+=(--ro-bind "${WORKTREE_DIR_REAL}/${file}" "${WORKTREE_DIR_REAL}/${file}")
+            SAFE_BINDS+=(--ro-bind "${WORKTREE_DIR_REAL}/${file}" "${SCODER_PROJ_DIR}/${file}")
             info "Protecting ${file} (read-only)"
         fi
     done
@@ -970,11 +1018,12 @@ BWRAP_CMD+=(
 
     # Ephemeral HOME
     --tmpfs /home
-    --dir /home/scoder
-    --dir /home/scoder/.local
-    --dir /home/scoder/.local/share
-    --dir /home/scoder/.config
-    --dir /home/scoder/.cache
+    --dir "${SCODER_HOME}"
+    --dir "${SCODER_HOME}/.local"
+    --dir "${SCODER_HOME}/.local/share"
+    --dir "${SCODER_HOME}/.config"
+    --dir "${SCODER_HOME}/.cache"
+    --dir "${SCODER_PROJ_DIR}"
 )
 
 # Create any extra dirs needed by tool presets
@@ -993,7 +1042,7 @@ if [[ ${#EXTRA_BINDS[@]} -gt 0 ]]; then
 fi
 
 # Worktree directory (at its real path)
-BWRAP_CMD+=("${BIND_FLAG}" "${WORKTREE_DIR_REAL}" "${WORKTREE_DIR_REAL}")
+BWRAP_CMD+=("${BIND_FLAG}" "${WORKTREE_DIR_REAL}" "${SCODER_PROJ_DIR}")
 
 # Protected infra overlays (must come AFTER the worktree bind to overlay)
 if [[ ${#SAFE_BINDS[@]} -gt 0 ]]; then
@@ -1010,7 +1059,7 @@ else
 fi
 
 # Working directory
-BWRAP_CMD+=(--chdir "${WORKTREE_DIR_REAL}")
+BWRAP_CMD+=(--chdir "${SCODER_PROJ_DIR}")
 
 # Network
 if [[ ${#NET_FLAGS[@]} -gt 0 ]]; then
@@ -1023,7 +1072,7 @@ BWRAP_CMD+=(
     --die-with-parent
     --clearenv
     --setenv PATH "${SANDBOX_PATH}"
-    --setenv HOME /home/scoder
+    --setenv HOME "${SCODER_HOME}"
     --setenv USER scoder
     --setenv LOGNAME scoder
     --setenv TERM "${TERM:-xterm-256color}"
@@ -1070,4 +1119,4 @@ else
     info "Launching ${TOOL_NAME} in sandbox..."
 fi
 
-exec "${BWRAP_CMD[@]}"
+"${BWRAP_CMD[@]}"

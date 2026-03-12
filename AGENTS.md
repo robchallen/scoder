@@ -190,11 +190,11 @@ Option parsing  →  Early validation (bwrap exists, AppArmor)
   →  Tool config bind-mounts built
   →  Infrastructure protection overlays
   →  bwrap command array constructed
-  →  exec bwrap (replaces shell — no code runs after this)
+  →  execute bwrap
+  →  EXIT trap triggers cleanup, which commits changes in worktree, and suggests next steps.
 ```
 
-The `exec` at the end is intentional. The EXIT trap only fires during the
-setup phase if interrupted; during tool execution, bwrap owns the process.
+If `exec` used to trigger bwrap the cleanup script does not run.
 
 ## Git Conventions
 

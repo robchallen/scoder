@@ -104,7 +104,7 @@ filesystem view without requiring root. Key capabilities we use:
 /tmp                                → ephemeral tmpfs
 /home/scoder                        → ephemeral tmpfs (sandbox HOME)
   └── .config/, .local/, .cache/    → empty dirs + selective bind-mounts
-<worktree-real-path>                → bind from /tmp/scoder-wt-*
+<worktree-real-path>                → bind from /tmp/scoder/<git-repo-path>
 <git-dir-real-path>                 → bind from host .git (ro or rw)
 ```
 
@@ -136,7 +136,7 @@ path without cloning the entire repository. This gives us:
 
 ### Lifecycle
 
-1. **Create**: `git worktree add -b scoder/<tool>/<date>-<id> /tmp/scoder-wt-<id> HEAD`
+1. **Create**: `git worktree add -b scoder/<git-repo-name> /tmp/scoder/<git-repo-path> HEAD`
 2. **Use**: the tool operates on the worktree. Commits go to the new branch.
 3. **Exit**: the EXIT trap prints a summary (commit count, diffstat,
    uncommitted changes) and leaves the worktree + branch for the user.
@@ -144,17 +144,15 @@ path without cloning the entire repository. This gives us:
 
 ### Branch Naming
 
-Format: `scoder/<tool-basename>/<YYYY-MM-DD>-<8-hex-chars>`
+Format: `scoder/<git-proj-name>`
 
-The tool name is passed through `basename` to handle cases like
-`/usr/bin/bash` → `bash`. Without this, tool paths with slashes would
-create invalid git branch names.
+scoder sessions always take place in the same branch and will reuse the same worktree if
+it exists.
 
 ### Uncommitted Changes Warning
 
 If the user has uncommitted changes in their working tree when starting
-scoder, we warn but proceed. The worktree is based on HEAD (committed
-state), so uncommitted changes are not visible to the sandboxed tool.
+scoder, we exit with error.
 
 ---
 
@@ -350,9 +348,11 @@ Investigated as an additional restriction layer. Removed because:
 ### Remapping Paths Inside the Sandbox
 
 Considered mounting the worktree at `/home/scoder/workspace` for a cleaner
-sandbox layout. Rejected because git worktree cross-references use absolute
-paths, and remapping would break them. Real-path mirroring is the only
-reliable approach.
+sandbox layout. Initially rejected because git worktree cross-references use absolute
+paths, and remapping would break them. However current version maps files in sandbox to
+same location in real filesystem and appears to work, so `/home/$USER/Git/project-a` is
+created as a worktree in `/tmp/scoder/Git/project-a` which is mapped in the
+sandbox to `/home/scoder/Git/project-a`. This needs monitoring.
 
 ### Config File
 
@@ -405,9 +405,8 @@ write to, signals they handle) may surface during real use.
 ### Worktree Accumulation
 
 scoder creates worktrees and branches but never cleans them up
-automatically. Over time, `/tmp/scoder-wt-*` directories and
-`scoder/*` branches will accumulate. A future `scoder --gc` command
-could clean up old worktrees and branches.
+automatically. Because we reuse branches and worktrees for multiple
+.
 
 ### Signal Handling
 
@@ -416,11 +415,11 @@ The current signal setup is:
 - `trap 'exit 130' INT` — converts SIGINT to exit code 130 (triggering EXIT trap)
 - `trap 'exit 143' TERM` — converts SIGTERM to exit code 143
 
-Since the final line is `exec bwrap ...`, the shell process is replaced
-and these traps are no longer active during tool execution. The traps only
-matter if the script is interrupted during the setup phase (between
-worktree creation and exec). The tool itself handles its own signals, and
-bwrap's `--die-with-parent` ensures cleanup if the parent process dies.
+Originally the final line was `exec bwrap ...`, but the shell process was replaced
+and these traps are no longer active during tool execution, and the cleanup was
+not being triggered when the tool finished, so the exec was removed.
+Bwrap's `--die-with-parent` ensures cleanup if the parent process dies.
+
 
 ### No Nested Sandbox Detection
 

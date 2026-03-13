@@ -25,7 +25,7 @@ to the codebase after time away.
 
 ### Goals
 
-1. **Multi-tool sandboxing** — support opencode, gh, claude, copilot, and
+1. **Multi-tool sandboxing** — support opencode, claude, copilot, and
    arbitrary commands, each with sensible defaults.
 2. **Git isolation** — all file changes happen on a disposable branch via
    git worktrees. The user's working tree is never modified.
@@ -67,13 +67,8 @@ Option parsing
   -> Tool-specific config bind-mount setup
   -> Infrastructure protection overlays
   -> bwrap command array construction
-  -> exec bwrap (replaces the shell process)
+  -> bwrap (in the shell process)
 ```
-
-Key design choice: the final `exec` replaces the scoder process with bwrap.
-This means the tool runs as a direct child of bwrap, not a grandchild. It
-also means the EXIT trap fires only after bwrap (and therefore the tool)
-has terminated.
 
 ---
 
@@ -105,7 +100,7 @@ filesystem view without requiring root. Key capabilities we use:
 /home/scoder                        → ephemeral tmpfs (sandbox HOME)
   └── .config/, .local/, .cache/    → empty dirs + selective bind-mounts
 <worktree-real-path>                → bind from /tmp/scoder/<git-repo-path>
-<git-dir-real-path>                 → bind from host .git (ro or rw)
+<git-dir-real-path>                 → bind from host .git (rw)
 ```
 
 ### Environment
@@ -138,8 +133,8 @@ path without cloning the entire repository. This gives us:
 
 1. **Create**: `git worktree add -b scoder/<git-repo-name> /tmp/scoder/<git-repo-path> HEAD`
 2. **Use**: the tool operates on the worktree. Commits go to the new branch.
-3. **Exit**: the EXIT trap prints a summary (commit count, diffstat,
-   uncommitted changes) and leaves the worktree + branch for the user.
+3. **Exit**: the EXIT trap commits changes, prints a summary (commit count, diffstat)
+   and leaves the worktree + branch for the user to review or merge.
 4. **Cleanup** (manual): `git worktree remove <path> && git branch -D <branch>`
 
 ### Branch Naming
@@ -162,7 +157,7 @@ scoder, we exit with error.
 
 Each supported tool has three functions:
 
-- `preset_<tool>()` — sets default values for network mode and git write access
+- `preset_<tool>()` — sets default values
 - `preset_<tool>_config_binds()` — populates `TOOL_BINDS[]` and `TOOL_DIRS[]`
   arrays with bind-mount specifications
 - `preset_<tool>_validate()` — checks prerequisites (tool installed, etc.)
@@ -170,28 +165,17 @@ Each supported tool has three functions:
 This convention-based dispatch (`"preset_${TOOL_NAME}_config_binds"`) avoids
 the need for a registry or case statement for each operation.
 
-### Preset Defaults vs User Flags
-
-User flags always override preset defaults. This is tracked explicitly:
-
-- `NET_MODE_EXPLICIT` — set to 1 if `--no-net` was passed. If 0, the
-  preset's `TOOL_NET_DEFAULT` is used.
-- `ALLOW_GIT` — initialized to -1 (sentinel). If still -1 after option
-  parsing, the preset's `TOOL_ALLOW_GIT_DEFAULT` is applied.
-
 ### Per-Tool Details
 
-| Tool | Network | .git | Config Paths | Notes |
-|------|---------|------|-------------|-------|
-| opencode | on | ro | `~/.config/opencode` (ro), `~/.local/share/opencode` (rw), `~/.cache/opencode` (rw) | Data/cache dirs created if missing |
-| gh | on | rw | `~/.config/gh` (ro) | Warns if `hosts.yml` missing |
-| claude | on | ro | `~/.claude` (ro), `~/.config/claude` (ro) | Both paths checked (location varies) |
-| copilot | on | rw | `~/.config/gh` (ro), `~/.config/github-copilot` (ro), `~/.local/share/github-copilot` (rw) | Config paths based on docs, not verified with real tool |
+| Tool | Config Paths | Notes |
+|------|--------------|-------|
+| opencode | `~/.config/opencode` (ro), `~/.local/share/opencode` (rw), `~/.cache/opencode` (rw) | Data/cache dirs created if missing |
+| claude | `~/.claude` (ro), `~/.config/claude` (ro) | Both paths checked (location varies) |
+| copilot | `~/.config/gh` (ro), `~/.config/github-copilot` (ro), `~/.local/share/github-copilot` (rw) | Config paths based on docs, not verified with real tool |
 
 ### Generic Commands
 
-Any command not matching a preset name gets a generic sandbox: network on,
-`.git` read-only, no config bind-mounts. The validation tests use
+Any command not matching a preset name gets a generic sandbox: The validation tests use
 `/bin/bash` this way.
 
 ---
@@ -210,7 +194,7 @@ gitdir: /path/to/main/.git/worktrees/<name>
 The main `.git/worktrees/<name>/gitdir` file points back:
 
 ```
-/tmp/scoder-wt-abc123
+/tmp/scoder/<git-repo-path>
 ```
 
 Both paths must resolve correctly inside the sandbox. If we remapped the
@@ -221,7 +205,7 @@ references would break.
 
 Mount everything at its **real absolute path**:
 
-- The worktree at `/tmp/scoder-wt-<id>` is bound to `/tmp/scoder-wt-<id>`
+- The worktree at `/tmp/scoder/<git-repo-path>` is bound to `/home/scoder/<git-repo-path>`
 - The `.git` directory at its real path is bound to that same path
 
 This means git operations work correctly inside the sandbox without any
@@ -240,11 +224,12 @@ rely entirely on git's built-in worktree discovery.
 Certain files should not be modified by sandboxed tools:
 
 - **`.github/`** — CI/CD workflows. A malicious or confused AI could inject
-  workflow steps.
+  workflow steps, copilot agents and skills.
+- **`.opencode/`, `.claude/`, `opencode.json`** opencode and claude agents and skills
 - **`.gitignore`** — changing ignore rules could hide malicious files from
   review.
 - **Lockfiles** (`package-lock.json`, `poetry.lock`, `Cargo.lock`,
-  `pnpm-lock.yaml`, `yarn.lock`) — supply chain attack vector if modified.
+  `pnpm-lock.yaml`, `yarn.lock`, `mise.toml`) — supply chain attack vector if modified.
 
 These are overlaid with `--ro-bind` **after** the worktree bind, which
 makes them read-only even though the worktree itself is writable. The

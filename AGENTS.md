@@ -5,7 +5,7 @@ Instructions for AI coding agents working in this repository.
 ## Project Overview
 
 scoder is a **single-file bash script** (~1070 lines) that sandboxes AI coding
-tools (opencode, gh, claude, copilot) using bubblewrap (bwrap) with git
+tools (opencode, claude, copilot) using bubblewrap (bwrap) with git
 worktree isolation. There is no build system, no package manager, no compiled
 artifacts. The entire codebase is one executable script plus documentation.
 
@@ -145,8 +145,6 @@ Every tool preset requires exactly 3 functions plus a case entry:
 ```bash
 # 1. Defaults — set TOOL_NET_DEFAULT, TOOL_ALLOW_GIT_DEFAULT, TOOL_DESCRIPTION
 preset_newtool() {
-    TOOL_NET_DEFAULT="on"
-    TOOL_ALLOW_GIT_DEFAULT=0
     TOOL_DESCRIPTION="New Tool"
 }
 

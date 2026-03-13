@@ -8,19 +8,18 @@ on an isolated git branch via worktrees.
 
 ## Supported tools
 
-| Tool | Preset | Defaults |
-|------|--------|----------|
-| `opencode` | Config, data, cache bind-mounts | network on, .git read-only |
-| `gh` | GitHub CLI auth bind-mount | network on, .git writable |
-| `claude` | Claude Code config bind-mount | network on, .git read-only |
-| `copilot` | GitHub Copilot CLI config + data | network on, .git writable |
-| *(any)* | Generic sandbox | network on, .git read-only |
+| Tool | Preset |
+|------|--------|
+| `opencode` | Config, data, cache bind-mounts |
+| `claude` | Claude Code config bind-mount |
+| `copilot` | GitHub Copilot CLI config + data |
+| *(any)* | Generic sandbox |
 
 ## How it works
 
 1. **Must be in a git repo.** `scoder` refuses to run outside one.
-2. Creates a new branch (`scoder/<tool>/<date>-<id>`) and a git worktree
-   in `/tmp`. Your original checkout is untouched.
+2. Creates a new branch (`scoder/<git-repo-name>`) and a git worktree
+   in `/tmp/scoder/<git-repo-path>`. Your original checkout is untouched.
 3. Launches the tool inside a bubblewrap sandbox operating on the worktree.
    Paths inside the sandbox mirror real absolute paths.
 4. On exit, prints a summary of changes and how to merge or discard.
@@ -28,13 +27,15 @@ on an isolated git branch via worktrees.
 ### Sandbox properties
 
 - **Ephemeral HOME** — `/home/scoder` on tmpfs, fully isolated from your
-  real home. Tool configs are bind-mounted read-only from the real home
-  as needed (per-tool presets).
+  real home.
 - **System read-only** — `/usr`, `/bin`, `/lib`, `/etc` are read-only.
-- **Protected infrastructure** — `.github/`, `.gitignore`, lockfiles are
-  read-only by default.
-- **Git protection** — the `.git` directory is read-only unless
-  `--allow-git` is passed (or the tool preset enables it, like `gh`).
+- **Protected infrastructure** — `.github/`, `.opencode/`, `.claude/`, `opencode.json`,
+  `.gitignore`, `package-lock.json`, `poetry.lock`, `Cargo.lock`, `pnpm-lock.yaml`, `yarn.lock`, `mise.toml`
+  are read-only by default. List can be modified with a `.agentreadonly` file in the repository
+  root. (`.agentreadonly` is always protected)
+- **Tools** - executable directories and libraries are available read-only
+  for R, Java (maven), Rust, and mise-en-place.
+- **Restricted device access** - Restrict /dev to essential devices only
 
 ## Usage
 
@@ -46,11 +47,8 @@ scoder [options] <tool> [tool-args...]
 
 ```bash
 scoder opencode                   # sandbox opencode in current repo
-scoder gh pr list                 # sandbox gh (network on, git writable)
 scoder claude                     # sandbox claude code
 scoder copilot                    # sandbox GitHub Copilot CLI
-scoder -n opencode                # opencode with no network
-scoder --allow-git opencode       # opencode with writable .git
 scoder --dry-run opencode         # show bwrap command without running
 scoder --validate                 # run built-in validation tests
 ```
@@ -60,46 +58,42 @@ scoder --validate                 # run built-in validation tests
 ```
 -h, --help              Show help
 -V, --version           Show version
--n, --no-net            Disable network access
 -q, --quiet             Suppress informational output
     --validate          Run validation tests and exit
     --dry-run           Print bwrap command without executing
-    --ro                Mount worktree read-only
-    --rw                Mount worktree read-write (default)
-    --allow-git         Allow write access to .git
-    --allow-infra       Allow write access to all protected infra
-    --allow-host-tools  Bind host dev tools (~/.local/bin, mise, cargo, etc)
-    --restrict-dev      Restrict /dev to essential devices only
 ```
 
-### Environment variables
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `SCODER_NET` | `on` | Default network mode |
+Protecting workspace infrastructure files or directories can be modified with a
+`.agentreadonly` directory which is formatted like a `.gitignore` file and defines
+what paths within the workspace an agent cannot modify, these can still be read.
+An empty file will make all workspace files writeable.
 
 ## After a session
+
+Changes made during the session will be available at the `/tmp/scoder/<git-repo-path>`
+but also committed to the local branch. From there it can be rebased or merged into
+your working branch. The emphemeral path will
 
 When scoder exits it prints:
 
 ```
 scoder: ====== Session Summary ======
-scoder: Branch: scoder/opencode/2026-03-10-a1b2c3
-scoder: Worktree: /tmp/scoder-wt-a1b2c3
-scoder: To review:  git log scoder/opencode/2026-03-10-a1b2c3
-scoder: To merge:   git merge scoder/opencode/2026-03-10-a1b2c3
-scoder: To discard: git worktree remove /tmp/scoder-wt-a1b2c3 && git branch -D scoder/opencode/2026-03-10-a1b2c3
+scoder: Branch: scoder/<git-repo-name>
+scoder: Worktree: /tmp/scoder/<git-repo-path>
+scoder: To review:  git log scoder/<git-repo-name>
+scoder: To merge:   git merge scoder/<git-repo-name>
+scoder: To rebase:  git rebase main scoder/<git-repo-name>
+scoder: To discard: git worktree remove /tmp/scoder/<git-repo-path> && git branch -D scoder/<git-repo-name>
 ```
 
 ## Requirements
 
 - `bwrap` (bubblewrap)
 - `git`
-- The tool you want to sandbox (e.g. `opencode`, `gh`, `claude`)
-- Tool-specific prerequisites must already be set up:
-  - `gh`: run `gh auth login` first
+- The tool you want to sandbox (e.g. `opencode`, `copilot`, `claude`)
+- Tool-specific prerequisites must already be set up (and installed globally):
   - `claude`: install via `npm install -g @anthropic-ai/claude-code`
-  - `copilot`: install via `npm install -g @github/copilot` or `brew install copilot-cli`
+  - `copilot`: install via `npm install -g @github/copilot` or `brew install copilot-cli`, run `gh auth login` first
   - `opencode`: install from https://opencode.ai
 
 ## Install

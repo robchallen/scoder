@@ -4,6 +4,23 @@
 # Supports: opencode, gh, claude (and arbitrary commands)
 # License: MIT
 
+# ======== DEBUGGING ========
+
+# set -E
+# set -o functrace
+# function handle_error {
+#     local retval=$?
+#     local line=${last_lineno:-$1}
+#     echo "Failed at $line: $BASH_COMMAND"
+#     echo "Trace: " "$@"
+#     exit $retval
+# }
+# trap 'handle_error $LINENO ${BASH_LINENO[@]}' ERR
+
+
+# =================
+
+
 set -euo pipefail
 
 readonly PROGRAM_NAME="scoder"
@@ -14,7 +31,7 @@ readonly RED='\033[0;31m'
 readonly YELLOW='\033[1;33m'
 readonly GREEN='\033[0;32m'
 readonly BLUE='\033[0;34m'
-readonly BOLD='\033[1m'
+# readonly BOLD='\033[1m'
 readonly NC='\033[0m'
 
 SCODER_HOME='/home/scoder'
@@ -51,17 +68,13 @@ Options:
   -q, --quiet             Suppress informational output
       --validate          Run comprehensive validation tests and exit
       --dry-run           Print the bwrap command without executing
-      --ro                Mount worktree read-only
-      --rw                Mount worktree read-write (default)
-      --allow-github      Allow write access to .github/ (default: read-only)
-      --allow-infra       Allow write access to all protected infra
-      --allow-host-tools  Bind host user tools (~/.local/bin, mise, cargo, R packages, maven etc)
-      --restrict-dev      Restrict /dev to essential devices only
 
 Setup (run once, requires sudo):
   sudo scoder --configure-apparmor
                           Install AppArmor profile to allow bwrap to create
                           user namespaces (required on Ubuntu 24.04+)
+  sudo scoder --install-dependencies
+                          uses apt to intall packages bubblewrap
 
 Git Worktree Lifecycle:
   scoder must be run inside a git repository. On startup it:
@@ -78,14 +91,11 @@ Examples:
   scoder gh pr list               # sandbox gh with network + git write
   scoder claude                   # sandbox claude code
   scoder -n opencode              # opencode with no network
-  scoder --allow-github opencode  # opencode with writable .git
   scoder --dry-run opencode       # show bwrap command without running
 
-Environment:
-  SCODER_NET        "on" (default) or "off"
-
+Scoder looks for a .agentreadonly file in the repository root, with a .gitignore syntax
 Protected (read-only by default):
-  .git, .github, .gitignore, lockfiles (package-lock.json, etc.)
+  .github/, .opencode/, opencode.json, .claude/, .gitignore, lockfiles (package-lock.json, mise.toml, etc.),
 EOF
 }
 
@@ -214,18 +224,32 @@ check_bwrap_userns() {
     exit 1
 }
 
+# ======== System dependencies ===========
+
+
+install_dependencies() {
+
+    if [[ "$(id -u)" -ne 0 ]]; then
+        error "--configure-apparmor must be run as root"
+        error "Usage: sudo scoder --configure-apparmor"
+        exit 1
+    fi
+
+    apt install bubblewrap
+
+}
+
+
 # ====== Tool Presets ======
 #
 # Each preset defines:
-#   net        - default network mode ("on" or "off")
-#   allow_git  - default .git write access (0 or 1)
 #   config_binds() - function that appends to TOOL_BINDS and TOOL_DIRS arrays
 #   validate() - function that checks prerequisites, returns 0/1
 #   description - human-readable name
 
+# ====== OpenCode =====
+
 preset_opencode() {
-    TOOL_NET_DEFAULT="on"
-    TOOL_ALLOW_GIT_DEFAULT=0
     TOOL_DESCRIPTION="OpenCode"
 }
 
@@ -261,41 +285,9 @@ preset_opencode_validate() {
     return 0
 }
 
-preset_gh() {
-    TOOL_NET_DEFAULT="on"
-    TOOL_ALLOW_GIT_DEFAULT=1
-    TOOL_DESCRIPTION="GitHub CLI"
-}
-
-preset_gh_config_binds() {
-    local real_home="${HOME}"
-    local sand_home="${SCODER_HOME}"
-
-    # Config: ~/.config/gh/ (read-only — contains auth tokens)
-    if [[ -d "${real_home}/.config/gh" ]]; then
-        TOOL_DIRS+=("${sand_home}/.config/gh")
-        TOOL_BINDS+=(--ro-bind "${real_home}/.config/gh" "${sand_home}/.config/gh")
-    else
-        warning "gh config not found at ~/.config/gh/"
-        warning "Run 'gh auth login' first to authenticate"
-    fi
-}
-
-preset_gh_validate() {
-    if ! command -v gh >/dev/null 2>&1; then
-        error "gh (GitHub CLI) not found in PATH"
-        error "Install: https://cli.github.com/"
-        return 1
-    fi
-    if [[ ! -f "${HOME}/.config/gh/hosts.yml" ]]; then
-        warning "gh not authenticated — run 'gh auth login' first"
-    fi
-    return 0
-}
+# ====== Claude code =====
 
 preset_claude() {
-    TOOL_NET_DEFAULT="on"
-    TOOL_ALLOW_GIT_DEFAULT=0
     TOOL_DESCRIPTION="Claude Code"
 }
 
@@ -333,9 +325,10 @@ preset_claude_validate() {
     return 0
 }
 
+
+# ====== Copilot =====
+
 preset_copilot() {
-    TOOL_NET_DEFAULT="on"
-    TOOL_ALLOW_GIT_DEFAULT=1
     TOOL_DESCRIPTION="GitHub Copilot CLI"
 }
 
@@ -391,11 +384,11 @@ WORKTREE_DIR=""
 WORKTREE_BRANCH=""
 WORKTREE_BASE_COMMIT=""
 GIT_DIR=""
-ORIG_DIR=""
+# ORIG_DIR=""
 PROJ_DIR=""
 
 setup_git_worktree() {
-    ORIG_DIR="${PWD}"
+    # ORIG_DIR="${PWD}"
 
 
     # Verify we are in a git repo
@@ -408,8 +401,8 @@ setup_git_worktree() {
     GIT_DIR="$(git rev-parse --absolute-git-dir)"
     local repo_root
     repo_root="$(git rev-parse --show-toplevel)"
-    proj_name="$(basename $repo_root)"
-    PROJ_DIR="$(realpath -m --relative-to=$HOME $repo_root)"
+    proj_name="$(basename "${repo_root}")"
+    PROJ_DIR="$(realpath -m --relative-to="${HOME}" "${repo_root}")"
 
     # Check for uncommitted changes — warn but don't block
     if ! git diff-index --quiet HEAD -- 2>/dev/null; then
@@ -456,9 +449,22 @@ setup_git_worktree() {
     fi
 
     if [ -z "$WORKTREE_DIR" ]; then
-        error "Branch $WORKTREE_BRANCH is not a git worktree - you'll need to manually delete it."
+        error "Branch $WORKTREE_BRANCH exists but is not a git worktree - you'll need to manually review it."
+        info "to review:   git diff main..$WORKTREE_BRANCH"
+        info "to delete:   git branch -D $WORKTREE_BRANCH"
         exit 1
     fi
+
+    # If a stale worktree with no files are listed then
+    if git worktree list --porcelain | grep -A1 "^branch refs/heads/$WORKTREE_BRANCH" | tail -1 | grep "prunable" >/dev/null; then
+        # pruneable
+        git worktree prune
+        error "Branch $WORKTREE_BRANCH exists but the worktree has gone - you need to manually review it."
+        info "to review:   git diff main..$WORKTREE_BRANCH"
+        info "to delete:   git branch -D $WORKTREE_BRANCH"
+        exit 1
+    fi
+
 
     # Create worktree directory
     # WORKTREE_DIR="/tmp/scoder-wt-${rand_id}"
@@ -471,13 +477,17 @@ setup_git_worktree() {
 cleanup_worktree_summary() {
     # Called on exit — print summary of what happened on the branch
     # Disable errexit so cleanup always completes
-    local exit_code=$?
     set +e
+    local exit_code=$?
+
+    # reset
 
     # If worktree was never created, nothing to summarize
     if [[ -z "${WORKTREE_DIR}" || ! -d "${WORKTREE_DIR}" ]]; then
         return "${exit_code}"
     fi
+
+    info "${TOOL_DESCRIPTION} session complete."
 
     git -C "${WORKTREE_DIR}" add -A
     git -C "${WORKTREE_DIR}" commit -m "Committing session by ${TOOL_DESCRIPTION}."
@@ -507,27 +517,7 @@ cleanup_worktree_summary() {
         fi
     fi
 
-    # Check if there are uncommitted changes in the worktree
-    local has_changes=0
-    if ! git -C "${WORKTREE_DIR}" diff-index --quiet HEAD -- 2>/dev/null; then
-        has_changes=1
-    fi
-    local untracked
-    untracked=$(git -C "${WORKTREE_DIR}" ls-files --others --exclude-standard 2>/dev/null | wc -l)
-
-    if [[ "${has_changes}" -eq 1 || "${untracked}" -gt 0 ]]; then
-        info_blue "Uncommitted changes remain in the worktree:"
-        if [[ "${has_changes}" -eq 1 ]]; then
-            git -C "${WORKTREE_DIR}" diff --name-only HEAD 2>/dev/null | while read -r f; do
-                info_blue "  M ${f}"
-            done
-        fi
-        if [[ "${untracked}" -gt 0 ]]; then
-            info_blue "  Untracked files: ${untracked}"
-        fi
-    fi
-
-    if [[ "${commit_count}" -eq 0 && "${has_changes}" -eq 0 && "${untracked}" -eq 0 ]]; then
+    if [[ "${commit_count}" -eq 0 ]]; then
         info_blue "No changes were made"
     fi
 
@@ -543,19 +533,12 @@ cleanup_worktree_summary() {
 
 # ====== Defaults ======
 
-NET_MODE="${SCODER_NET:-on}"
-NET_MODE_EXPLICIT=0  # tracks if user set --no-net explicitly
-FS_MODE="rw"
 QUIET=0
 VALIDATE_MODE=0
 CONFIGURE_APPARMOR=0
+INSTALL_DEPENDENCIES=0
 DRY_RUN=0
-ALLOW_HOST_TOOLS=0
-ALLOW_GIT=-1  # -1 = use preset default
-ALLOW_INFRA=0
-RESTRICT_DEV=0
-RO_SET=0
-RW_SET=0
+# RESTRICT_DEV=0
 
 TOOL_NAME=""
 TOOL_ARGS=()
@@ -585,39 +568,12 @@ while [[ $# -gt 0 ]]; do
         CONFIGURE_APPARMOR=1
         shift
         ;;
+    --install-dependencies)
+        INSTALL_DEPENDENCIES=1
+        shift
+        ;;
     --dry-run)
         DRY_RUN=1
-        shift
-        ;;
-    -n | --no-net)
-        NET_MODE="off"
-        NET_MODE_EXPLICIT=1
-        shift
-        ;;
-    --ro)
-        RO_SET=1
-        FS_MODE="ro"
-        shift
-        ;;
-    --rw)
-        RW_SET=1
-        FS_MODE="rw"
-        shift
-        ;;
-    --allow-github)
-        ALLOW_GIT=1
-        shift
-        ;;
-    --allow-infra)
-        ALLOW_INFRA=1
-        shift
-        ;;
-    --allow-host-tools)
-        ALLOW_HOST_TOOLS=1
-        shift
-        ;;
-    --restrict-dev)
-        RESTRICT_DEV=1
         shift
         ;;
     -*)
@@ -637,16 +593,20 @@ done
 
 # ====== Validation (early) ======
 
-if [[ "${RO_SET}" -eq 1 && "${RW_SET}" -eq 1 ]]; then
-    error "--ro and --rw are mutually exclusive"
-    exit 1
+if [[ "${INSTALL_DEPENDENCIES}" -eq 1 ]]; then
+    install_dependencies
+    exit $?
 fi
 
 if ! command -v bwrap >/dev/null 2>&1; then
     error "bubblewrap (bwrap) not found in PATH"
-    error "Install: apt install bubblewrap   # Debian/Ubuntu"
-    error "         pacman -S bubblewrap     # Arch"
-    error "         dnf install bubblewrap   # Fedora"
+    error "run sudo scoder --install-dependencies"
+    exit 1
+fi
+
+if ! command -v bwrap >/dev/null 2>&1; then
+    error "fs-find (fsfind) not found in PATH"
+    error "run sudo scoder --install-dependencies"
     exit 1
 fi
 
@@ -726,7 +686,7 @@ run_validation() {
     t3=$(run_scoder -q /bin/bash -c 'touch newfile.txt && echo SUCCESS')
     run_test "Worktree writable" "${t3}" "SUCCESS"
 
-    # Test 4: .github protection
+    # Test 4: .github protection (default)
     info "Test 4: .github directory protection"
     local t4
     t4=$(run_scoder -q /bin/bash -c 'touch .github/test 2>&1')
@@ -738,20 +698,22 @@ run_validation() {
     t5=$(run_scoder -q /bin/bash -c 'echo "test" >> .gitignore 2>&1')
     run_test ".gitignore is read-only" "${t5}" "Read-only|Permission denied|cannot"
 
-    # Test 6: --allow-git override
-    # In a worktree, .git is a file pointing to the main .git/worktrees/<name>.
-    # --allow-git makes the main .git dir writable, so we test by writing a temp
-    # file in the git dir.
-    info "Test 6: --allow-github override"
+    # Test 6:
+    # an empty .agentreadonly allows all directories writable, so we test by writing a temp
+    # file in the .github dir.
+    info "Test 6: allow github access with empty .agentreadonly"
+    touch "${test_repo}/.agentreadonly"
     local t6
-    t6=$(run_scoder -q --allow-github /bin/bash -c 'touch .github/test && echo SUCCESS')
-    run_test "--allow-github makes .github dir writable" "${t6}" "SUCCESS"
+    t6=$(run_scoder -q /bin/bash -c 'touch .github/test && echo SUCCESS')
+    run_test "empty .agentreadonly makes .github dir writable" "${t6}" "SUCCESS"
 
-    # Test 7: Network restriction
-    info "Test 7: Network restriction (--no-net)"
+    # Test 6:
+    # an empty .agentreadonly allows all directories writable, so we test by writing a temp
+    # file in the .github dir.
+    info "Test 7: allow github access with empty .agentreadonly"
     local t7
-    t7=$(run_scoder -q -n /bin/bash -c 'ping -c1 -W1 8.8.8.8 2>&1')
-    run_test "Network blocked" "${t7}" "Network is unreachable|Invalid argument|Operation not permitted"
+    t7=$(run_scoder -q /bin/bash -c -c 'echo "test" >> .agentreadonly 2>&1')
+    run_test ".agentreadonly is read-only" "${t7}" "Read-only|Permission denied|cannot"
 
     # Test 8: Git worktree was created (branch exists)
     info "Test 8: Worktree branch creation"
@@ -802,8 +764,6 @@ fi
 
 # ====== Apply tool preset ======
 
-TOOL_NET_DEFAULT="on"
-TOOL_ALLOW_GIT_DEFAULT=0
 TOOL_DESCRIPTION=""
 TOOL_BINDS=()
 TOOL_DIRS=()
@@ -813,10 +773,6 @@ case "${TOOL_NAME}" in
 opencode)
     HAS_PRESET=1
     preset_opencode
-    ;;
-gh)
-    HAS_PRESET=1
-    preset_gh
     ;;
 claude)
     HAS_PRESET=1
@@ -831,16 +787,6 @@ copilot)
     TOOL_DESCRIPTION="${TOOL_NAME}"
     ;;
 esac
-
-# Apply preset defaults (user flags override)
-if [[ "${NET_MODE_EXPLICIT}" -eq 0 ]]; then
-    # User didn't explicitly set --no-net, use preset default
-    NET_MODE="${TOOL_NET_DEFAULT}"
-fi
-
-if [[ "${ALLOW_GIT}" -eq -1 ]]; then
-    ALLOW_GIT="${TOOL_ALLOW_GIT_DEFAULT}"
-fi
 
 # Resolve tool binary
 TOOL_BIN=""
@@ -884,38 +830,36 @@ SCODER_PROJ_DIR="$SCODER_HOME/$PROJ_DIR"
 SANDBOX_PATH="/usr/local/bin:/usr/local/sbin:/usr/bin:/usr/sbin:/bin:/sbin"
 EXTRA_BINDS=()
 
-# Host tools (if explicitly requested)
-if [[ "${ALLOW_HOST_TOOLS}" -eq 1 ]]; then
-    info "Binding host development tools (--allow-host-tools)"
+# Host tools
 
-    if [[ -d "${HOME}/.local/bin" ]]; then
-        EXTRA_BINDS+=(--ro-bind-try "${HOME}/.local/bin" "${SCODER_HOME}/.local/bin")
-        SANDBOX_PATH="${SANDBOX_PATH}:${SCODER_HOME}/.local/bin"
-    fi
-
-    # R
-    [[ -d "${HOME}/R" ]] && EXTRA_BINDS+=(--ro-bind "${HOME}/R" "${SCODER_HOME}/R")
-    [[ -e "${HOME}/.Rprofile" ]] && EXTRA_BINDS+=(--ro-bind "${HOME}/.Rprofile" "${SCODER_HOME}/.Rprofile")
-
-    # Java
-    [[ -d "${HOME}/.m2" ]] && EXTRA_BINDS+=(--ro-bind "${HOME}/.m2" "${SCODER_HOME}/.m2")
-
-    # Mise
-    [[ -d "${HOME}/.local/share/mise" ]] && EXTRA_BINDS+=(--ro-bind "${HOME}/.local/share/mise" "${SCODER_HOME}/.local/share/mise")
-    [[ -d "${HOME}/.config/mise" ]] && EXTRA_BINDS+=(--ro-bind "${HOME}/.config/mise" "${SCODER_HOME}/.config/mise")
-    [[ -d "${HOME}/.local/share/mise/shims" ]] && SANDBOX_PATH="${SANDBOX_PATH}:${SCODER_HOME}/.local/share/mise/shims"
-
-    # Rust
-    [[ -d "${HOME}/.rustup" ]] && EXTRA_BINDS+=(--ro-bind "${HOME}/.rustup" "${SCODER_HOME}/.rustup")
-    if [[ -d "${HOME}/.cargo/bin" ]]; then
-        EXTRA_BINDS+=(--ro-bind "${HOME}/.cargo/bin" "${SCODER_HOME}/.cargo/bin")
-        SANDBOX_PATH="${SANDBOX_PATH}:${SCODER_HOME}/.cargo/bin"
-    fi
-
-    # Config files
-    [[ -f "${HOME}/.npmrc" ]] && EXTRA_BINDS+=(--ro-bind "${HOME}/.npmrc" "${SCODER_HOME}/.npmrc")
-    [[ -f "${HOME}/.pypirc" ]] && EXTRA_BINDS+=(--ro-bind "${HOME}/.pypirc" "${SCODER_HOME}/.pypirc")
+if [[ -d "${HOME}/.local/bin" ]]; then
+    EXTRA_BINDS+=(--ro-bind "${HOME}/.local/bin" "${SCODER_HOME}/.local/bin")
+    SANDBOX_PATH="${SANDBOX_PATH}:${SCODER_HOME}/.local/bin"
 fi
+
+# R
+[[ -d "${HOME}/R" ]] && EXTRA_BINDS+=(--ro-bind "${HOME}/R" "${SCODER_HOME}/R")
+[[ -e "${HOME}/.Rprofile" ]] && EXTRA_BINDS+=(--ro-bind "${HOME}/.Rprofile" "${SCODER_HOME}/.Rprofile")
+
+# Java
+[[ -d "${HOME}/.m2" ]] && EXTRA_BINDS+=(--ro-bind "${HOME}/.m2" "${SCODER_HOME}/.m2")
+
+# Mise
+[[ -d "${HOME}/.local/share/mise" ]] && EXTRA_BINDS+=(--ro-bind "${HOME}/.local/share/mise" "${SCODER_HOME}/.local/share/mise")
+[[ -d "${HOME}/.config/mise" ]] && EXTRA_BINDS+=(--ro-bind "${HOME}/.config/mise" "${SCODER_HOME}/.config/mise")
+[[ -d "${HOME}/.local/share/mise/shims" ]] && SANDBOX_PATH="${SANDBOX_PATH}:${SCODER_HOME}/.local/share/mise/shims"
+
+# Rust
+[[ -d "${HOME}/.rustup" ]] && EXTRA_BINDS+=(--ro-bind "${HOME}/.rustup" "${SCODER_HOME}/.rustup")
+if [[ -d "${HOME}/.cargo/bin" ]]; then
+    EXTRA_BINDS+=(--ro-bind "${HOME}/.cargo/bin" "${SCODER_HOME}/.cargo/bin")
+    SANDBOX_PATH="${SANDBOX_PATH}:${SCODER_HOME}/.cargo/bin"
+fi
+
+# Config files
+[[ -f "${HOME}/.npmrc" ]] && EXTRA_BINDS+=(--ro-bind "${HOME}/.npmrc" "${SCODER_HOME}/.npmrc")
+[[ -f "${HOME}/.pypirc" ]] && EXTRA_BINDS+=(--ro-bind "${HOME}/.pypirc" "${SCODER_HOME}/.pypirc")
+
 
 # Worktree-local tool paths
 if [[ -d "${WORKTREE_DIR_REAL}/.venv/bin" ]]; then
@@ -930,61 +874,47 @@ fi
 
 # ====== Infrastructure Protection ======
 
-PROTECTED_DIRS=()
-PROTECTED_FILES=(".gitignore" "package-lock.json" "poetry.lock" "Cargo.lock" "pnpm-lock.yaml" "yarn.lock")
+# Defaults:
+PROTECTED=(".github/" ".opencode/" ".claude/" "opencode.json" ".gitignore" "package-lock.json" "poetry.lock" "Cargo.lock" "pnpm-lock.yaml" "yarn.lock" "mise.toml")
+if [[ -e "${WORKTREE_DIR_REAL}/.agentreadonly" ]]; then
+    # 2. Expand patterns correctly
+    # We use 'cd' inside the subshell so find's %P output is relative to that root.
+    readarray -t PROTECTED < <(
+        grep -vE '^\s*(#|$)' "${WORKTREE_DIR_REAL}/.agentreadonly" | while read -r line; do
+            # 1. Clean trailing slash from pattern
+            pattern="${line%/}"
+
+            # 2. Run find from within the directory
+            # Using "." as the search path and then filtering makes it robust
+            (cd "$WORKTREE_DIR_REAL" && eval "find \"$pattern\" -maxdepth 100 -prune 2>/dev/null")
+        done | sed 's|^\./||' | sort -u
+    )
+else
+    printf "%s\n" "${PROTECTED[@]}" > "${WORKTREE_DIR_REAL}/.agentreadonly"
+fi
 
 SAFE_BINDS=()
+SAFE_BINDS+=(--ro-bind "${WORKTREE_DIR_REAL}/.agentreadonly" "${SCODER_PROJ_DIR}/.agentreadonly")
 
-# .git in the worktree is a file (pointing back to main .git/worktrees/...).
-# We protect .git writes by controlling the main GIT_DIR bind below,
-# not by overlaying the worktree's .git file.
-if [[ "${ALLOW_GIT}" -eq 0 && "${ALLOW_INFRA}" -eq 0 ]]; then
-    # The worktree .git is a file, not a directory. We make the main
-    # .git dir read-only to protect git internals.
-    PROTECTED_DIRS+=(".github")
-fi
+# 3. Apply the binds
+for path in "${PROTECTED[@]}"; do
+    # Skip empty lines if any
+    path="${path%/}"
+    [[ -z "$path" ]] && continue
 
-if [[ "${ALLOW_INFRA}" -eq 0 ]]; then
-    for dir in "${PROTECTED_DIRS[@]}"; do
-        if [[ -d "${WORKTREE_DIR_REAL}/${dir}" ]]; then
-            SAFE_BINDS+=(--ro-bind "${WORKTREE_DIR_REAL}/${dir}" "${SCODER_PROJ_DIR}/${dir}")
-            info "Protecting ${dir}/ (read-only)"
-        fi
-    done
+    src="${WORKTREE_DIR_REAL}/${path}"
+    dest="${SCODER_PROJ_DIR}/${path}"
 
-    for file in "${PROTECTED_FILES[@]}"; do
-        if [[ -f "${WORKTREE_DIR_REAL}/${file}" ]]; then
-            SAFE_BINDS+=(--ro-bind "${WORKTREE_DIR_REAL}/${file}" "${SCODER_PROJ_DIR}/${file}")
-            info "Protecting ${file} (read-only)"
-        fi
-    done
-fi
-
-# ====== Network flags ======
-
-NET_FLAGS=()
-if [[ "${NET_MODE}" != "on" ]]; then
-    NET_FLAGS+=(--unshare-net)
-    info "Network: disabled"
-else
-    info "Network: enabled"
-fi
-
-# ====== FS bind mode ======
-
-if [[ "${FS_MODE}" = "ro" ]]; then
-    BIND_FLAG="--ro-bind"
-    info "Worktree: read-only"
-else
-    BIND_FLAG="--bind"
-    info "Worktree: read-write"
-fi
+    if [[ -e "$src" ]]; then
+        SAFE_BINDS+=(--ro-bind "$src" "$dest")
+        info "Protecting ${path} (read-only)"
+    fi
+done
 
 # ====== Build bwrap command ======
 
 BWRAP_CMD=(
     bwrap
-
     # System mounts (read-only)
     --ro-bind /usr /usr
     --ro-bind /bin /bin
@@ -999,18 +929,22 @@ BWRAP_CMD=(
 BWRAP_CMD+=(--ro-bind /etc /etc)
 
 # Device access
-if [[ "${RESTRICT_DEV}" -eq 1 ]]; then
-    BWRAP_CMD+=(
-        --dev-bind /dev/null /dev/null
-        --dev-bind /dev/zero /dev/zero
-        --dev-bind /dev/random /dev/random
-        --dev-bind /dev/urandom /dev/urandom
-        --dev-bind /dev/tty /dev/tty
-        --tmpfs /dev/shm
-    )
-else
-    BWRAP_CMD+=(--dev /dev)
-fi
+# if [[ "${RESTRICT_DEV}" -eq 1 ]]; then
+BWRAP_CMD+=(
+#     --dev-bind /dev/null /dev/null
+#     --dev-bind /dev/zero /dev/zero
+#     --dev-bind /dev/random /dev/random
+#     --dev-bind /dev/urandom /dev/urandom
+#     --dev-bind /dev/tty /dev/tty
+#     --dev-bind /dev/ptmx /dev/ptmx
+#     --dev-bind /dev/pts /dev/pts
+#     --dev-bind /dev/fd /dev/fd
+    --dev-bind /dev /dev
+    --tmpfs /dev/shm
+)
+# else
+#    BWRAP_CMD+=(--dev /dev)
+# fi
 
 BWRAP_CMD+=(
     --proc /proc
@@ -1042,7 +976,7 @@ if [[ ${#EXTRA_BINDS[@]} -gt 0 ]]; then
 fi
 
 # Worktree directory (at its real path)
-BWRAP_CMD+=("${BIND_FLAG}" "${WORKTREE_DIR_REAL}" "${SCODER_PROJ_DIR}")
+BWRAP_CMD+=(--bind "${WORKTREE_DIR_REAL}" "${SCODER_PROJ_DIR}")
 
 # Protected infra overlays (must come AFTER the worktree bind to overlay)
 if [[ ${#SAFE_BINDS[@]} -gt 0 ]]; then
@@ -1051,20 +985,11 @@ fi
 
 # Git directory: the worktree's .git file points to GIT_DIR/worktrees/<name>
 # which in turn references back. Both must be accessible at real paths.
-# The main .git dir is writable or read-only depending on --allow-git.
-if [[ "${ALLOW_GIT}" -eq 1 || "${ALLOW_INFRA}" -eq 1 ]]; then
-    BWRAP_CMD+=(--bind "${GIT_DIR}" "${GIT_DIR}")
-else
-    BWRAP_CMD+=(--ro-bind "${GIT_DIR}" "${GIT_DIR}")
-fi
+# The worktree must be able to write to it to persist changes back to the branch
+BWRAP_CMD+=(--bind "${GIT_DIR}" "${GIT_DIR}")
 
 # Working directory
 BWRAP_CMD+=(--chdir "${SCODER_PROJ_DIR}")
-
-# Network
-if [[ ${#NET_FLAGS[@]} -gt 0 ]]; then
-    BWRAP_CMD+=("${NET_FLAGS[@]}")
-fi
 
 # Isolation + environment
 BWRAP_CMD+=(
@@ -1080,10 +1005,27 @@ BWRAP_CMD+=(
 )
 
 # Pass through common env vars tools may need
-[[ -n "${EDITOR:-}" ]] && BWRAP_CMD+=(--setenv EDITOR "${EDITOR}")
-[[ -n "${VISUAL:-}" ]] && BWRAP_CMD+=(--setenv VISUAL "${VISUAL}")
-[[ -n "${NO_COLOR:-}" ]] && BWRAP_CMD+=(--setenv NO_COLOR "${NO_COLOR}")
-[[ -n "${FORCE_COLOR:-}" ]] && BWRAP_CMD+=(--setenv FORCE_COLOR "${FORCE_COLOR}")
+# Maybe these: https://opencode.ai/docs/cli/#environment-variables
+# and these: https://code.claude.com/docs/en/env-vars
+# and these: https://git-scm.com/book/en/v2/Git-Internals-Environment-Variables
+# maybe these: https://cli.github.com/manual/gh_help_environment
+# ones that change the config directories are going to be super hard and maybe we shoudl be picking up
+# at the bind stage.
+#
+# COPILOT_HOME?
+
+PASS=("EDITOR" "VISUAL" "NO_COLOR" "FORCE_COLOR" "OPENROUTER_API_KEY" "ANTHROPIC_BASE_URL" "ANTHROPIC_AUTH_TOKEN"
+"ANTHROPIC_API_KEY")
+for v in "${PASS[@]}"; do
+    if [[ -v "$v" && -n "${!v}" ]]; then
+        BWRAP_CMD+=(--setenv "${v}" "${!v}")
+    fi
+done
+
+# [[ -n "${EDITOR:-}" ]] && BWRAP_CMD+=(--setenv EDITOR "${EDITOR}")
+# [[ -n "${VISUAL:-}" ]] && BWRAP_CMD+=(--setenv VISUAL "${VISUAL}")
+# [[ -n "${NO_COLOR:-}" ]] && BWRAP_CMD+=(--setenv NO_COLOR "${NO_COLOR}")
+# [[ -n "${FORCE_COLOR:-}" ]] && BWRAP_CMD+=(--setenv FORCE_COLOR "${FORCE_COLOR}")
 
 # GIT_WORK_TREE is intentionally NOT set — the worktree's .git file
 # already tells git where to find the repository. Setting GIT_WORK_TREE
@@ -1113,10 +1055,14 @@ if [[ "${DRY_RUN}" -eq 1 ]]; then
     exit 0
 fi
 
+
+
 if [[ -n "${TOOL_DESCRIPTION}" ]]; then
     info "Launching ${TOOL_DESCRIPTION} in sandbox..."
 else
     info "Launching ${TOOL_NAME} in sandbox..."
 fi
+info "Agent working files can be found at:   ${WORKTREE_DIR_REAL}"
+info "and interim commits viewed with:       git diff main..${WORKTREE_BRANCH}"
 
 "${BWRAP_CMD[@]}"

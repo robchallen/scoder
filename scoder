@@ -93,7 +93,7 @@ Examples:
 
 Scoder looks for a .agentreadonly file in the repository root, with a .gitignore syntax
 Protected (read-only by default):
-  .github/, .opencode/, opencode.json, .claude/, .gitignore, lockfiles (package-lock.json, mise.toml, etc.),
+  .github/, opencode.json, .claude/, .gitignore, lockfiles (package-lock.json, mise.toml, etc.),
 
 Host tool binds (read-only, when the paths exist):
   ~/R, ~/.Rprofile        R user library and profile (enables R MCP servers)
@@ -281,6 +281,7 @@ preset_opencode_config_binds() {
     mkdir -p "${cache_dir}"
     TOOL_DIRS+=("${sand_home}/.cache/opencode")
     TOOL_BINDS+=(--bind "${cache_dir}" "${sand_home}/.cache/opencode")
+
 }
 
 preset_opencode_validate() {
@@ -844,6 +845,11 @@ if [[ -d "${HOME}/.local/bin" ]]; then
     SANDBOX_PATH="${SANDBOX_PATH}:${SCODER_HOME}/.local/bin"
 fi
 
+# if [[ -d "${HOME}/.bun/bin" ]]; then
+#     EXTRA_BINDS+=(--ro-bind "${HOME}/.bun/bin" "${SCODER_HOME}/.bun/bin")
+#     SANDBOX_PATH="${SANDBOX_PATH}:${SCODER_HOME}/.bun/bin"
+# fi
+
 # R
 [[ -d "${HOME}/R" ]] && EXTRA_BINDS+=(--ro-bind "${HOME}/R" "${SCODER_HOME}/R")
 [[ -e "${HOME}/.Rprofile" ]] && EXTRA_BINDS+=(--ro-bind "${HOME}/.Rprofile" "${SCODER_HOME}/.Rprofile")
@@ -882,7 +888,7 @@ fi
 # ====== Infrastructure Protection ======
 
 # Defaults:
-PROTECTED=(".github/" ".opencode/" ".claude/" "opencode.json" ".gitignore" "package-lock.json" "poetry.lock" "Cargo.lock" "pnpm-lock.yaml" "yarn.lock" "mise.toml")
+PROTECTED=(".github/" ".claude/" "opencode.json" ".gitignore" "package-lock.json" "poetry.lock" "Cargo.lock" "pnpm-lock.yaml" "yarn.lock" "mise.toml")
 if [[ -e "${WORKTREE_DIR_REAL}/.agentreadonly" ]]; then
     # 2. Expand patterns correctly
     # We use 'cd' inside the subshell so find's %P output is relative to that root.
@@ -926,6 +932,9 @@ BWRAP_CMD=(
     --ro-bind /usr /usr
     --ro-bind /bin /bin
     --ro-bind /lib /lib
+    --unshare-user
+    --uid "$(id -u)"
+    --gid "$(id -g)"
 )
 
 [[ -d /lib64 ]] && BWRAP_CMD+=(--ro-bind /lib64 /lib64)

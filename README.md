@@ -41,7 +41,8 @@ on an isolated git branch via worktrees.
   - **Java/Maven**: `~/.m2` bound read-only
   - **Rust**: `~/.rustup` and `~/.cargo/bin` bound read-only
   - **mise**: `~/.local/share/mise` and `~/.config/mise` bound read-only
-- **Restricted device access** - Restrict /dev to essential devices only
+- **Full device access** — `/dev` is passed through from the host (full device
+  passthrough via `--dev-bind /dev /dev`; `/dev/shm` is a fresh tmpfs).
 
 ## Usage
 

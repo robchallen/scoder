@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
 # scoder - Sandboxed runner for coding tools using bubblewrap
-# Supports: opencode, gh, claude (and arbitrary commands)
+# Supports: opencode, claude, copilot (and arbitrary commands via generic sandbox)
 # License: MIT
 
 # ======== DEBUGGING ========
@@ -55,7 +55,6 @@ Usage:
 
 Supported tools (with built-in presets):
   opencode        OpenCode AI coding assistant
-  gh              GitHub CLI
   claude          Claude Code
   copilot         GitHub Copilot CLI
 
@@ -64,7 +63,6 @@ Any other command can be run by name (no preset, generic sandbox).
 Options:
   -h, --help              Show this help and exit
   -V, --version           Show version and exit
-  -n, --no-net            Disable network access inside the sandbox
   -q, --quiet             Suppress informational output
       --validate          Run comprehensive validation tests and exit
       --dry-run           Print the bwrap command without executing
@@ -74,11 +72,11 @@ Setup (run once, requires sudo):
                           Install AppArmor profile to allow bwrap to create
                           user namespaces (required on Ubuntu 24.04+)
   sudo scoder --install-dependencies
-                          uses apt to intall packages bubblewrap
+                          uses apt to install packages bubblewrap
 
 Git Worktree Lifecycle:
   scoder must be run inside a git repository. On startup it:
-    1. Creates a new branch: scoder/<tool>/<date>-<id>
+    1. Creates a new branch: scoder/<git-repo-name>
     2. Creates a git worktree in /tmp for isolation
     3. Runs the tool inside a bubblewrap sandbox on the worktree
   On exit:
@@ -88,9 +86,9 @@ Git Worktree Lifecycle:
 
 Examples:
   scoder opencode                 # sandbox opencode in $PWD
-  scoder gh pr list               # sandbox gh with network + git write
   scoder claude                   # sandbox claude code
-  scoder -n opencode              # opencode with no network
+  scoder copilot                  # sandbox GitHub Copilot CLI
+  scoder /bin/bash                # generic sandbox with a shell
   scoder --dry-run opencode       # show bwrap command without running
 
 Scoder looks for a .agentreadonly file in the repository root, with a .gitignore syntax
@@ -615,12 +613,6 @@ fi
 
 if ! command -v bwrap >/dev/null 2>&1; then
     error "bubblewrap (bwrap) not found in PATH"
-    error "run sudo scoder --install-dependencies"
-    exit 1
-fi
-
-if ! command -v bwrap >/dev/null 2>&1; then
-    error "fs-find (fsfind) not found in PATH"
     error "run sudo scoder --install-dependencies"
     exit 1
 fi

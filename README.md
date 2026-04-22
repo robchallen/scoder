@@ -34,7 +34,13 @@ on an isolated git branch via worktrees.
   are read-only by default. List can be modified with a `.agentreadonly` file in the repository
   root. (`.agentreadonly` is always protected)
 - **Tools** - executable directories and libraries are available read-only
-  for R, Java (maven), Rust, and mise-en-place.
+  for R, Java (maven), Rust, and mise-en-place. Specifically:
+  - **R**: `~/R` (user library) and `~/.Rprofile` are bound read-only, so
+    R processes started inside the sandbox — including R MCP servers configured
+    in the tool's config file — can access user-installed packages.
+  - **Java/Maven**: `~/.m2` bound read-only
+  - **Rust**: `~/.rustup` and `~/.cargo/bin` bound read-only
+  - **mise**: `~/.local/share/mise` and `~/.config/mise` bound read-only
 - **Restricted device access** - Restrict /dev to essential devices only
 
 ## Usage

@@ -96,6 +96,15 @@ Examples:
 Scoder looks for a .agentreadonly file in the repository root, with a .gitignore syntax
 Protected (read-only by default):
   .github/, .opencode/, opencode.json, .claude/, .gitignore, lockfiles (package-lock.json, mise.toml, etc.),
+
+Host tool binds (read-only, when the paths exist):
+  ~/R, ~/.Rprofile        R user library and profile (enables R MCP servers)
+  ~/.m2                   Java/Maven local repository
+  ~/.rustup, ~/.cargo/bin Rust toolchain and binaries
+  ~/.local/share/mise,
+  ~/.config/mise          mise-en-place tool manager
+  ~/.local/bin            User-installed binaries
+  ~/.npmrc, ~/.pypirc     Package manager credentials
 EOF
 }
 
@@ -355,6 +364,12 @@ preset_copilot_config_binds() {
     if [[ -d "${real_home}/.copilot" ]]; then
         TOOL_DIRS+=("${sand_home}/.copilot")
         TOOL_BINDS+=(--bind "${real_home}/.copilot" "${sand_home}/.copilot")
+    fi
+
+    # Copilot CLI's own config directory writeable for session state
+    if [[ -d "${real_home}/.cache/copilot" ]]; then
+        TOOL_DIRS+=("${sand_home}.cache/copilot")
+        TOOL_BINDS+=(--bind "${real_home}/.cache/copilot" "${sand_home}/.cache/copilot")
     fi
 
     # Copilot CLI stores session data / memories

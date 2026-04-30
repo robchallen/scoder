@@ -19,7 +19,9 @@ on an isolated git branch via worktrees.
 
 1. **Must be in a git repo.** `scoder` refuses to run outside one.
 2. Creates a new branch (`scoder/<git-repo-name>`) and a git worktree
-   in `/tmp/scoder/<git-repo-path>`. Your original checkout is untouched.
+   in `/tmp/scoder/<git-repo-path>`. If you launch `scoder` from that
+   existing scoder worktree, it reuses it instead of trying to create a new
+   one. Your original checkout is untouched.
 3. Launches the tool inside a bubblewrap sandbox operating on the worktree.
    Paths inside the sandbox mirror real absolute paths.
 4. On exit, prints a summary of changes and how to merge or discard.
@@ -30,9 +32,15 @@ on an isolated git branch via worktrees.
   real home.
 - **System read-only** — `/usr`, `/bin`, `/lib`, `/etc` are read-only.
 - **Protected infrastructure** — `.github/`, `.opencode/`, `.claude/`, `opencode.json`,
-  `.gitignore`, `package-lock.json`, `poetry.lock`, `Cargo.lock`, `pnpm-lock.yaml`, `yarn.lock`, `mise.toml`
-  are read-only by default. List can be modified with a `.agentreadonly` file in the repository
-  root. (`.agentreadonly` is always protected)
+   `.gitignore`, `package-lock.json`, `poetry.lock`, `Cargo.lock`, `pnpm-lock.yaml`, `yarn.lock`, `mise.toml`
+   are read-only by default. List can be modified with a `.agentreadonly` file in the repository
+   root. (`.agentreadonly` is always protected)
+- **Agent skills snapshot** — `~/.agents` is copied at sandbox start and bound
+  read-only into the sandbox, so symlinked skills resolve as a stable snapshot
+  for the duration of the session.
+- **Sandbox AGENTS.md notice** — the repository `AGENTS.md` seen inside the
+  sandbox is overlaid with an extra scoder section so the agent knows it is
+  running in an isolated worktree with an ephemeral home.
 - **Tools** - executable directories and libraries are available read-only
   for R, Java (maven), Rust, and mise-en-place. Specifically:
   - **R**: `~/R` (user library) and `~/.Rprofile` are bound read-only, so
@@ -57,7 +65,7 @@ scoder opencode                   # sandbox opencode in current repo
 scoder claude                     # sandbox claude code
 scoder copilot                    # sandbox GitHub Copilot CLI
 scoder --dry-run opencode         # show bwrap command without running
-scoder --validate                 # run built-in validation tests
+./tests/validate.sh               # run the validation script directly
 ```
 
 ### Options
@@ -66,7 +74,6 @@ scoder --validate                 # run built-in validation tests
 -h, --help              Show help
 -V, --version           Show version
 -q, --quiet             Suppress informational output
-    --validate          Run validation tests and exit
     --dry-run           Print bwrap command without executing
 ```
 
@@ -81,6 +88,22 @@ Changes made during the session will be available at the `/tmp/scoder/<git-repo-
 but also committed to the local branch. From there it can be rebased or merged into
 your working branch. The emphemeral path will
 
+From inside the sandbox, if you need to pick up the latest changes from `main`,
+fetch and rebase or merge explicitly:
+
+```bash
+git fetch origin
+git rebase origin/main
+# or: git merge origin/main
+```
+
+This is more reliable than `git pull`, because the sandbox branch usually does
+not have an upstream configured for that purpose.
+
+From outside the sandbox, other sessions only see changes on the `scoder/*`
+branch after they have been committed. Uncommitted edits exist only in the
+worktree at `/tmp/scoder/<git-repo-path>`.
+
 When scoder exits it prints:
 
 ```
@@ -89,7 +112,8 @@ scoder: Branch: scoder/<git-repo-name>
 scoder: Worktree: /tmp/scoder/<git-repo-path>
 scoder: To review:  git log scoder/<git-repo-name>
 scoder: To merge:   git merge scoder/<git-repo-name>
-scoder: To rebase:  git rebase main scoder/<git-repo-name>
+scoder: To rebase:  git rebase scoder/<git-repo-name>
+scoder: View diff:  git diff scoder/<git-repo-name>
 scoder: To discard: git worktree remove /tmp/scoder/<git-repo-path> && git branch -D scoder/<git-repo-name>
 ```
 

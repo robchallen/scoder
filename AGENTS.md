@@ -4,14 +4,16 @@ Instructions for AI coding agents working in this repository.
 
 ## Project Overview
 
-scoder is a **single-file bash script** (~1070 lines) that sandboxes AI coding
+scoder is a **single-file bash script** (~1000 lines) that sandboxes AI coding
 tools (opencode, claude, copilot) using bubblewrap (bwrap) with git
 worktree isolation. There is no build system, no package manager, no compiled
-artifacts. The entire codebase is one executable script plus documentation.
+artifacts. The repo also includes a separate validation script under
+`tests/validate.sh`.
 
 ### Key Files
 
 - `scoder` — the entire application (bash script, `chmod +x`)
+- `tests/validate.sh` — developer-facing validation suite
 - `README.md` — user-facing documentation
 - `DESIGN.md` — architecture decisions, trade-offs, pitfalls — **keep in sync
   when making non-trivial changes**
@@ -19,8 +21,8 @@ artifacts. The entire codebase is one executable script plus documentation.
 ## Build / Test / Lint Commands
 
 ```bash
-# Run the built-in 8-test validation suite (requires bwrap installed + a git repo):
-./scoder --validate
+# Run the repo validation suite (requires bwrap installed):
+./tests/validate.sh
 
 # Dry-run to inspect the bwrap command for a specific tool:
 ./scoder --dry-run opencode
@@ -33,10 +35,9 @@ install -m 755 scoder ~/.local/bin/scoder
 shellcheck scoder
 ```
 
-There is no way to run a single test in isolation. The `--validate` suite runs
-all 8 tests sequentially from a temporary git repo it creates in `/tmp`. Tests
-are defined inside `run_validation()` (around line 623). To test a single
-aspect, run the script directly:
+The validation suite lives in `tests/validate.sh`. It creates temporary git
+repos under `/tmp` and cleans up their worktrees and branches on exit. To test
+a single aspect manually, run the script directly:
 
 ```bash
 # Example: test HOME isolation manually
@@ -87,6 +88,7 @@ Use single quotes only for literal strings (heredoc delimiters, grep patterns):
 
 ```bash
 cat <<'EOF'       # literal heredoc
+EOF
 grep -q 'pattern' # literal string
 ```
 
@@ -181,7 +183,7 @@ newtool)
 
 ```
 Option parsing  →  Early validation (bwrap exists, AppArmor)
-  →  Special modes exit early (--validate, --configure-apparmor)
+  →  Special modes exit early (--configure-apparmor)
   →  Tool preset selection + defaults merge (user flags override presets)
   →  Git worktree creation (branch + /tmp dir)
   →  EXIT trap registered

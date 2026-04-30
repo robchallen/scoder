@@ -100,7 +100,6 @@ itself is always protected.
 | Flag | Effect |
 |------|--------|
 | `--dry-run` | Print the full bwrap command without executing |
-| `--validate` | Run 8-test built-in validation suite against a temporary git repo |
 | `--configure-apparmor` | Install AppArmor profile for bwrap (Ubuntu 24.04+, requires sudo) |
 | `--install-dependencies` | Install `bubblewrap` via apt (requires sudo) |
 | `--quiet` / `-q` | Suppress informational output |
@@ -153,6 +152,5 @@ These are not commitments — they are recorded here to inform future decisions.
   configurable (e.g., additional API keys or tool-specific vars).
 
 ### Validation
-- **Real-tool integration tests** — extend `--validate` to optionally test
-  with an actual tool preset (e.g., `scoder --validate opencode`) rather than
-  only with `/bin/bash`.
+- **Real-tool integration tests** — extend `tests/validate.sh` to optionally
+  test with an actual tool preset rather than only with `/bin/bash`.

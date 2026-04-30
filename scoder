@@ -46,7 +46,6 @@ Options:
   -h, --help              Show this help and exit
   -V, --version           Show version and exit
   -q, --quiet             Suppress informational output
-      --validate          Run comprehensive validation tests and exit
       --dry-run           Print the bwrap command without executing
 
 Setup (run once, requires sudo):
@@ -176,7 +175,7 @@ PROFILE_EOF
         info "Verification passed — bwrap works for unprivileged users"
     else
         warning "Verification inconclusive: ${test_result}"
-        warning "Try running 'scoder --validate' as your normal user"
+        warning "Try running './tests/validate.sh' as your normal user"
     fi
 
     echo ""
@@ -381,6 +380,56 @@ WORKTREE_BRANCH=""
 WORKTREE_BASE_COMMIT=""
 GIT_DIR=""
 PROJ_DIR=""
+AGENTS_SNAPSHOT_DIR=""
+AGENTS_MD_OVERLAY_FILE=""
+
+setup_agents_snapshot() {
+    local agents_src="${HOME}/.agents"
+    if [[ ! -d "${agents_src}" ]]; then
+        return 0
+    fi
+
+    AGENTS_SNAPSHOT_DIR="$(mktemp -d /tmp/scoder-agents.XXXXXX)"
+    if ! cp -aL "${agents_src}/." "${AGENTS_SNAPSHOT_DIR}/"; then
+        error "Failed to snapshot ${agents_src}"
+        error "scoder copies ~/.agents at startup so symlinked skills resolve in the sandbox"
+        exit 1
+    fi
+
+    EXTRA_BINDS+=(--ro-bind "${AGENTS_SNAPSHOT_DIR}" "${SCODER_HOME}/.agents")
+    info "Snapshotting ${agents_src} to ${AGENTS_SNAPSHOT_DIR}"
+}
+
+setup_sandbox_agents_md_overlay() {
+    local agents_src="${WORKTREE_DIR_REAL}/AGENTS.md"
+
+    AGENTS_MD_OVERLAY_FILE="$(mktemp /tmp/scoder-agents-md.XXXXXX)"
+
+    if [[ -f "${agents_src}" ]]; then
+        if ! cat "${agents_src}" > "${AGENTS_MD_OVERLAY_FILE}"; then
+            error "Failed to snapshot ${agents_src}"
+            exit 1
+        fi
+        printf "\n" >> "${AGENTS_MD_OVERLAY_FILE}"
+    fi
+
+    if ! cat >> "${AGENTS_MD_OVERLAY_FILE}" <<'EOF'
+## scoder sandbox
+
+This section is injected by scoder inside the sandbox and is not part of the repository.
+
+- You are running inside a scoder sandbox.
+- Treat `/home/scoder` as an ephemeral sandbox home.
+- Treat this checkout as an isolated git worktree managed by scoder.
+EOF
+    then
+        error "Failed to write sandbox AGENTS.md overlay"
+        exit 1
+    fi
+
+    OVERLAY_BINDS+=(--ro-bind "${AGENTS_MD_OVERLAY_FILE}" "${SCODER_PROJ_DIR}/AGENTS.md")
+    info "Overlaying sandbox AGENTS.md"
+}
 
 setup_git_worktree() {
     # Verify we are in a git repo
@@ -390,9 +439,12 @@ setup_git_worktree() {
         exit 1
     fi
 
-    GIT_DIR="$(git rev-parse --absolute-git-dir)"
+    GIT_DIR="$(git rev-parse --path-format=absolute --git-common-dir)"
     local repo_root
     repo_root="$(git rev-parse --show-toplevel)"
+    local repo_root_real
+    repo_root_real="$(realpath "${repo_root}")"
+    local proj_name
     proj_name="$(basename "${repo_root}")"
 
     # Compute a safe relative path for use under /tmp/scoder and SCODER_HOME.
@@ -405,16 +457,33 @@ setup_git_worktree() {
         PROJ_DIR="${repo_root#/}"
     fi
 
-    # Check for uncommitted changes — warn but don't block
+    WORKTREE_BRANCH="scoder/${proj_name}"
+    local worktree_list
+    worktree_list="$(git worktree list --porcelain 2>/dev/null || true)"
+
+    # Reuse the current checkout when scoder is launched from its own worktree.
+    # This avoids blocking on the worktree's in-progress changes.
+    local current_branch
+    current_branch="$(git symbolic-ref --quiet --short HEAD 2>/dev/null || true)"
+    if [[ "${current_branch}" = "${WORKTREE_BRANCH}" ]]; then
+        local current_worktree_dir
+        current_worktree_dir="$(echo "${worktree_list}" | grep -B2 "^branch refs/heads/${WORKTREE_BRANCH}$" | head -1 | cut -d' ' -f2)"
+        if [[ -n "${current_worktree_dir}" && "$(realpath "${current_worktree_dir}")" = "${repo_root_real}" ]]; then
+            WORKTREE_DIR="${repo_root_real}"
+            WORKTREE_BASE_COMMIT="$(git rev-parse HEAD)"
+            info "Already in scoder worktree: ${WORKTREE_DIR}"
+            return 0
+        fi
+    fi
+
+    # Check for uncommitted changes before creating or switching to the shared worktree.
     if ! git diff-index --quiet HEAD -- 2>/dev/null; then
         error "You have uncommitted changes in your working tree"
         error "You must commit (or stash) them before running scoder"
         exit 1
     fi
 
-    WORKTREE_BRANCH="scoder/${proj_name}"
-
-    if ! git branch | grep "$WORKTREE_BRANCH" >/dev/null; then
+    if ! git branch --list "${WORKTREE_BRANCH}" | grep . >/dev/null; then
         # There is no branch named scoder/${proj_name}
 
         WORKTREE_DIR="/tmp/scoder/${PROJ_DIR}"
@@ -430,29 +499,30 @@ setup_git_worktree() {
 
         info "Worktree created successfully"
 
+        worktree_list="$(git worktree list --porcelain 2>/dev/null || true)"
     fi
 
-    if git worktree list --porcelain | grep  "^branch refs/heads/$WORKTREE_BRANCH" >/dev/null; then
+    if echo "${worktree_list}" | grep "^branch refs/heads/${WORKTREE_BRANCH}$" >/dev/null; then
 
         # It is a worktree: read the current directory associated with it.
-        WORKTREE_DIR="$(git worktree list --porcelain | grep -B2 "^branch refs/heads/$WORKTREE_BRANCH" | head -1 | cut -d' ' -f 2)"
+        WORKTREE_DIR="$(echo "${worktree_list}" | grep -B2 "^branch refs/heads/${WORKTREE_BRANCH}$" | head -1 | cut -d' ' -f2)"
 
     fi
 
-    if [ -z "$WORKTREE_DIR" ]; then
-        error "Branch $WORKTREE_BRANCH exists but is not a git worktree - you'll need to manually review it."
-        info "to review:   git diff main..$WORKTREE_BRANCH"
-        info "to delete:   git branch -D $WORKTREE_BRANCH"
+    if [[ -z "${WORKTREE_DIR}" ]]; then
+        error "Branch ${WORKTREE_BRANCH} exists but is not a git worktree - you'll need to manually review it."
+        info "to review:   git diff ${WORKTREE_BRANCH}"
+        info "to delete:   git branch -D ${WORKTREE_BRANCH}"
         exit 1
     fi
 
     # If a stale worktree with no files are listed then
-    if git worktree list --porcelain | grep -A1 "^branch refs/heads/$WORKTREE_BRANCH" | tail -1 | grep "prunable" >/dev/null; then
+    if echo "${worktree_list}" | grep -A1 "^branch refs/heads/${WORKTREE_BRANCH}$" | tail -1 | grep "prunable" >/dev/null; then
         # pruneable
         git worktree prune
-        error "Branch $WORKTREE_BRANCH exists but the worktree has gone - you need to manually review it."
-        info "to review:   git diff main..$WORKTREE_BRANCH"
-        info "to delete:   git branch -D $WORKTREE_BRANCH"
+        error "Branch ${WORKTREE_BRANCH} exists but the worktree has gone - you need to manually review it."
+        info "to review:   git diff ${WORKTREE_BRANCH}"
+        info "to delete:   git branch -D ${WORKTREE_BRANCH}"
         exit 1
     fi
 
@@ -470,51 +540,56 @@ cleanup_worktree_summary() {
 
     # reset
 
-    # If worktree was never created, nothing to summarize
-    if [[ -z "${WORKTREE_DIR}" || ! -d "${WORKTREE_DIR}" ]]; then
-        return "${exit_code}"
-    fi
+    if [[ -n "${WORKTREE_DIR}" && -d "${WORKTREE_DIR}" ]]; then
+        info "${TOOL_DESCRIPTION} session complete."
 
-    info "${TOOL_DESCRIPTION} session complete."
+        git -C "${WORKTREE_DIR}" add -A
+        git -C "${WORKTREE_DIR}" commit -m "Committing session by ${TOOL_DESCRIPTION}."
 
-    git -C "${WORKTREE_DIR}" add -A
-    git -C "${WORKTREE_DIR}" commit -m "Committing session by ${TOOL_DESCRIPTION}."
+        echo "" >&2
+        info_blue "====== Session Summary ======"
 
-    echo "" >&2
-    info_blue "====== Session Summary ======"
+        info_blue "Branch: ${WORKTREE_BRANCH}"
+        info_blue "Worktree: ${WORKTREE_DIR}"
 
-    info_blue "Branch: ${WORKTREE_BRANCH}"
-    info_blue "Worktree: ${WORKTREE_DIR}"
-
-    # Count commits on the branch since it was created
-    local commit_count=0
-    if [[ -n "${WORKTREE_BASE_COMMIT}" ]]; then
-        commit_count=$(git -C "${WORKTREE_DIR}" rev-list "${WORKTREE_BASE_COMMIT}..HEAD" --count 2>/dev/null || echo "0")
-    fi
-
-    if [[ "${commit_count}" -gt 0 ]]; then
-        info_blue "New commits: ${commit_count}"
-        # Show overall diff stat from base to branch tip
-        local stat_output
-        stat_output=$(git -C "${WORKTREE_DIR}" diff --stat "${WORKTREE_BASE_COMMIT}" HEAD 2>/dev/null || true)
-        if [[ -n "${stat_output}" ]]; then
-            info_blue "Changes since base:"
-            echo "${stat_output}" | while read -r line; do
-                info_blue "  ${line}"
-            done
+        # Count commits on the branch since it was created
+        local commit_count=0
+        if [[ -n "${WORKTREE_BASE_COMMIT}" ]]; then
+            commit_count=$(git -C "${WORKTREE_DIR}" rev-list "${WORKTREE_BASE_COMMIT}..HEAD" --count 2>/dev/null || echo "0")
         fi
+
+        if [[ "${commit_count}" -gt 0 ]]; then
+            info_blue "New commits: ${commit_count}"
+            # Show overall diff stat from base to branch tip
+            local stat_output
+            stat_output=$(git -C "${WORKTREE_DIR}" diff --stat "${WORKTREE_BASE_COMMIT}" HEAD 2>/dev/null || true)
+            if [[ -n "${stat_output}" ]]; then
+                info_blue "Changes since base:"
+                echo "${stat_output}" | while read -r line; do
+                    info_blue "  ${line}"
+                done
+            fi
+        fi
+
+        if [[ "${commit_count}" -eq 0 ]]; then
+            info_blue "No changes were made"
+        fi
+
+        echo "" >&2
+        info "To review:  git log ${WORKTREE_BRANCH}"
+        info "To merge:   git merge ${WORKTREE_BRANCH}"
+        info "To rebase:  git rebase ${WORKTREE_BRANCH}"
+        info "View diff:  git diff ${WORKTREE_BRANCH}"
+        info "To discard: git worktree remove ${WORKTREE_DIR} && git branch -D ${WORKTREE_BRANCH}"
     fi
 
-    if [[ "${commit_count}" -eq 0 ]]; then
-        info_blue "No changes were made"
+    if [[ -n "${AGENTS_SNAPSHOT_DIR}" && -d "${AGENTS_SNAPSHOT_DIR}" ]]; then
+        rm -rf "${AGENTS_SNAPSHOT_DIR}"
     fi
 
-    echo "" >&2
-    info "To review:  git log ${WORKTREE_BRANCH}"
-    info "To merge:   git merge ${WORKTREE_BRANCH}"
-    info "To rebase:  git rebase main ${WORKTREE_BRANCH}"
-    info "View diff:  git diff main..${WORKTREE_BRANCH}"
-    info "To discard: git worktree remove ${WORKTREE_DIR} && git branch -D ${WORKTREE_BRANCH}"
+    if [[ -n "${AGENTS_MD_OVERLAY_FILE}" && -e "${AGENTS_MD_OVERLAY_FILE}" ]]; then
+        rm -f "${AGENTS_MD_OVERLAY_FILE}"
+    fi
 
     return "${exit_code}"
 }
@@ -522,7 +597,6 @@ cleanup_worktree_summary() {
 # ====== Defaults ======
 
 QUIET=0
-VALIDATE_MODE=0
 CONFIGURE_APPARMOR=0
 INSTALL_DEPENDENCIES=0
 DRY_RUN=0
@@ -545,10 +619,6 @@ while [[ $# -gt 0 ]]; do
         ;;
     -q | --quiet)
         QUIET=1
-        shift
-        ;;
-    --validate)
-        VALIDATE_MODE=1
         shift
         ;;
     --configure-apparmor)
@@ -601,138 +671,6 @@ fi
 # ====== Check bwrap can actually work ======
 
 check_bwrap_userns
-
-# ====== Validation tests ======
-
-run_validation() {
-    local script_path
-    script_path="$(realpath "$0")"
-    local test_base="/tmp/scoder-validation-$$"
-    local test_repo="${test_base}/repo"
-    local failed=0
-    local passed=0
-
-    info "====== scoder validation tests ======"
-
-    # Set up a test git repo
-    mkdir -p "${test_repo}"
-    git -C "${test_repo}" init -q
-    git -C "${test_repo}" config user.email "test@scoder"
-    git -C "${test_repo}" config user.name "scoder-test"
-    echo "test" > "${test_repo}/file.txt"
-    mkdir -p "${test_repo}/.github"
-    echo "workflow" > "${test_repo}/.github/ci.yml"
-    echo "*.pyc" > "${test_repo}/.gitignore"
-    echo "{}" > "${test_repo}/package-lock.json"
-    git -C "${test_repo}" add -A
-    git -C "${test_repo}" commit -q -m "initial"
-
-    run_test() {
-        local name="$1"
-        local result="$2"
-        local expected="$3"
-
-        if echo "${result}" | grep -qE "${expected}"; then
-            echo "  PASS: ${name}"
-            passed=$((passed + 1))
-        else
-            echo "  FAIL: ${name}"
-            echo "    Expected pattern: ${expected}"
-            echo "    Got: ${result}"
-            failed=$((failed + 1))
-        fi
-    }
-
-    # Helper: run scoder from within the test repo
-    run_scoder() {
-        (cd "${test_repo}" && "${script_path}" "$@" 2>&1) || true
-    }
-
-    # Test 1: HOME isolation
-    echo ""
-    info "Test 1: HOME isolation"
-    local t1
-    t1=$(run_scoder -q /bin/bash -c 'echo $HOME')
-    run_test "HOME is ${SCODER_HOME}" "${t1}" "${SCODER_HOME}"
-
-    # Test 2: System files read-only
-    info "Test 2: System file protection"
-    local t2
-    t2=$(run_scoder -q /bin/bash -c 'touch /usr/bin/scoder-test 2>&1')
-    run_test "Cannot write to /usr" "${t2}" "Read-only|Permission denied|cannot touch"
-
-    # Test 3: Worktree is writable (default --rw)
-    info "Test 3: Worktree writability"
-    local t3
-    t3=$(run_scoder -q /bin/bash -c 'touch newfile.txt && echo SUCCESS')
-    run_test "Worktree writable" "${t3}" "SUCCESS"
-
-    # Test 4: .github protection (default)
-    info "Test 4: .github directory protection"
-    local t4
-    t4=$(run_scoder -q /bin/bash -c 'touch .github/test 2>&1')
-    run_test ".github is read-only" "${t4}" "Read-only|Permission denied|cannot touch"
-
-    # Test 5: .gitignore protection
-    info "Test 5: .gitignore file protection"
-    local t5
-    t5=$(run_scoder -q /bin/bash -c 'echo "test" >> .gitignore 2>&1')
-    run_test ".gitignore is read-only" "${t5}" "Read-only|Permission denied|cannot"
-
-    # Test 6:
-    # an empty .agentreadonly allows all directories writable, so we test by writing a temp
-    # file in the .github dir.
-    info "Test 6: allow github access with empty .agentreadonly"
-    touch "${test_repo}/.agentreadonly"
-    local t6
-    t6=$(run_scoder -q /bin/bash -c 'touch .github/test && echo SUCCESS')
-    run_test "empty .agentreadonly makes .github dir writable" "${t6}" "SUCCESS"
-
-    # Test 6:
-    # an empty .agentreadonly allows all directories writable, so we test by writing a temp
-    # file in the .github dir.
-    info "Test 7: allow github access with empty .agentreadonly"
-    local t7
-    t7=$(run_scoder -q /bin/bash -c -c 'echo "test" >> .agentreadonly 2>&1')
-    run_test ".agentreadonly is read-only" "${t7}" "Read-only|Permission denied|cannot"
-
-    # Test 8: Git worktree was created (branch exists)
-    info "Test 8: Worktree branch creation"
-    local branches
-    branches=$(git -C "${test_repo}" branch --list 'scoder/*' 2>/dev/null || true)
-    if [[ -n "${branches}" ]]; then
-        echo "  PASS: Worktree branch(es) created"
-        passed=$((passed + 1))
-    else
-        echo "  FAIL: No scoder/* branches found"
-        failed=$((failed + 1))
-    fi
-
-    # Cleanup: remove worktrees and branches
-    for wt in $(git -C "${test_repo}" worktree list --porcelain 2>/dev/null | grep "^worktree /tmp/scoder" | cut -d' ' -f2); do
-        git -C "${test_repo}" worktree remove --force "${wt}" 2>/dev/null || true
-    done
-    for br in $(git -C "${test_repo}" branch --list 'scoder/*' 2>/dev/null | tr -d ' *'); do
-        git -C "${test_repo}" branch -D "${br}" 2>/dev/null || true
-    done
-    rm -rf "${test_base}"
-
-    echo ""
-    if [[ "${failed}" -eq 0 ]]; then
-        info "All ${passed} tests passed"
-        return 0
-    else
-        error "${failed} test(s) failed, ${passed} passed"
-        return 1
-    fi
-}
-
-if [[ "${VALIDATE_MODE}" -eq 1 ]]; then
-    # For validation, we run tests from the test repo dir
-    # The tests themselves invoke scoder with /bin/bash
-    run_validation
-    exit $?
-fi
 
 # ====== Tool name required ======
 
@@ -810,6 +748,8 @@ SCODER_PROJ_DIR="$SCODER_HOME/$PROJ_DIR"
 
 SANDBOX_PATH="/usr/local/bin:/usr/local/sbin:/usr/bin:/usr/sbin:/bin:/sbin"
 EXTRA_BINDS=()
+OVERLAY_BINDS=()
+setup_sandbox_agents_md_overlay
 
 # Host tools
 
@@ -820,7 +760,7 @@ fi
 
 # Git config / agent skills standard location:
 [[ -d "${HOME}/.gitconfig" ]] && EXTRA_BINDS+=(--ro-bind "${HOME}/.gitconfig" "${SCODER_HOME}/.gitconfig")
-[[ -d "${HOME}/.agents" ]] && EXTRA_BINDS+=(--ro-bind "${HOME}/.agents" "${SCODER_HOME}/.agents")
+setup_agents_snapshot
 
 # R
 [[ -d "${HOME}/R" ]] && EXTRA_BINDS+=(--ro-bind "${HOME}/R" "${SCODER_HOME}/R")
@@ -954,6 +894,11 @@ fi
 # Worktree directory (at its real path)
 BWRAP_CMD+=(--bind "${WORKTREE_DIR_REAL}" "${SCODER_PROJ_DIR}")
 
+# Worktree overlays (must come AFTER the worktree bind to overlay)
+if [[ ${#OVERLAY_BINDS[@]} -gt 0 ]]; then
+    BWRAP_CMD+=("${OVERLAY_BINDS[@]}")
+fi
+
 # Protected infra overlays (must come AFTER the worktree bind to overlay)
 if [[ ${#SAFE_BINDS[@]} -gt 0 ]]; then
     BWRAP_CMD+=("${SAFE_BINDS[@]}")
@@ -1031,9 +976,9 @@ fi
 if [[ -n "${TOOL_DESCRIPTION}" ]]; then
     info "Launching ${TOOL_DESCRIPTION} in sandbox..."
 else
-    info "Launching ${TOOL_NAME} in sandbox..."
+info "Launching ${TOOL_NAME} in sandbox..."
 fi
 info "Agent working files can be found at:   ${WORKTREE_DIR_REAL}"
-info "and interim commits viewed with:       git diff main..${WORKTREE_BRANCH}"
+info "and interim commits viewed with:       git diff ${WORKTREE_BRANCH}"
 
 "${BWRAP_CMD[@]}"

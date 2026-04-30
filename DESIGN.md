@@ -60,7 +60,7 @@ The script is structured in sequential phases:
 ```
 Option parsing
   -> Early validation (bwrap exists, AppArmor check)
-  -> Special modes (--validate, --configure-apparmor) exit early
+  -> Special modes (--configure-apparmor) exit early
   -> Tool preset selection and defaults merging
   -> Git worktree creation (branch + /tmp directory)
   -> EXIT trap registered for session summary
@@ -114,6 +114,29 @@ The sandbox starts with `--clearenv` and explicitly sets:
 
 `GIT_WORK_TREE` is intentionally **not** set. See [Path Mirroring](#path-mirroring).
 
+### Agent Skills Snapshot
+
+`~/.agents` is not bound directly. Instead, scoder copies it with
+`cp -aL` to a temporary directory under `/tmp` and then bind-mounts that copy
+read-only into `/home/scoder/.agents`.
+
+This keeps agent skills usable when the host `~/.agents` tree contains
+symlinked skills or symlinked subdirectories. The trade-off is that the
+sandbox sees a startup-time snapshot rather than live updates made to
+`~/.agents` after the session begins.
+
+### Sandbox AGENTS.md Overlay
+
+The workspace `AGENTS.md` visible inside the sandbox is also overlaid from a
+temporary file under `/tmp`. scoder copies the repository `AGENTS.md` if one
+exists, appends a short section explaining that the agent is inside a scoder
+sandbox, and then bind-mounts that file read-only over `AGENTS.md` in the
+worktree.
+
+This keeps the repository copy untouched while giving the sandboxed agent
+environment-specific instructions. The overlay must be applied after the main
+worktree bind, just like the protected infrastructure read-only overlays.
+
 ---
 
 ## Git Worktree Lifecycle
@@ -132,7 +155,12 @@ path without cloning the entire repository. This gives us:
 ### Lifecycle
 
 1. **Create**: `git worktree add -b scoder/<git-repo-name> /tmp/scoder/<git-repo-path> HEAD`
-2. **Use**: the tool operates on the worktree. Commits go to the new branch.
+2. **Use**: the tool operates on the worktree. If scoder is started from that
+   worktree later, it reuses the current checkout instead of trying to set it
+   up again. Commits go to the same branch. If the sandbox needs the latest
+   changes from `main`, the intended flow is `git fetch origin` followed by
+   `git rebase origin/main` (or `git merge origin/main`) from inside the
+   sandbox worktree.
 3. **Exit**: the EXIT trap commits changes, prints a summary (commit count, diffstat)
    and leaves the worktree + branch for the user to review or merge.
 4. **Cleanup** (manual): `git worktree remove <path> && git branch -D <branch>`
@@ -144,10 +172,16 @@ Format: `scoder/<git-proj-name>`
 scoder sessions always take place in the same branch and will reuse the same worktree if
 it exists.
 
+Other checkouts only observe changes on that branch when commits are created.
+Uncommitted edits remain local to the `/tmp/scoder/...` worktree and are not
+visible through the branch ref alone.
+
 ### Uncommitted Changes Warning
 
 If the user has uncommitted changes in their working tree when starting
-scoder, we exit with error.
+scoder, we exit with error. The one exception is when the current checkout is
+already the repo's registered `scoder/<name>` worktree, in which case those
+in-progress changes are the session state we want to continue using.
 
 ---
 
@@ -380,12 +414,12 @@ installed on the development machine). They may need adjustment.
 
 ### Live Tool Testing
 
-The validation suite (`--validate`) uses `/bin/bash` as the sandboxed tool,
-which exercises the sandbox mechanics (HOME isolation, filesystem
-protection, network restriction, worktree creation). However, it does not
-test with real tools (opencode, gh, claude, copilot). Edge cases in how
-those tools interact with the sandbox (e.g., specific paths they try to
-write to, signals they handle) may surface during real use.
+The validation suite lives in `tests/validate.sh`. It uses `/bin/bash` as the
+sandboxed tool, which exercises the sandbox mechanics (HOME isolation,
+filesystem protection, worktree creation and worktree reuse). However, it does
+not test with real tools (opencode, gh, claude, copilot). Edge cases in how
+those tools interact with the sandbox (e.g., specific paths they try to write
+to, signals they handle) may surface during real use.
 
 ### Worktree Accumulation
 

@@ -99,28 +99,31 @@ When a task fails with a read-only error, first check whether the target is a
 protected path or a broken symlink rather than assuming the whole worktree is broken.
 `.agentreadonly` is a gitignore like file specifying places that the user does not want you to change.
 
-### 4. Update from upstream explicitly
+### 4. Update from local changes in main branch explicitly
 
 Inside the sandbox, do not assume `git pull` will bring in the latest `main`.
-The scoder branch may not have an upstream configured for that purpose.
+The scoder branch may not have an upstream configured for that purpose. The
+local code is where the relevant changes are.
 
 Prefer:
 
 ```bash
-git fetch origin
-git rebase origin/main
+git rebase main
 ```
 
 or:
 
 ```bash
-git fetch origin
-git merge origin/main
+git merge main
 ```
 
-Use this when the user asks to pick up the latest `main`, or when you discover
-that the branch you started from is behind upstream and the task depends on
-those changes.
+Use this when the user asks to pick up their latest local changes, or when you discover
+that the branch you started from is behind the worktree root branch and the task depends on
+those changes. **DO NOT** try and pull or merge from origin. You may have to manage merge conflicts.
+
+**GOTCHAS**: If the user changes a read only protected file, then a rebase or merge will fail as
+they are unable to update the sandbox copy (which will be read only). In this case the only
+real option is for the user to fix things outside the sandbox.
 
 ### 5. Treat commits as the visibility boundary
 
@@ -182,11 +185,6 @@ Before relying on this skill's assumptions, check:
 Check whether the target is a protected path like `.github/`, `.gitignore`, a
 lockfile, or `.agentreadonly`. That is different from the project worktree
 being non-writable.
-
-### The user expects `git pull` to update from `main`
-
-Explain that the scoder branch usually needs an explicit `git fetch origin`
-plus `git rebase origin/main` or `git merge origin/main`.
 
 ### The user can't see your changes
 

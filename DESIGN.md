@@ -35,7 +35,7 @@ to the codebase after time away.
 4. **Transparency** — the user should always know what happened. Print a
    session summary on exit with branch name, commit count, and merge/discard
    instructions.
-5. **Single-file script** — no dependencies beyond bash, bwrap, and git.
+5. **Single-file script** — no dependencies beyond bash, bwrap, pasta, and git.
 
 ### Non-Goals
 
@@ -59,7 +59,7 @@ The script is structured in sequential phases:
 
 ```
 Option parsing
-  -> Early validation (bwrap exists, AppArmor check)
+  -> Early validation (bwrap/pasta exist, AppArmor check)
   -> Special modes (--configure-apparmor) exit early
   -> Tool preset selection and defaults merging
   -> Git worktree creation (branch + /tmp directory)
@@ -67,7 +67,7 @@ Option parsing
   -> Tool-specific config bind-mount setup
   -> Infrastructure protection overlays
   -> bwrap command array construction
-  -> bwrap (in the shell process)
+  -> bwrap starts pasta, pasta starts the tool in a nested network namespace
 ```
 
 ---
@@ -89,6 +89,13 @@ filesystem view without requiring root. Key capabilities we use:
 - `--new-session` — new session ID (prevents signal leakage)
 - `--die-with-parent` — kill sandbox if parent dies
 - `--chdir` — set working directory
+
+### Why pasta
+
+`pasta` provides unprivileged outbound networking for a nested namespace
+without forcing the sandbox to share the host loopback interface. scoder uses
+it to keep completions/API traffic working while preventing direct connections
+to host-local TCP services on `127.0.0.1` and `::1`.
 
 ### Sandbox Shape
 
@@ -114,6 +121,25 @@ The sandbox starts with `--clearenv` and explicitly sets:
 
 `GIT_WORK_TREE` is intentionally **not** set. See [Path Mirroring](#path-mirroring).
 
+### Network Isolation
+
+The outer `bwrap` sandbox still shares the host network namespace, but the
+tool itself is started through `pasta` inside that filesystem sandbox. The
+tool therefore runs in a nested network namespace with outbound connectivity,
+while `pasta` is configured with `--tcp-ns none` and `--udp-ns none` so host
+localhost services are not forwarded into the sandbox by default.
+
+For host-local LLM servers such as Ollama, `--llm-port=<port>` injects a
+single TCP localhost forwarding rule via `pasta --tcp-ns <port>`, allowing
+access to that fixed port while keeping all other localhost destinations
+blocked.
+
+On systems using `systemd-resolved`, `/etc/resolv.conf` normally points at the
+host stub resolver on `127.0.0.53`, which would fail from the nested namespace.
+scoder therefore snapshots a non-loopback resolver config into the sandbox,
+preferring `/run/systemd/resolve/resolv.conf` when the host `resolv.conf` uses
+loopback nameservers.
+
 ### Agent Skills Snapshot
 
 `~/.agents` is not bound directly. Instead, scoder copies it with
@@ -136,6 +162,19 @@ worktree.
 This keeps the repository copy untouched while giving the sandboxed agent
 environment-specific instructions. The overlay must be applied after the main
 worktree bind, just like the protected infrastructure read-only overlays.
+
+### `.agentreadonly` HOME binds
+
+In addition to repository-relative protected paths, `.agentreadonly` also
+accepts bare entries beginning with literal `$HOME/`. These are interpreted as
+read-only reference directory binds from the host home into the sandbox's home,
+preserving the same relative path under `/home/scoder/`.
+
+For example, `$HOME/Git/other-project` is mounted read-only at
+`/home/scoder/Git/other-project`. The source must exist, must resolve within
+the real host home directory, and the mirrored sandbox destination must not
+overlap reserved paths such as the active project worktree or tool/config bind
+locations.
 
 ---
 

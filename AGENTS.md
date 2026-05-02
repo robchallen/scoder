@@ -5,9 +5,10 @@ Instructions for AI coding agents working in this repository.
 ## Project Overview
 
 scoder is a **single-file bash script** (~1000 lines) that sandboxes AI coding
-tools (opencode, claude, copilot) using bubblewrap (bwrap) with git
-worktree isolation. There is no build system, no package manager, no compiled
-artifacts. The repo also includes a separate validation script under
+tools (opencode, claude, copilot) using bubblewrap (bwrap) for filesystem
+isolation and `pasta` for network isolation, with git worktree isolation.
+There is no build system, no package manager, no compiled artifacts. The repo
+also includes a separate validation script under
 `tests/validate.sh`.
 
 ### Key Files
@@ -21,7 +22,7 @@ artifacts. The repo also includes a separate validation script under
 ## Build / Test / Lint Commands
 
 ```bash
-# Run the repo validation suite (requires bwrap installed):
+# Run the repo validation suite (requires bwrap and pasta installed):
 ./tests/validate.sh
 
 # Dry-run to inspect the bwrap command for a specific tool:
@@ -190,7 +191,7 @@ Option parsing  →  Early validation (bwrap exists, AppArmor)
   →  Tool config bind-mounts built
   →  Infrastructure protection overlays
   →  bwrap command array constructed
-  →  execute bwrap
+  →  bwrap launches pasta, which launches the tool in a network namespace
   →  EXIT trap triggers cleanup, which commits changes in worktree, and suggests next steps.
 ```
 

@@ -1,6 +1,6 @@
 # scoder
 
-Sandboxed runner for coding tools using bubblewrap (bwrap).
+Sandboxed runner for coding tools using bubblewrap (bwrap) and pasta.
 
 Runs AI coding assistants and developer tools inside a constrained
 environment so they cannot modify your host unexpectedly. Changes happen
@@ -24,7 +24,10 @@ on an isolated git branch via worktrees.
    one. Your original checkout is untouched.
 3. Launches the tool inside a bubblewrap sandbox operating on the worktree.
    Paths inside the sandbox mirror real absolute paths.
-4. On exit, prints a summary of changes and how to merge or discard.
+4. Starts the tool through `pasta`, which keeps outbound networking available
+   while blocking host localhost services such as `127.0.0.1`.
+   `--llm-port=<port>` forwards that one localhost TCP port into the sandbox.
+5. On exit, prints a summary of changes and how to merge or discard.
 
 ### Sandbox properties
 
@@ -51,6 +54,11 @@ on an isolated git branch via worktrees.
   - **mise**: `~/.local/share/mise` and `~/.config/mise` bound read-only
 - **Full device access** — `/dev` is passed through from the host (full device
   passthrough via `--dev-bind /dev /dev`; `/dev/shm` is a fresh tmpfs).
+- **Host localhost blocked** — tools run behind `pasta` with host localhost
+  forwarding disabled by default, so host-local TCP services are not reachable
+  from the sandbox while outbound networking stays available.
+- **Optional localhost LLM exemption** — `--llm-port=<port>` allows TCP access
+  to that one localhost port for cases such as a host-local Ollama instance.
 
 ## Usage
 
@@ -64,6 +72,7 @@ scoder [options] <tool> [tool-args...]
 scoder opencode                   # sandbox opencode in current repo
 scoder claude                     # sandbox claude code
 scoder copilot                    # sandbox GitHub Copilot CLI
+scoder --llm-port=11434 claude    # allow access to local Ollama
 scoder --dry-run opencode         # show bwrap command without running
 ./tests/validate.sh               # run the validation script directly
 ```
@@ -74,6 +83,7 @@ scoder --dry-run opencode         # show bwrap command without running
 -h, --help              Show help
 -V, --version           Show version
 -q, --quiet             Suppress informational output
+    --llm-port PORT     Allow localhost TCP access to this port
     --dry-run           Print bwrap command without executing
 ```
 
@@ -81,6 +91,12 @@ Protecting workspace infrastructure files or directories can be modified with a
 `.agentreadonly` directory which is formatted like a `.gitignore` file and defines
 what paths within the workspace an agent cannot modify, these can still be read.
 An empty file will make all workspace files writeable.
+
+Lines beginning with literal `$HOME/` are treated differently: they must point
+to an existing directory under the real host home directory, and scoder will
+bind that directory read-only into the sandbox at the matching mirrored path
+under `/home/scoder/`. For example, `$HOME/Git/other-project` becomes
+`/home/scoder/Git/other-project`.
 
 ## After a session
 
@@ -120,6 +136,7 @@ scoder: To discard: git worktree remove /tmp/scoder/<git-repo-path> && git branc
 ## Requirements
 
 - `bwrap` (bubblewrap)
+- `pasta` (usually provided by the `passt` package)
 - `git`
 - The tool you want to sandbox (e.g. `opencode`, `copilot`, `claude`)
 - Tool-specific prerequisites must already be set up (and installed globally):

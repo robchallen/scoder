@@ -65,13 +65,37 @@ Creates and commits an empty `.agentreadonly`, then tries to modify that file fr
 
 Expected result: the write fails because `.agentreadonly` is always mounted read-only.
 
-### 8. `worktree-branch-created`
+### 8. `agentreadonly-home-directory-readonly`
+
+Creates a fake home directory with a reference directory outside the repository,
+adds `$HOME/Git/other-project` to `.agentreadonly`, and runs `scoder` with that
+fake home.
+
+Expected result:
+
+- the sandbox can read `/home/scoder/Git/other-project/data.txt`
+- writes to that mirrored path fail because the bind is read-only
+
+This verifies that bare `$HOME/...` entries in `.agentreadonly` are treated as
+read-only host home directory binds mirrored under `/home/scoder/`.
+
+### 9. `agentreadonly-home-directory-must-exist`
+
+Creates a fake home directory without the referenced path, adds
+`$HOME/Git/missing-project` to `.agentreadonly`, and runs `scoder`.
+
+Expected result: `scoder` exits with an error explaining that the HOME bind
+must reference an existing directory.
+
+This verifies the validation guard for missing external reference directories.
+
+### 10. `worktree-branch-created`
 
 Runs `scoder` once, then checks the source repository for a `scoder/*` branch.
 
 Expected result: a `scoder/<repo-name>` branch exists, proving the worktree lifecycle was set up.
 
-### 9. `existing-scoder-worktree-reused`
+### 11. `existing-scoder-worktree-reused`
 
 Runs `scoder` once to create the worktree, writes an uncommitted file directly into that scoder worktree, then runs `scoder` again from inside that same worktree.
 
@@ -82,7 +106,7 @@ Expected result:
 
 This verifies the workflow fix where rerunning `scoder` from its own active worktree reuses that checkout instead of trying to create or switch worktrees again.
 
-### 10. `symlinked-agents-skills-available`
+### 12. `symlinked-agents-skills-available`
 
 Creates a fake home directory where `~/.agents/skills/linked-skill` is a
 symlink to a real skill directory elsewhere on the host, then runs `scoder`
@@ -94,3 +118,67 @@ Expected result: the skill file is present at
 This verifies that scoder snapshots `~/.agents` at startup with symlinks
 resolved, so agent skills remain available even when the host `.agents` tree
 contains symlinked entries.
+
+### 13. `sandbox-agents-md-overlay-visible`
+
+Creates a repository `AGENTS.md`, runs `scoder`, and checks the sandbox copy.
+
+Expected result:
+
+- the sandbox sees both the repository text and the injected `scoder sandbox`
+  notice
+- the host repository `AGENTS.md` is unchanged
+
+This verifies that scoder overlays `AGENTS.md` inside the sandbox without
+modifying the real repository file.
+
+### 14. `host-loopback-blocked`
+
+Starts a temporary HTTP server on the host bound to `127.0.0.1`, then runs
+`scoder` and tries to reach that server from inside the sandbox.
+
+Expected result: the request fails and the test sees `BLOCKED`.
+
+This verifies the loopback restriction added around the `pasta`-managed tool
+network namespace.
+
+### 15. `llm-port-allows-host-loopback`
+
+Starts a temporary HTTP server on the host bound to `127.0.0.1`, then runs
+`scoder --llm-port=<port>` and tries to reach that server from inside the
+sandbox.
+
+Expected result: the request succeeds and returns `SUCCESS`.
+
+This verifies that the optional localhost exemption is applied only when an
+explicit LLM port is configured.
+
+### 16. `dry-run-uses-pasta`
+
+Runs `scoder --dry-run /bin/true` and inspects the printed command line.
+
+Expected result: the dry-run output includes `pasta`.
+
+This verifies that scoder now launches tools through the `pasta` network layer.
+
+### 17. `outbound-dns-and-https-work`
+
+Runs `scoder` and, from inside the sandbox, uses Python's standard library to:
+
+1. resolve `example.com`
+2. fetch `https://example.com`
+
+Expected result: the command prints `SUCCESS`.
+
+This verifies that the nested tool namespace still has working outbound
+networking and DNS resolution after the loopback restrictions and
+`resolv.conf` overlay are applied.
+
+## Current network coverage
+
+The validation suite currently tests both sides of the network behavior:
+
+- host loopback access is blocked
+- a configured localhost LLM port can be reached
+- outbound DNS resolution works
+- outbound HTTPS egress works

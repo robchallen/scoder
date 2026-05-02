@@ -17,7 +17,7 @@ the author when prioritising improvements.
 | Ephemeral HOME | `/home/scoder` on tmpfs — wiped on exit |
 | Ephemeral `/tmp` | Fresh tmpfs per session |
 | Device access | Full `/dev` passthrough; `/dev/shm` replaced with fresh tmpfs |
-| Network | Full host network access (no restriction by default) |
+| Network | Outbound network via `pasta`; host localhost services blocked by default, optional `--llm-port` TCP exemption |
 | Working directory | Sandboxed tool lands in the project directory |
 
 ### Git Worktree Isolation
@@ -101,7 +101,7 @@ itself is always protected.
 |------|--------|
 | `--dry-run` | Print the full bwrap command without executing |
 | `--configure-apparmor` | Install AppArmor profile for bwrap (Ubuntu 24.04+, requires sudo) |
-| `--install-dependencies` | Install `bubblewrap` via apt (requires sudo) |
+| `--install-dependencies` | Install `bubblewrap` and `passt` via apt (requires sudo) |
 | `--quiet` / `-q` | Suppress informational output |
 
 ### AppArmor Compatibility
@@ -116,16 +116,7 @@ granting `userns` permission to bwrap.
 
 These are not commitments — they are recorded here to inform future decisions.
 
-### Network control
-- **`--no-net` flag** — pass `--unshare-net` to bwrap to disable network
-  access. Useful for offline coding tasks or tools that shouldn't phone home.
-  (Was documented in v2.0.0 but never implemented; option parser entry and
-  bwrap flag both missing.)
-
 ### Tool presets
-- **`gh` preset** — GitHub CLI has a predictable config path (`~/.config/gh`).
-  A preset would bind it read-only so `gh` commands work inside the sandbox
-  without needing the copilot preset.
 - **Additional AI tool presets** — as new AI coding assistants emerge, presets
   can be added following the three-function convention in `AGENTS.md`.
 
@@ -138,9 +129,6 @@ These are not commitments — they are recorded here to inform future decisions.
   adjust behaviour.
 
 ### Git lifecycle
-- **Branch-per-session option** — restore the original `scoder/<tool>/<date>-<hex>`
-  naming to isolate each run on its own branch, rather than reusing one branch
-  per project.
 - **Auto-cleanup on no changes** — optionally remove the worktree and branch if
   the session made no commits.
 

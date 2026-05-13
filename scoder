@@ -51,11 +51,13 @@ Supported tools (with built-in presets):
 Any other command can be run by name (no preset, generic sandbox).
 
 Options:
-  -h, --help              Show this help and exit
-  -V, --version           Show version and exit
-  -q, --quiet             Suppress informational output
-      --llm-port PORT     Allow localhost TCP access to this port
-      --dry-run           Print the bwrap command without executing
+   -h, --help              Show this help and exit
+   -V, --version           Show version and exit
+   -q, --quiet             Suppress informational output
+       --llm-port PORTS    Allow localhost TCP access to these comma-separated ports
+                            instead of the auto-detected default on 11434
+       --dry-run           Print the bwrap command without executing
+       --no-tree           Run without creating a git worktree (experimental)
 
 Setup (run once, requires sudo):
   sudo scoder --configure-apparmor
@@ -817,10 +819,14 @@ if ! command -v pasta >/dev/null 2>&1; then
 fi
 
 if [[ -n "${LLM_PORT}" ]]; then
-    if ! [[ "${LLM_PORT}" =~ ^[0-9]+$ ]] || [[ "${LLM_PORT}" -lt 1 || "${LLM_PORT}" -gt 65535 ]]; then
-        error "--llm-port must be an integer between 1 and 65535"
-        exit 1
-    fi
+    # Split by comma and validate each port
+    IFS=',' read -ra PORTS <<< "${LLM_PORT}"
+    for port in "${PORTS[@]}"; do
+        if ! [[ "${port}" =~ ^[0-9]+$ ]] || [[ "${port}" -lt 1 || "${port}" -gt 65535 ]]; then
+            error "--llm-port must be a comma-separated list of integers between 1 and 65535"
+            exit 1
+        fi
+    done
 fi
 
 # ====== AppArmor setup (early exit) ======
@@ -1131,9 +1137,16 @@ BWRAP_CMD+=(
     --tcp-ports none
     --udp-ports none
 )
+
+# Handle LLM port forwarding - support comma-separated list of ports
 if [[ -n "${LLM_PORT}" ]]; then
-    BWRAP_CMD+=(--tcp-ns "${LLM_PORT}")
+    # Split by comma and add each port with --tcp-ns
+    IFS=',' read -ra PORTS <<< "${LLM_PORT}"
+    for port in "${PORTS[@]}"; do
+        BWRAP_CMD+=(--tcp-ns "${port}")
+    done
 else
+    # Default behavior - block all TCP ports
     BWRAP_CMD+=(--tcp-ns none)
 fi
 BWRAP_CMD+=(

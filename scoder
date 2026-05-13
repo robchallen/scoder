@@ -44,9 +44,10 @@ Usage:
   scoder [options] <tool> [tool-args...]
 
 Supported tools (with built-in presets):
-  opencode        OpenCode AI coding assistant
-  claude          Claude Code
-  copilot         GitHub Copilot CLI
+   opencode        OpenCode AI coding assistant
+   claude          Claude Code
+   copilot         GitHub Copilot CLI
+   pi              Pi Coding Agent
 
 Any other command can be run by name (no preset, generic sandbox).
 
@@ -57,7 +58,6 @@ Options:
        --llm-port PORTS    Allow localhost TCP access to these comma-separated ports
                             instead of the auto-detected default on 11434
        --dry-run           Print the bwrap command without executing
-       --no-tree           Run without creating a git worktree (experimental)
 
 Setup (run once, requires sudo):
   sudo scoder --configure-apparmor
@@ -278,6 +278,76 @@ preset_opencode_config_binds() {
     mkdir -p "${cache_dir}"
     TOOL_DIRS+=("${sand_home}/.cache/opencode")
     TOOL_BINDS+=(--bind "${cache_dir}" "${sand_home}/.cache/opencode")
+}
+
+preset_opencode_validate() {
+    if ! command -v opencode >/dev/null 2>&1; then
+        error "opencode not found in PATH"
+        error "Install: https://opencode.ai"
+        return 1
+    fi
+    return 0
+}
+
+# ====== Pi coding agent =====
+
+preset_pi() {
+    TOOL_DESCRIPTION="Pi Coding Agent"
+}
+
+preset_pi_config_binds() {
+    local real_home="${HOME}"
+    local sand_home="${SCODER_HOME}"
+
+    # Config: ~/.pi/agent/ (read-only)
+    if [[ -d "${real_home}/.pi/agent" ]]; then
+        TOOL_DIRS+=("${sand_home}/.pi/agent")
+        TOOL_BINDS+=(--bind "${real_home}/.pi/agent" "${sand_home}/.pi/agent")
+    fi
+
+    # Data: ~/.local/share/pi/ (read-write for sessions, db, etc.)
+    local data_dir="${real_home}/.local/share/pi"
+    mkdir -p "${data_dir}"
+    TOOL_DIRS+=("${sand_home}/.local/share/pi")
+    TOOL_BINDS+=(--bind "${data_dir}" "${sand_home}/.local/share/pi")
+
+    # Cache: ~/.cache/pi/ (read-write)
+    local cache_dir="${real_home}/.cache/pi"
+    mkdir -p "${cache_dir}"
+    TOOL_DIRS+=("${sand_home}/.cache/pi")
+    TOOL_BINDS+=(--bind "${cache_dir}" "${sand_home}/.cache/pi")
+}
+
+preset_pi_validate() {
+    if ! command -v pi >/dev/null 2>&1; then
+        error "pi not found in PATH"
+        error "Install: https://pi.dev"
+        return 1
+    fi
+    return 0
+}
+
+preset_opencode_config_binds() {
+    local real_home="${HOME}"
+    local sand_home="${SCODER_HOME}"
+
+    # Config: ~/.config/opencode/ (read-only)
+    if [[ -d "${real_home}/.config/opencode" ]]; then
+        TOOL_DIRS+=("${sand_home}/.config/opencode")
+        TOOL_BINDS+=(--ro-bind "${real_home}/.config/opencode" "${sand_home}/.config/opencode")
+    fi
+
+    # Data: ~/.local/share/opencode/ (read-write for sessions, db, etc.)
+    local data_dir="${real_home}/.local/share/opencode"
+    mkdir -p "${data_dir}"
+    TOOL_DIRS+=("${sand_home}/.local/share/opencode")
+    TOOL_BINDS+=(--bind "${data_dir}" "${sand_home}/.local/share/opencode")
+
+    # Cache: ~/.cache/opencode/ (read-write)
+    local cache_dir="${real_home}/.cache/opencode"
+    mkdir -p "${cache_dir}"
+    TOOL_DIRS+=("${sand_home}/.cache/opencode")
+    TOOL_BINDS+=(--bind "${cache_dir}" "${sand_home}/.cache/opencode")
 
 }
 
@@ -396,6 +466,10 @@ WORKTREE_BRANCH=""
 WORKTREE_BASE_COMMIT=""
 GIT_DIR=""
 PROJ_DIR=""
+SOURCE_REPO_ROOT=""
+SOURCE_BRANCH=""
+SOURCE_HEAD=""
+SOURCE_REF_LABEL=""
 AGENTS_SNAPSHOT_DIR=""
 AGENTS_MD_OVERLAY_FILE=""
 SANDBOX_RESOLV_CONF_FILE=""
@@ -456,6 +530,91 @@ EOF
     info "Overlaying sandbox AGENTS.md"
 }
 
+clear_worktree_agents_md_skip_worktree() {
+    local worktree_dir="$1"
+
+    if ! git -C "${worktree_dir}" ls-files --error-unmatch -- AGENTS.md >/dev/null 2>&1; then
+        return 0
+    fi
+
+    if ! git -C "${worktree_dir}" update-index --no-skip-worktree -- AGENTS.md; then
+        error "Failed to clear AGENTS.md skip-worktree in ${worktree_dir}"
+        exit 1
+    fi
+}
+
+refresh_source_checkout_metadata() {
+    local repo_dir="$1"
+
+    SOURCE_HEAD="$(git -C "${repo_dir}" rev-parse HEAD)"
+    SOURCE_BRANCH="$(git -C "${repo_dir}" symbolic-ref --quiet --short HEAD 2>/dev/null || true)"
+    if [[ -n "${SOURCE_BRANCH}" ]]; then
+        SOURCE_REF_LABEL="${SOURCE_BRANCH}@${SOURCE_HEAD:0:12}"
+    else
+        SOURCE_REF_LABEL="HEAD@${SOURCE_HEAD:0:12}"
+    fi
+}
+
+prompt_commit_source_checkout_changes() {
+    local repo_dir="$1"
+
+    if [[ -z "$(git -C "${repo_dir}" status --porcelain 2>/dev/null)" ]]; then
+        return 0
+    fi
+
+    warning "You have uncommitted changes in your working tree"
+    printf "%s: Commit local changes before starting scoder? [y/N] " "${PROGRAM_NAME}" >&2
+
+    local reply=""
+    if ! IFS= read -r reply; then
+        echo "" >&2
+        error "You must commit (or stash) changes before running scoder"
+        exit 1
+    fi
+
+    case "${reply}" in
+    y | Y | yes | YES | Yes)
+        local commit_message=""
+        while true; do
+            printf "%s: Commit message: " "${PROGRAM_NAME}" >&2
+            if ! IFS= read -r commit_message; then
+                echo "" >&2
+                error "No commit message received"
+                exit 1
+            fi
+
+            if [[ -n "${commit_message}" ]]; then
+                break
+            fi
+
+            warning "Commit message cannot be empty"
+        done
+
+        if ! git -C "${repo_dir}" add -A; then
+            error "Failed to stage local changes"
+            exit 1
+        fi
+
+        local commit_output
+        if ! commit_output=$(git -C "${repo_dir}" commit -m "${commit_message}" 2>&1); then
+            error "Failed to commit local changes"
+            error "${commit_output}"
+            exit 1
+        fi
+        if [[ -n "${commit_output}" ]]; then
+            echo "${commit_output}" >&2
+        fi
+
+        refresh_source_checkout_metadata "${repo_dir}"
+        info "Committed local changes as ${SOURCE_REF_LABEL}"
+        ;;
+    *)
+        error "You must commit (or stash) changes before running scoder"
+        exit 1
+        ;;
+    esac
+}
+
 setup_sandbox_resolv_conf() {
     local resolv_src="/etc/resolv.conf"
 
@@ -492,6 +651,179 @@ paths_overlap() {
     local right="${2%/}"
 
     [[ "${left}" = "${right}" || "${left}" == "${right}"/* || "${right}" == "${left}"/* ]]
+}
+
+prompt_sync_existing_worktree() {
+    local worktree_dir="$1"
+
+    if git -C "${worktree_dir}" merge-base --is-ancestor "${SOURCE_HEAD}" HEAD >/dev/null 2>&1; then
+        return 0
+    fi
+
+    local source_ahead_count
+    source_ahead_count=$(git -C "${worktree_dir}" rev-list --count "HEAD..${SOURCE_HEAD}" 2>/dev/null || echo "0")
+    if [[ "${source_ahead_count}" -eq 0 ]]; then
+        return 0
+    fi
+
+    if [[ -n "$(git -C "${worktree_dir}" status --porcelain 2>/dev/null)" ]]; then
+        warning "Existing scoder worktree is behind ${SOURCE_REF_LABEL} but has uncommitted changes"
+        warning "Resolve or commit those changes in ${worktree_dir} before syncing it forward"
+        return 0
+    fi
+
+    warning "Existing scoder worktree is behind ${SOURCE_REF_LABEL} by ${source_ahead_count} commit(s)"
+    printf "%s: Merge %s into %s now? [y/N] " "${PROGRAM_NAME}" "${SOURCE_REF_LABEL}" "${WORKTREE_BRANCH}" >&2
+
+    local reply=""
+    if ! IFS= read -r reply; then
+        echo "" >&2
+        warning "No response received; continuing without syncing the worktree"
+        return 0
+    fi
+
+    case "${reply}" in
+    y | Y | yes | YES | Yes)
+        if [[ "${DRY_RUN}" -eq 1 ]]; then
+            info "Dry run — would merge ${SOURCE_REF_LABEL} into ${WORKTREE_BRANCH}"
+            return 0
+        fi
+
+        clear_worktree_agents_md_skip_worktree "${worktree_dir}"
+
+        local merge_output
+        if ! merge_output=$(git -C "${worktree_dir}" merge --no-edit "${SOURCE_HEAD}" 2>&1); then
+            error "Failed to merge ${SOURCE_REF_LABEL} into ${WORKTREE_BRANCH}"
+            error "${merge_output}"
+            exit 1
+        fi
+        info "Merged ${SOURCE_REF_LABEL} into ${WORKTREE_BRANCH}"
+        ;;
+    *)
+        info "Continuing without syncing ${WORKTREE_BRANCH}"
+        ;;
+    esac
+}
+
+show_post_session_commands() {
+    info "To review:  git log ${WORKTREE_BRANCH}"
+    info "To merge:   git merge ${WORKTREE_BRANCH}"
+    info "To rebase:  git rebase ${WORKTREE_BRANCH}"
+    if [[ -n "${WORKTREE_BASE_COMMIT}" ]]; then
+        info "View diff:  git diff ${WORKTREE_BASE_COMMIT}..${WORKTREE_BRANCH}"
+    else
+        info "View diff:  git diff ${WORKTREE_BRANCH}"
+    fi
+    info "To discard: git worktree remove ${WORKTREE_DIR} && git branch -D ${WORKTREE_BRANCH}"
+}
+
+detect_default_llm_port() {
+    if [[ -n "${LLM_PORT}" ]]; then
+        return 0
+    fi
+
+    local response=""
+    local line=""
+
+    if ! exec 3<>"/dev/tcp/127.0.0.1/11434" 2>/dev/null; then
+        return 0
+    fi
+
+    printf 'GET /v1/models HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n' >&3
+    while IFS= read -r -t 1 line <&3; do
+        response="${response}${line}"$'\n'
+    done
+    exec 3>&-
+    exec 3<&-
+
+    if [[ "${response}" == *"HTTP/"*" 200 "* ]]; then
+        LLM_PORT="11434"
+        info "Auto-detected local OpenAI-compatible API on 127.0.0.1:11434"
+    fi
+}
+
+run_post_session_menu() {
+    if [[ ! -t 0 || ! -t 1 || ! -t 2 ]]; then
+        show_post_session_commands
+        return 0
+    fi
+
+    local diff_ref="HEAD...${WORKTREE_BRANCH}"
+    if [[ -n "${WORKTREE_BASE_COMMIT}" ]]; then
+        diff_ref="${WORKTREE_BASE_COMMIT}..${WORKTREE_BRANCH}"
+    fi
+
+    local diff_ref_2="${WORKTREE_BRANCH}"
+
+    while true; do
+        echo "" >&2
+        echo -e "${BLUE}${PROGRAM_NAME}: Post-session actions:${NC}" >&2
+        echo -e "${BLUE}${PROGRAM_NAME}:   1. Review last 20 branch logs${NC}" >&2
+        echo -e "${BLUE}${PROGRAM_NAME}:   2. Merge ${WORKTREE_BRANCH} into current branch${NC}" >&2
+        echo -e "${BLUE}${PROGRAM_NAME}:   3. Rebase current branch onto ${WORKTREE_BRANCH}${NC}" >&2
+        echo -e "${BLUE}${PROGRAM_NAME}:   4. View changes made by agent${NC}" >&2
+        echo -e "${BLUE}${PROGRAM_NAME}:   5. View diff against current branch${NC}" >&2
+        echo -e "${BLUE}${PROGRAM_NAME}:   6. Discard worktree and delete branch${NC}" >&2
+        echo -e "${BLUE}${PROGRAM_NAME}:   q. Quit${NC}" >&2
+        printf "%s: Choose an action [1-6/q]: " "${PROGRAM_NAME}" >&2
+
+        local reply=""
+        if ! IFS= read -r reply; then
+            echo "" >&2
+            return 0
+        fi
+
+        local action_output=""
+        case "${reply}" in
+        1)
+            git -C "${SOURCE_REPO_ROOT}" --no-pager log --oneline --max-count=20 "${WORKTREE_BRANCH}"
+            ;;
+        2)
+            if ! action_output=$(git -C "${SOURCE_REPO_ROOT}" merge "${WORKTREE_BRANCH}" 2>&1); then
+                error "Failed to merge ${WORKTREE_BRANCH}"
+                error "${action_output}"
+            elif [[ -n "${action_output}" ]]; then
+                echo "${action_output}" >&2
+            fi
+            ;;
+        3)
+            if ! action_output=$(git -C "${SOURCE_REPO_ROOT}" rebase "${WORKTREE_BRANCH}" 2>&1); then
+                error "Failed to rebase onto ${WORKTREE_BRANCH}"
+                error "${action_output}"
+            elif [[ -n "${action_output}" ]]; then
+                echo "${action_output}" >&2
+            fi
+            ;;
+        4)
+            git -C "${SOURCE_REPO_ROOT}" --no-pager diff "${diff_ref}"
+            ;;
+        5)
+            git -C "${SOURCE_REPO_ROOT}" --no-pager diff "${diff_ref_2}"
+            ;;
+        6)
+            if ! action_output=$(git -C "${SOURCE_REPO_ROOT}" worktree remove "${WORKTREE_DIR}" 2>&1); then
+                error "Failed to remove worktree ${WORKTREE_DIR}"
+                error "${action_output}"
+                continue
+            fi
+            if ! action_output=$(git -C "${SOURCE_REPO_ROOT}" branch -D "${WORKTREE_BRANCH}" 2>&1); then
+                error "Removed worktree but failed to delete branch ${WORKTREE_BRANCH}"
+                error "${action_output}"
+                return 1
+            fi
+            if [[ -n "${action_output}" ]]; then
+                echo "${action_output}" >&2
+            fi
+            return 0
+            ;;
+        q | Q | quit | QUIT | Quit)
+            return 0
+            ;;
+        *)
+            warning "Unknown choice: ${reply}"
+            ;;
+        esac
+    done
 }
 
 add_scoder_dir_tree() {
@@ -578,6 +910,8 @@ setup_git_worktree() {
     repo_root="$(git rev-parse --show-toplevel)"
     local repo_root_real
     repo_root_real="$(realpath "${repo_root}")"
+    SOURCE_REPO_ROOT="${repo_root_real}"
+    refresh_source_checkout_metadata "${SOURCE_REPO_ROOT}"
     local proj_name
     proj_name="$(basename "${repo_root}")"
 
@@ -597,9 +931,7 @@ setup_git_worktree() {
 
     # Reuse the current checkout when scoder is launched from its own worktree.
     # This avoids blocking on the worktree's in-progress changes.
-    local current_branch
-    current_branch="$(git symbolic-ref --quiet --short HEAD 2>/dev/null || true)"
-    if [[ "${current_branch}" = "${WORKTREE_BRANCH}" ]]; then
+    if [[ "${SOURCE_BRANCH}" = "${WORKTREE_BRANCH}" ]]; then
         local current_worktree_dir
         current_worktree_dir="$(echo "${worktree_list}" | grep -B2 "^branch refs/heads/${WORKTREE_BRANCH}$" | head -1 | cut -d' ' -f2)"
         if [[ -n "${current_worktree_dir}" && "$(realpath "${current_worktree_dir}")" = "${repo_root_real}" ]]; then
@@ -610,12 +942,7 @@ setup_git_worktree() {
         fi
     fi
 
-    # Check for uncommitted changes before creating or switching to the shared worktree.
-    if ! git diff-index --quiet HEAD -- 2>/dev/null; then
-        error "You have uncommitted changes in your working tree"
-        error "You must commit (or stash) them before running scoder"
-        exit 1
-    fi
+    prompt_commit_source_checkout_changes "${SOURCE_REPO_ROOT}"
 
     if ! git branch --list "${WORKTREE_BRANCH}" | grep . >/dev/null; then
         # There is no branch named scoder/${proj_name}
@@ -659,6 +986,8 @@ setup_git_worktree() {
         info "to delete:   git branch -D ${WORKTREE_BRANCH}"
         exit 1
     fi
+
+    prompt_sync_existing_worktree "${WORKTREE_DIR}"
 
 
     # Record the base commit so we can compare against it later in the summary
@@ -709,12 +1038,7 @@ cleanup_worktree_summary() {
             info_blue "No changes were made"
         fi
 
-        echo "" >&2
-        info "To review:  git log ${WORKTREE_BRANCH}"
-        info "To merge:   git merge ${WORKTREE_BRANCH}"
-        info "To rebase:  git rebase ${WORKTREE_BRANCH}"
-        info "View diff:  git diff main..${WORKTREE_BRANCH}"
-        info "To discard: git worktree remove ${WORKTREE_DIR} && git branch -D ${WORKTREE_BRANCH}"
+        run_post_session_menu
     fi
 
     if [[ -n "${AGENTS_SNAPSHOT_DIR}" && -d "${AGENTS_SNAPSHOT_DIR}" ]]; then
@@ -818,6 +1142,8 @@ if ! command -v pasta >/dev/null 2>&1; then
     exit 1
 fi
 
+detect_default_llm_port
+
 if [[ -n "${LLM_PORT}" ]]; then
     # Split by comma and validate each port
     IFS=',' read -ra PORTS <<< "${LLM_PORT}"
@@ -868,6 +1194,10 @@ claude)
 copilot)
     HAS_PRESET=1
     preset_copilot
+    ;;
+pi)
+    HAS_PRESET=1
+    preset_pi
     ;;
 *)
     # No preset — generic sandbox
@@ -928,7 +1258,7 @@ if [[ -d "${HOME}/.local/bin" ]]; then
 fi
 
 # Git config / agent skills standard location:
-[[ -d "${HOME}/.gitconfig" ]] && EXTRA_BINDS+=(--ro-bind "${HOME}/.gitconfig" "${SCODER_HOME}/.gitconfig")
+[[ -e "${HOME}/.gitconfig" ]] && EXTRA_BINDS+=(--ro-bind "${HOME}/.gitconfig" "${SCODER_HOME}/.gitconfig")
 setup_agents_snapshot
 
 # R
@@ -1113,9 +1443,23 @@ BWRAP_CMD+=(
 # at the bind stage.
 #
 # COPILOT_HOME?
+# Pi Coding Agent environment variables: https://pi.dev/docs/latest/providers
 
 PASS=("EDITOR" "VISUAL" "NO_COLOR" "FORCE_COLOR" "OPENROUTER_API_KEY" "ANTHROPIC_BASE_URL" "ANTHROPIC_AUTH_TOKEN"
-"ANTHROPIC_API_KEY")
+"ANTHROPIC_API_KEY" "CLAUDE_MODEL" "COPILOT_PROVIDER_TYPE" "COPILOT_PROVIDER_BASE_URL" "COPILOT_PROVIDER_API_KEY" "COPILOT_MODEL"
+"OPENCODE_CONFIG" "OPENCODE_CONFIG_CONTENT"
+# Pi Coding Agent API keys
+"AZURE_OPENAI_API_KEY" "OPENAI_API_KEY" "DEEPSEEK_API_KEY" "GEMINI_API_KEY" "MISTRAL_API_KEY" "GROQ_API_KEY"
+"CEREBRAS_API_KEY" "CLOUDFLARE_API_KEY" "XAI_API_KEY" "OPENROUTER_API_KEY" "AI_GATEWAY_API_KEY" "ZAI_API_KEY"
+"OPENCODE_API_KEY" "HF_TOKEN" "FIREWORKS_API_KEY" "TOGETHER_API_KEY" "KIMI_API_KEY" "MINIMAX_API_KEY"
+"XIAOMI_API_KEY"
+# Pi Coding Agent cloud provider settings
+"AZURE_OPENAI_BASE_URL" "AZURE_OPENAI_RESOURCE_NAME" "AZURE_OPENAI_API_VERSION" "AZURE_OPENAI_DEPLOYMENT_NAME_MAP"
+"AWS_PROFILE" "AWS_ACCESS_KEY_ID" "AWS_SECRET_ACCESS_KEY" "AWS_BEARER_TOKEN_BEDROCK" "AWS_REGION"
+"GOOGLE_CLOUD_PROJECT" "GOOGLE_CLOUD_LOCATION" "GOOGLE_APPLICATION_CREDENTIALS"
+# Pi Coding Agent specific
+"PI_SKIP_VERSION_CHECK" "PI_OFFLINE"
+)
 for v in "${PASS[@]}"; do
     if [[ -v "$v" && -n "${!v}" ]]; then
         BWRAP_CMD+=(--setenv "${v}" "${!v}")

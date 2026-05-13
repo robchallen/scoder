@@ -327,39 +327,6 @@ preset_pi_validate() {
     return 0
 }
 
-preset_opencode_config_binds() {
-    local real_home="${HOME}"
-    local sand_home="${SCODER_HOME}"
-
-    # Config: ~/.config/opencode/ (read-only)
-    if [[ -d "${real_home}/.config/opencode" ]]; then
-        TOOL_DIRS+=("${sand_home}/.config/opencode")
-        TOOL_BINDS+=(--ro-bind "${real_home}/.config/opencode" "${sand_home}/.config/opencode")
-    fi
-
-    # Data: ~/.local/share/opencode/ (read-write for sessions, db, etc.)
-    local data_dir="${real_home}/.local/share/opencode"
-    mkdir -p "${data_dir}"
-    TOOL_DIRS+=("${sand_home}/.local/share/opencode")
-    TOOL_BINDS+=(--bind "${data_dir}" "${sand_home}/.local/share/opencode")
-
-    # Cache: ~/.cache/opencode/ (read-write)
-    local cache_dir="${real_home}/.cache/opencode"
-    mkdir -p "${cache_dir}"
-    TOOL_DIRS+=("${sand_home}/.cache/opencode")
-    TOOL_BINDS+=(--bind "${cache_dir}" "${sand_home}/.cache/opencode")
-
-}
-
-preset_opencode_validate() {
-    if ! command -v opencode >/dev/null 2>&1; then
-        error "opencode not found in PATH"
-        error "Install: https://opencode.ai"
-        return 1
-    fi
-    return 0
-}
-
 # ====== Claude code =====
 
 preset_claude() {

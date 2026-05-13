@@ -417,7 +417,12 @@ setup_agents_snapshot() {
 
 setup_sandbox_agents_md_overlay() {
     local agents_src="${WORKTREE_DIR_REAL}/AGENTS.md"
-    git update-index --skip-worktree "${WORKTREE_DIR_REAL}/AGENTS.md"
+    if git -C "${WORKTREE_DIR_REAL}" ls-files --error-unmatch -- AGENTS.md >/dev/null 2>&1; then
+        if ! git -C "${WORKTREE_DIR_REAL}" update-index --skip-worktree -- AGENTS.md; then
+            error "Failed to mark AGENTS.md skip-worktree in ${WORKTREE_DIR_REAL}"
+            exit 1
+        fi
+    fi
 
     AGENTS_MD_OVERLAY_FILE="$(mktemp /tmp/scoder-agents-md.XXXXXX)"
 

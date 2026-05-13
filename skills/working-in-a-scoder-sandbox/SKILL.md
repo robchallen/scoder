@@ -1,6 +1,6 @@
 ---
 name: working-in-a-scoder-sandbox
-description: 'Use when the current git branch matches `scoder/*` or when the user tells you that you are in a scoder sandbox or scoder worktree. Use this if the user requests you update your copy of the code to incorporate changes from upstream and you detect you are in a sandbox. Use if you find that full paths that previously worked fail and your home directory is now `/home/scoder`. Do NOT use for generic Git advice outside scoder or for unrelated sandbox/container environments.'
+description: 'Use when the current git branch matches `scoder/*` or when the user tells you that you are in a scoder sandbox or scoder worktree. Use this if the user requests you update your copy of the code to incorporate changes from upstream and you detect you are in a sandbox. Use if you find that full paths that previously worked fail and your home directory is now `/home/scoder`. Use if you are unexpectedly unable to write to a configuration file in your home directory like AGENTS.md. Do NOT use for generic Git advice outside scoder or for unrelated sandbox/container environments.'
 license: MIT
 allowed-tools: Read Bash Grep Glob
 ---
@@ -34,6 +34,7 @@ Use this skill when:
 - you need to decide whether a file write is likely to succeed inside scoder
 - you need to bring upstream `main` changes into an in-progress sandbox session
 - you need to know whether another checkout can already see sandbox changes
+- file edits are failing and you are not sure why
 
 Do not use this skill for:
 
@@ -94,9 +95,11 @@ What is usually constrained:
 - writes to protected infra files such as `.github/`, `.gitignore`, lockfiles,
   and `.agentreadonly` unless the repository's `.agentreadonly` configuration
   has explicitly relaxed protection
+- writing to `AGENTS.md` is not possible.
 
 When a task fails with a read-only error, first check whether the target is a
 protected path or a broken symlink rather than assuming the whole worktree is broken.
+Abandon an edit and confer with the user if you get a read only error.
 `.agentreadonly` is a gitignore like file specifying places that the user does not want you to change.
 
 ### 4. Update from local changes in main branch explicitly
@@ -145,13 +148,13 @@ Inside scoder, committing is not just for final cleanup. It is also how you:
 - create safe restore points before riskier rebases or merges
 - allow the user to inspect branch state from another checkout
 
-Commit when:
+Commit often:
 
-- a coherent unit of work is complete
-- before asking the user to review results from another checkout
-- before rebasing or merging if you have important in-progress changes
+- After each round of changes is complete before you hand back to the user.
+- before asking the user to review results from another checkout.
+- before rebasing or merging if you have important in-progress changes.
 
-Avoid churning tiny commits for no reason, but do not hold critical progress
+Avoid churning tiny commits within one round of changes for no reason, but do not hold critical progress
 only in uncommitted work if the task is long-running.
 
 ## Guidance
@@ -183,7 +186,7 @@ Before relying on this skill's assumptions, check:
 ### A write failed with a read-only error
 
 Check whether the target is a protected path like `.github/`, `.gitignore`, a
-lockfile, or `.agentreadonly`. That is different from the project worktree
+lockfile, or `.agentreadonly`, or `AGENTS.md`. That is different from the project worktree
 being non-writable.
 
 ### The user can't see your changes

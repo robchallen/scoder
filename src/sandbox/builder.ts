@@ -1,5 +1,12 @@
 import { BindMount, GitWorktreeInfo, ScoderOptions } from "../types.ts";
 import { info } from "../utils/logger.ts";
+import {
+  setupProtection,
+  getAgentsMdOverlayBind,
+  setupAgentsSnapshot,
+  setupResolvConf,
+  ProtectionConfig,
+} from "../git/protection.ts";
 
 const SCODER_HOME = "/home/scoder";
 
@@ -10,13 +17,21 @@ export interface SandboxConfig {
   toolDirs: string[];
   toolBin: string;
   toolArgs: string[];
+  protectionConfig?: ProtectionConfig;
 }
 
 export async function buildBwrapCommand(
   config: SandboxConfig
 ): Promise<string[]> {
-  const { worktreeInfo, options, toolBinds, toolDirs, toolBin, toolArgs } =
-    config;
+  const {
+    worktreeInfo,
+    options,
+    toolBinds,
+    toolDirs,
+    toolBin,
+    toolArgs,
+    protectionConfig,
+  } = config;
 
   const realHome = process.env.HOME || "/home/user";
   const cmd: string[] = [
@@ -103,6 +118,12 @@ export async function buildBwrapCommand(
   if (worktreeInfo) {
     cmd.push("--bind", worktreeInfo.worktreeDir, sandboxProjDir);
     cmd.push("--bind", worktreeInfo.gitDir, worktreeInfo.gitDir);
+  }
+
+  if (protectionConfig) {
+    for (const bind of protectionConfig.safeBinds) {
+      cmd.push(`--${bind.type}`, bind.source, bind.dest);
+    }
   }
 
   const sandboxPath = await buildSandboxPath(worktreeInfo, SCODER_HOME);
@@ -285,6 +306,11 @@ async function buildExtraBinds(
 
   const miseShimsDir = `${realHome}/.local/share/mise/shims`;
   if (await dirExists(miseShimsDir)) {
+    binds.push({
+      type: "ro-bind",
+      source: miseShimsDir,
+      dest: `${sandboxHome}/.local/share/mise/shims`,
+    });
   }
 
   const rustupDir = `${realHome}/.rustup`;

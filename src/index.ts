@@ -13,9 +13,16 @@ import {
   commitAllChanges,
   getCommitCount,
   getDiffStat,
+  hasUncommittedChanges,
 } from "./git/worktree.ts";
 import { TOOL_PRESETS } from "./tools/presets.ts";
 import { buildBwrapCommand } from "./sandbox/builder.ts";
+import {
+  setupProtection,
+  getAgentsMdOverlayBind,
+  setupAgentsSnapshot,
+  setupResolvConf,
+} from "./git/protection.ts";
 import { GitWorktreeInfo, BindMount } from "./types.ts";
 
 const SCODER_HOME = "/home/scoder";
@@ -124,9 +131,65 @@ async function main(): Promise<void> {
   }
 
   let worktreeInfo: GitWorktreeInfo | null = null;
+  let protectionConfig = undefined;
 
   if (options.worktree) {
     worktreeInfo = await setupGitWorktree(true);
+
+    const sandboxProjDir = `${SCODER_HOME}/${worktreeInfo!.projDir}`;
+    protectionConfig = await setupProtection(
+      worktreeInfo!.worktreeDir,
+      sandboxProjDir
+    );
+
+    const agentsSnapshotBind = await setupAgentsSnapshot();
+    if (agentsSnapshotBind && protectionConfig) {
+      protectionConfig.safeBinds.push(agentsSnapshotBind);
+    }
+
+    const resolvConfBind = await setupResolvConf();
+    if (resolvConfBind && protectionConfig) {
+      protectionConfig.safeBinds.push(resolvConfBind);
+    }
+
+    if (
+      protectionConfig?.agentsMdOverlay &&
+      protectionConfig
+    ) {
+      const agentsMdBind = getAgentsMdOverlayBind(
+        protectionConfig.agentsMdOverlay,
+        sandboxProjDir
+      );
+      if (agentsMdBind) {
+        protectionConfig.safeBinds.push(agentsMdBind);
+      }
+    }
+  } else {
+    const cwd = process.cwd();
+    protectionConfig = await setupProtection(cwd, cwd);
+
+    const agentsSnapshotBind = await setupAgentsSnapshot();
+    if (agentsSnapshotBind && protectionConfig) {
+      protectionConfig.safeBinds.push(agentsSnapshotBind);
+    }
+
+    const resolvConfBind = await setupResolvConf();
+    if (resolvConfBind && protectionConfig) {
+      protectionConfig.safeBinds.push(resolvConfBind);
+    }
+
+    if (
+      protectionConfig?.agentsMdOverlay &&
+      protectionConfig
+    ) {
+      const agentsMdBind = getAgentsMdOverlayBind(
+        protectionConfig.agentsMdOverlay,
+        cwd
+      );
+      if (agentsMdBind) {
+        protectionConfig.safeBinds.push(agentsMdBind);
+      }
+    }
   }
 
   const config = {
@@ -136,6 +199,7 @@ async function main(): Promise<void> {
     toolDirs,
     toolBin,
     toolArgs,
+    protectionConfig,
   };
 
   const bwrapCmd = await buildBwrapCommand(config);
@@ -150,9 +214,12 @@ async function main(): Promise<void> {
 
   info(`Launching ${toolDescription} in sandbox...`);
 
-  if (worktreeInfo) {
+  if (options.worktree && worktreeInfo) {
     info(`Agent working files can be found at:   ${worktreeInfo.worktreeDir}`);
     info(`and interim commits viewed with:       git diff ${worktreeInfo.worktreeBranch}`);
+  } else if (!options.worktree) {
+    info(`Running in direct mode (no worktree isolation)`);
+    info(`Working directory: ${process.cwd()}`);
   }
 
   const proc = Bun.spawn(bwrapCmd, {
@@ -163,15 +230,30 @@ async function main(): Promise<void> {
 
   const exitCode = await proc.exited;
 
-  if (worktreeInfo) {
-    await printSessionSummary(worktreeInfo);
+  if (options.worktree && worktreeInfo && protectionConfig) {
+    await printSessionSummary(
+      worktreeInfo,
+      protectionConfig.agentsMdOverlay
+    );
+  } else if (!options.worktree && protectionConfig) {
+    if (protectionConfig.agentsMdOverlay) {
+      await Bun.write(protectionConfig.agentsMdOverlay, "");
+    }
+    info("Direct mode session complete (no git worktree changes to commit)");
   }
 
   process.exit(exitCode);
 }
 
-async function printSessionSummary(worktreeInfo: GitWorktreeInfo): Promise<void> {
+async function printSessionSummary(
+  worktreeInfo: GitWorktreeInfo,
+  agentsMdOverlay?: string
+): Promise<void> {
   try {
+    if (agentsMdOverlay) {
+      await Bun.write(agentsMdOverlay, "");
+    }
+
     await commitAllChanges("Committing session by scoder.");
 
     console.log("");

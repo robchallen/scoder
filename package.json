@@ -11,12 +11,14 @@
     "build": "bun build src/index.ts --target bun --compile --outfile dist/scoder",
     "dev": "bun run src/index.ts",
     "typecheck": "tsc --noEmit",
-    "test": "bun test"
+    "test": "bun test",
+    "test:coverage": "c8 --reporter=text --reporter=html --include='src/**/*.ts' bun run tests/validate.ts"
   },
   "keywords": ["sandbox", "bubblewrap", "git", "ai"],
   "license": "MIT",
   "devDependencies": {
     "@types/bun": "latest",
+    "c8": "^11.0.0",
     "typescript": "^5.0.0"
   }
 }

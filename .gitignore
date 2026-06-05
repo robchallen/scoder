@@ -1,0 +1,22 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+
+# Bun
+bun.lock
+.bun
+
+# TypeScript
+*.tsbuildinfo
+
+# Test artifacts
+test*.sh
+
+# Temporary files
+*.tmp
+*.log
+
+# Agent skills snapshot (runtime artifact)
+.agents/

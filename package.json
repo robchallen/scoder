@@ -1,0 +1,22 @@
+{
+  "name": "scoder",
+  "version": "2.1.0",
+  "description": "Sandboxed runner for coding tools using bubblewrap and pasta",
+  "type": "module",
+  "main": "src/index.ts",
+  "bin": {
+    "scoder": "./dist/scoder"
+  },
+  "scripts": {
+    "build": "bun build src/index.ts --target bun --compile --outfile dist/scoder",
+    "dev": "bun run src/index.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "bun test"
+  },
+  "keywords": ["sandbox", "bubblewrap", "git", "ai"],
+  "license": "MIT",
+  "devDependencies": {
+    "@types/bun": "latest",
+    "typescript": "^5.0.0"
+  }
+}

@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# Wrapper script to run scoder TypeScript version
+# This allows seamless transition and keeps the same invocation pattern
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+
+# Check if bun is available
+if command -v bun >/dev/null 2>&1; then
+  exec bun run "${SCRIPT_DIR}/src/index.ts" "$@"
+else
+  echo "Error: bun is required but not found in PATH" >&2
+  echo "Install bun: curl -fsSL https://bun.sh/install | bash" >&2
+  exit 1
+fi

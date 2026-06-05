@@ -127,7 +127,17 @@ Creates a repository `AGENTS.md`, runs `scoder`, and checks the sandbox copy.
 
 This verifies that scoder overlays `AGENTS.md` inside the sandbox without modifying the real repository file.
 
-### 14. `host-loopback-blocked`
+### 14. `agents-md-overlay-in-direct-mode`
+
+Creates a repository `AGENTS.md`, runs `scoder --no-worktree`, and checks the sandbox copy.
+
+**Expected result:**
+- the sandbox sees the `scoder sandbox` notice
+- the sandbox does **not** see worktree-specific messages ("isolated git worktree", "Commit after all changes")
+
+This verifies that the AGENTS.md overlay is conditional based on worktree vs direct mode.
+
+### 15. `host-loopback-blocked`
 
 Starts a temporary HTTP server on the host bound to `127.0.0.1`, then runs
 `scoder` and tries to reach that server from inside the sandbox.
@@ -137,7 +147,7 @@ Starts a temporary HTTP server on the host bound to `127.0.0.1`, then runs
 This verifies the loopback restriction added around the `pasta`-managed tool
 network namespace.
 
-### 15. `llm-port-allows-host-loopback`
+### 16. `llm-port-allows-host-loopback`
 
 Starts a temporary HTTP server on the host bound to `127.0.0.1`, then runs
 `scoder --llm-port=<port>` and tries to reach that server from inside the
@@ -148,7 +158,7 @@ sandbox.
 This verifies that the optional localhost exemption is applied only when an
 explicit LLM port is configured.
 
-### 16. `outbound-dns-works`
+### 17. `outbound-dns-works`
 
 Runs `scoder` and, from inside the sandbox, uses Python's standard library to resolve `example.com`.
 
@@ -156,7 +166,7 @@ Runs `scoder` and, from inside the sandbox, uses Python's standard library to re
 
 This verifies that the nested tool namespace has working DNS resolution.
 
-### 17. `dry-run-uses-pasta`
+### 18. `dry-run-uses-pasta`
 
 Runs `scoder --dry-run /bin/true` and inspects the printed command line.
 
@@ -164,7 +174,7 @@ Runs `scoder --dry-run /bin/true` and inspects the printed command line.
 
 This verifies that scoder launches tools through the `pasta` network layer.
 
-### 18. `no-worktree-mode`
+### 19. `no-worktree-mode`
 
 Runs `scoder --no-worktree --dry-run /bin/true` and checks:
 - the output mentions "direct mode"

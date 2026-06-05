@@ -26,6 +26,7 @@ const tests: TestCase[] = [
   { name: "existing-scoder-worktree-reused", fn: testExistingScoderWorktreeReused },
   { name: "symlinked-agents-skills-available", fn: testSymlinkedAgentsSkillsAvailable },
   { name: "sandbox-agents-md-overlay-visible", fn: testSandboxAgentsMdOverlayVisible },
+  { name: "agents-md-overlay-in-direct-mode", fn: testAgentsMdOverlayInDirectMode },
   { name: "host-loopback-blocked", fn: testHostLoopbackBlocked },
   { name: "llm-port-allows-host-loopback", fn: testLlmPortAllowsHostLoopback },
   { name: "outbound-dns-works", fn: testOutboundDnsWorks },
@@ -241,6 +242,35 @@ async function testSandboxAgentsMdOverlayVisible(): Promise<boolean> {
 
   const hostContent = await Bun.file(`${repoDir}/AGENTS.md`).text();
   return !hostContent.includes("scoder sandbox");
+}
+
+async function testAgentsMdOverlayInDirectMode(): Promise<boolean> {
+  const repoDir = await createTestRepo("agents-md-direct");
+  await $`echo "# Repo instructions" > ${repoDir}/AGENTS.md`;
+  await $`git -C ${repoDir} add -A`.quiet();
+  await $`git -C ${repoDir} commit -m "add agents instructions"`.quiet();
+
+  const output = await runScoder(repoDir, [
+    "-q",
+    "--no-worktree",
+    "/bin/bash",
+    "-c",
+    "grep -q 'scoder sandbox' AGENTS.md && grep -q 'ephemeral sandbox home' AGENTS.md && echo SUCCESS",
+  ]);
+
+  if (!output.includes("SUCCESS")) {
+    return false;
+  }
+
+  const output2 = await runScoder(repoDir, [
+    "-q",
+    "--no-worktree",
+    "/bin/bash",
+    "-c",
+    "grep -q 'isolated git worktree' AGENTS.md && echo 'HAS_WORKTREE_MSG' || echo 'NO_WORKTREE_MSG'",
+  ]);
+
+  return output2.includes("NO_WORKTREE_MSG");
 }
 
 async function testHostLoopbackBlocked(): Promise<boolean> {

@@ -1,5 +1,6 @@
 import { info, error, warning } from "../utils/logger.ts";
 import { BindMount } from "../types.ts";
+import { readdir, mkdir, stat, realpath as fsRealpath } from "node:fs/promises";
 
 const DEFAULT_PROTECTED = [
   ".github/",
@@ -294,6 +295,51 @@ export function getAgentsMdOverlayBind(
   };
 }
 
+async function safeCopyDirRecursive(
+  src: string,
+  dest: string,
+  visited: Set<string> = new Set()
+): Promise<void> {
+  let realSrc: string;
+  try {
+    realSrc = await fsRealpath(src);
+  } catch {
+    return;
+  }
+
+  if (visited.has(realSrc)) {
+    return;
+  }
+  visited.add(realSrc);
+
+  let srcStat;
+  try {
+    srcStat = await stat(realSrc);
+  } catch {
+    visited.delete(realSrc);
+    return;
+  }
+
+  if (srcStat.isDirectory()) {
+    await mkdir(dest, { recursive: true });
+    const entries = await readdir(realSrc, { withFileTypes: true });
+    for (const entry of entries) {
+      const entrySrc = `${realSrc}/${entry.name}`;
+      const entryDest = `${dest}/${entry.name}`;
+      await safeCopyDirRecursive(entrySrc, entryDest, visited);
+    }
+  } else if (srcStat.isFile()) {
+    const lastSlash = dest.lastIndexOf("/");
+    if (lastSlash !== -1) {
+      const parentDir = dest.slice(0, lastSlash);
+      await mkdir(parentDir, { recursive: true });
+    }
+    await Bun.write(dest, Bun.file(realSrc));
+  }
+
+  visited.delete(realSrc);
+}
+
 export async function setupAgentsSnapshot(): Promise<BindMount | null> {
   const agentsSrc = `${process.env.HOME}/.agents`;
 
@@ -303,18 +349,10 @@ export async function setupAgentsSnapshot(): Promise<BindMount | null> {
 
   const snapshotDir = await createTempDir("scoder-agents");
 
-  const cpProc = await Bun.spawn(
-    ["cp", "-aL", `${agentsSrc}/.`, snapshotDir],
-    {
-      stdout: "pipe",
-      stderr: "pipe",
-    }
-  );
-
-  await cpProc.exited;
-
-  if (cpProc.exitCode !== 0) {
-    error("Failed to snapshot ~/.agents");
+  try {
+    await safeCopyDirRecursive(agentsSrc, snapshotDir);
+  } catch (err) {
+    error(`Failed to snapshot ~/.agents: ${err}`);
     error("scoder copies ~/.agents at startup so symlinked skills resolve in the sandbox");
     process.exit(1);
   }

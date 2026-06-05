@@ -5,7 +5,7 @@
   "type": "module",
   "main": "src/index.ts",
   "bin": {
-    "scoder": "./dist/scoder"
+    "scoder": "./scoder"
   },
   "scripts": {
     "build": "bun build src/index.ts --target bun --compile --outfile dist/scoder",

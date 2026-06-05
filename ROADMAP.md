@@ -140,5 +140,5 @@ These are not commitments — they are recorded here to inform future decisions.
   configurable (e.g., additional API keys or tool-specific vars).
 
 ### Validation
-- **Real-tool integration tests** — extend `tests/validate.sh` to optionally
+- **Real-tool integration tests** — extend `tests/validate.ts` to optionally
   test with an actual tool preset rather than only with `/bin/bash`.

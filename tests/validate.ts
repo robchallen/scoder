@@ -70,13 +70,13 @@ async function main(): Promise<void> {
 
 async function testHomeIsolation(): Promise<boolean> {
   const repoDir = await createTestRepo("home-isolation");
-  const output = await runScoder(repoDir, ["-q", "/bin/bash", "-c", "printf '%s\n' $HOME"]);
+  const output = await runScoder(repoDir, ["-q", "-w", "/bin/bash", "-c", "printf '%s\n' $HOME"]);
   return output.includes(SCODER_HOME);
 }
 
 async function testSystemReadOnly(): Promise<boolean> {
   const repoDir = await createTestRepo("system-readonly");
-  const output = await runScoder(repoDir, ["-q", "/bin/bash", "-c", "touch /usr/bin/scoder-test 2>&1 || true"]);
+  const output = await runScoder(repoDir, ["-q", "-w", "/bin/bash", "-c", "touch /usr/bin/scoder-test 2>&1 || true"]);
   return (
     output.includes("Read-only") ||
     output.includes("Permission denied") ||
@@ -86,13 +86,13 @@ async function testSystemReadOnly(): Promise<boolean> {
 
 async function testWorktreeWritable(): Promise<boolean> {
   const repoDir = await createTestRepo("worktree-writable");
-  const output = await runScoder(repoDir, ["-q", "/bin/bash", "-c", "touch newfile.txt && echo SUCCESS"]);
+  const output = await runScoder(repoDir, ["-q", "-w", "/bin/bash", "-c", "touch newfile.txt && echo SUCCESS"]);
   return output.includes("SUCCESS");
 }
 
 async function testGithubProtected(): Promise<boolean> {
   const repoDir = await createTestRepo("github-protected");
-  const output = await runScoder(repoDir, ["-q", "/bin/bash", "-c", "touch .github/test 2>&1 || true"]);
+  const output = await runScoder(repoDir, ["-q", "-w", "/bin/bash", "-c", "touch .github/test 2>&1 || true"]);
   return (
     output.includes("Read-only") ||
     output.includes("Permission denied") ||
@@ -102,7 +102,7 @@ async function testGithubProtected(): Promise<boolean> {
 
 async function testGitignoreProtected(): Promise<boolean> {
   const repoDir = await createTestRepo("gitignore-protected");
-  const output = await runScoder(repoDir, ["-q", "/bin/bash", "-c", "echo 'test' >> .gitignore 2>&1 || true"]);
+  const output = await runScoder(repoDir, ["-q", "-w", "/bin/bash", "-c", "echo 'test' >> .gitignore 2>&1 || true"]);
   return (
     output.includes("Read-only") ||
     output.includes("Permission denied") ||
@@ -116,7 +116,7 @@ async function testEmptyAgentreadonlyAllowsWrites(): Promise<boolean> {
   await $`git -C ${repoDir} add -A`.quiet();
   await $`git -C ${repoDir} commit -m "add agentreadonly"`.quiet();
 
-  const output = await runScoder(repoDir, ["-q", "/bin/bash", "-c", "touch .github/test && echo SUCCESS"]);
+  const output = await runScoder(repoDir, ["-q", "-w", "/bin/bash", "-c", "touch .github/test && echo SUCCESS"]);
   return output.includes("SUCCESS");
 }
 
@@ -126,7 +126,7 @@ async function testAgentreadonlyProtected(): Promise<boolean> {
   await $`git -C ${repoDir} add -A`.quiet();
   await $`git -C ${repoDir} commit -m "add agentreadonly"`.quiet();
 
-  const output = await runScoder(repoDir, ["-q", "/bin/bash", "-c", "echo 'test' >> .agentreadonly 2>&1 || true"]);
+  const output = await runScoder(repoDir, ["-q", "-w", "/bin/bash", "-c", "echo 'test' >> .agentreadonly 2>&1 || true"]);
   return (
     output.includes("Read-only") ||
     output.includes("Permission denied") ||
@@ -146,7 +146,7 @@ async function testAgentreadonlyHomeDirectoryReadonly(): Promise<boolean> {
   await $`git -C ${repoDir} commit -m "add home readonly bind"`.quiet();
 
   const output = await runScoder(repoDir, [
-    "-q",
+    "-q", "-w",
     "/bin/bash",
     "-c",
     `cat /home/scoder/Git/other-project/data.txt && echo "test" >> /home/scoder/Git/other-project/data.txt 2>&1 || true`,
@@ -168,13 +168,13 @@ async function testAgentreadonlyHomeDirectoryMustExist(): Promise<boolean> {
   await $`git -C ${repoDir} add -A`.quiet();
   await $`git -C ${repoDir} commit -m "add missing home readonly bind"`.quiet();
 
-  const output = await runScoder(repoDir, ["-q", "/bin/true"], { HOME: fakeHome });
+  const output = await runScoder(repoDir, ["-q", "-w", "/bin/true"], { HOME: fakeHome });
   return output.includes("HOME bind must reference an existing directory");
 }
 
 async function testWorktreeBranchCreated(): Promise<boolean> {
   const repoDir = await createTestRepo("worktree-branch");
-  await runScoder(repoDir, ["-q", "/bin/bash", "-c", "echo READY"]);
+  await runScoder(repoDir, ["-q", "-w", "/bin/bash", "-c", "echo READY"]);
 
   const branches = await $`git -C ${repoDir} branch --list 'scoder/*'`.text();
   return branches.trim().length > 0;
@@ -182,7 +182,7 @@ async function testWorktreeBranchCreated(): Promise<boolean> {
 
 async function testExistingScoderWorktreeReused(): Promise<boolean> {
   const repoDir = await createTestRepo("worktree-reuse");
-  await runScoder(repoDir, ["-q", "/bin/bash", "-c", "echo READY"]);
+  await runScoder(repoDir, ["-q", "-w", "/bin/bash", "-c", "echo READY"]);
 
   const branches = await $`git -C ${repoDir} branch --list 'scoder/*'`.text();
   const branchName = branches.trim().split("\n")[0]?.replace(/^\*\?\s*/, "");
@@ -201,7 +201,7 @@ async function testExistingScoderWorktreeReused(): Promise<boolean> {
 
   await $`echo "dirty" > ${worktreeDir}/reuse.txt`;
 
-  const output = await runScoderInDir(worktreeDir, ["--dry-run", "/bin/true"]);
+  const output = await runScoderInDir(worktreeDir, ["--dry-run", "-w", "/bin/true"]);
   return output.includes("Already in scoder worktree") && !output.includes("uncommitted changes");
 }
 
@@ -214,7 +214,7 @@ async function testWorktreeRecreatedIfMissing(): Promise<boolean> {
   await $`git -C ${repoDir} commit -m "add test_file"`.quiet();
 
   // Run scoder to generate the worktree
-  await runScoder(repoDir, ["-q", "/bin/bash", "-c", "echo SETUP"]);
+  await runScoder(repoDir, ["-q", "-w", "/bin/bash", "-c", "echo SETUP"]);
 
   // Find the worktree path
   const worktreeList = await $`git -C ${repoDir} worktree list --porcelain`.text();
@@ -229,7 +229,7 @@ async function testWorktreeRecreatedIfMissing(): Promise<boolean> {
   await $`rm -rf ${worktreeDir}`;
 
   // Run scoder again. It should detect the missing directory, prune the worktree, and recreate it.
-  const output = await runScoder(repoDir, ["-q", "/bin/bash", "-c", "cat test_file.txt"]);
+  const output = await runScoder(repoDir, ["-q", "-w", "/bin/bash", "-c", "cat test_file.txt"]);
   return output.includes("persisted_file");
 }
 
@@ -244,7 +244,7 @@ async function testSymlinkedAgentsSkillsAvailable(): Promise<boolean> {
   await $`ln -s ${skillTarget} ${fakeHome}/.agents/skills/linked-skill`;
 
   const output = await runScoder(repoDir, [
-    "-q",
+    "-q", "-w",
     "/bin/bash",
     "-c",
     "test -f /home/scoder/.agents/skills/linked-skill/SKILL.md && echo SUCCESS",
@@ -260,7 +260,7 @@ async function testSandboxAgentsMdOverlayVisible(): Promise<boolean> {
   await $`git -C ${repoDir} commit -m "add agents instructions"`.quiet();
 
   const output = await runScoder(repoDir, [
-    "-q",
+    "-q", "-w",
     "/bin/bash",
     "-c",
     "grep -q 'Repo instructions' AGENTS.md && grep -q 'scoder sandbox' AGENTS.md && echo SUCCESS",
@@ -281,7 +281,7 @@ async function testAgentsMdOverlayInDirectMode(): Promise<boolean> {
   await $`git -C ${repoDir} commit -m "add agents instructions"`.quiet();
 
   const output = await runScoder(repoDir, [
-    "-q",
+    "-q", "-w",
     "--no-worktree",
     "/bin/bash",
     "-c",
@@ -293,7 +293,7 @@ async function testAgentsMdOverlayInDirectMode(): Promise<boolean> {
   }
 
   const output2 = await runScoder(repoDir, [
-    "-q",
+    "-q", "-w",
     "--no-worktree",
     "/bin/bash",
     "-c",
@@ -317,7 +317,7 @@ async function testHostLoopbackBlocked(): Promise<boolean> {
   try {
     const port = server.port;
     const output = await runScoder(repoDir, [
-      "-q",
+      "-q", "-w",
       "/bin/bash",
       "-c",
       `curl -fsS --max-time 2 http://127.0.0.1:${port}/ 2>&1 || echo BLOCKED`,
@@ -343,7 +343,7 @@ async function testLlmPortAllowsHostLoopback(): Promise<boolean> {
   try {
     const port = server.port;
     const output = await runScoder(repoDir, [
-      "-q",
+      "-q", "-w",
       `--llm-port=${port}`,
       "/bin/bash",
       "-c",
@@ -359,7 +359,7 @@ async function testLlmPortAllowsHostLoopback(): Promise<boolean> {
 async function testOutboundDnsWorks(): Promise<boolean> {
   const repoDir = await createTestRepo("outbound-dns");
   const output = await runScoder(repoDir, [
-    "-q",
+    "-q", "-w",
     "/bin/bash",
     "-c",
     "python3 -c 'import socket; socket.getaddrinfo(\"example.com\", 443)' && echo SUCCESS",

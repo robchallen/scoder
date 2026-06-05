@@ -18,8 +18,8 @@ Options:
    -h, --help              Show this help and exit
    -V, --version           Show version and exit
    -q, --quiet             Suppress informational output
-   -w, --worktree          Enable git worktree isolation (default)
-       --no-worktree       Run directly in current directory (no worktree)
+   -w, --worktree          Enable git worktree isolation
+       --no-worktree       Run directly in current directory (no worktree) (default)
        --llm-port PORTS    Allow localhost TCP access to these comma-separated ports
                             instead of the auto-detected default on 11434
        --dry-run           Print the bwrap command without executing
@@ -50,7 +50,7 @@ export function parseArgs(args: string[]): ParseResult {
     llmPorts: [],
     configureAppArmor: false,
     installDependencies: false,
-    worktree: true,
+    worktree: false,
   };
 
   let toolName: string | null = null;

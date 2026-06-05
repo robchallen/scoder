@@ -104,7 +104,16 @@ Runs `scoder` once to create the worktree, writes an uncommitted file directly i
 
 This verifies the workflow fix where rerunning `scoder` from its own active worktree reuses that checkout instead of trying to create or switch worktrees again.
 
-### 12. `symlinked-agents-skills-available`
+### 12. `worktree-recreated-if-missing`
+
+Runs `scoder` to create a worktree, forcibly deletes the worktree directory on the host (simulating a system reboot clearing `/tmp`), and then runs `scoder` again.
+
+**Expected result:**
+- The second run successfully recreates the worktree and checks out the branch, so that repository files are fully visible inside the sandbox.
+
+This verifies that stale worktree references caused by system reboots are automatically pruned and repaired, avoiding an empty isolated directory.
+
+### 13. `symlinked-agents-skills-available`
 
 Creates a fake home directory where `~/.agents/skills/linked-skill` is a
 symlink to a real skill directory elsewhere on the host, then runs `scoder`
@@ -117,7 +126,7 @@ This verifies that scoder snapshots `~/.agents` at startup with symlinks
 resolved, so agent skills remain available even when the host `.agents` tree
 contains symlinked entries.
 
-### 13. `sandbox-agents-md-overlay-visible`
+### 14. `sandbox-agents-md-overlay-visible`
 
 Creates a repository `AGENTS.md`, runs `scoder`, and checks the sandbox copy.
 
@@ -127,7 +136,7 @@ Creates a repository `AGENTS.md`, runs `scoder`, and checks the sandbox copy.
 
 This verifies that scoder overlays `AGENTS.md` inside the sandbox without modifying the real repository file.
 
-### 14. `agents-md-overlay-in-direct-mode`
+### 15. `agents-md-overlay-in-direct-mode`
 
 Creates a repository `AGENTS.md`, runs `scoder --no-worktree`, and checks the sandbox copy.
 
@@ -137,7 +146,7 @@ Creates a repository `AGENTS.md`, runs `scoder --no-worktree`, and checks the sa
 
 This verifies that the AGENTS.md overlay is conditional based on worktree vs direct mode.
 
-### 15. `host-loopback-blocked`
+### 16. `host-loopback-blocked`
 
 Starts a temporary HTTP server on the host bound to `127.0.0.1`, then runs
 `scoder` and tries to reach that server from inside the sandbox.
@@ -147,7 +156,7 @@ Starts a temporary HTTP server on the host bound to `127.0.0.1`, then runs
 This verifies the loopback restriction added around the `pasta`-managed tool
 network namespace.
 
-### 16. `llm-port-allows-host-loopback`
+### 17. `llm-port-allows-host-loopback`
 
 Starts a temporary HTTP server on the host bound to `127.0.0.1`, then runs
 `scoder --llm-port=<port>` and tries to reach that server from inside the
@@ -158,7 +167,7 @@ sandbox.
 This verifies that the optional localhost exemption is applied only when an
 explicit LLM port is configured.
 
-### 17. `outbound-dns-works`
+### 18. `outbound-dns-works`
 
 Runs `scoder` and, from inside the sandbox, uses Python's standard library to resolve `example.com`.
 
@@ -166,7 +175,7 @@ Runs `scoder` and, from inside the sandbox, uses Python's standard library to re
 
 This verifies that the nested tool namespace has working DNS resolution.
 
-### 18. `dry-run-uses-pasta`
+### 19. `dry-run-uses-pasta`
 
 Runs `scoder --dry-run /bin/true` and inspects the printed command line.
 
@@ -174,7 +183,7 @@ Runs `scoder --dry-run /bin/true` and inspects the printed command line.
 
 This verifies that scoder launches tools through the `pasta` network layer.
 
-### 19. `no-worktree-mode`
+### 20. `no-worktree-mode`
 
 Runs `scoder --no-worktree --dry-run /bin/true` and checks:
 - the output mentions "direct mode"

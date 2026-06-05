@@ -132,15 +132,17 @@ export async function getWorktreeList(): Promise<string> {
 
 export async function createWorktree(
   branch: string,
-  worktreeDir: string
+  worktreeDir: string,
+  branchExists: boolean = false
 ): Promise<void> {
-  const proc = await Bun.spawn(
-    ["git", "worktree", "add", "-b", branch, worktreeDir, "HEAD"],
-    {
-      stdout: "pipe",
-      stderr: "pipe",
-    }
-  );
+  const args = branchExists
+    ? ["git", "worktree", "add", worktreeDir, branch]
+    : ["git", "worktree", "add", "-b", branch, worktreeDir, "HEAD"];
+
+  const proc = await Bun.spawn(args, {
+    stdout: "pipe",
+    stderr: "pipe",
+  });
 
   await proc.exited;
 
@@ -290,16 +292,16 @@ export async function setupGitWorktree(
   const worktreeDir = `/tmp/scoder/${projDir}`;
   const worktreeList = await getWorktreeList();
 
-  const currentWorktreeDir = await findWorktreeForBranch(
+  let existingWorktree = await findWorktreeForBranch(
     worktreeList,
     worktreeBranch
   );
 
   if (
-    currentWorktreeDir &&
-    (await realpath(currentWorktreeDir)) === repoRootReal
+    existingWorktree &&
+    (await realpath(existingWorktree)) === repoRootReal
   ) {
-    info(`Already in scoder worktree: ${currentWorktreeDir}`);
+    info(`Already in scoder worktree: ${existingWorktree}`);
 
     return {
       worktreeDir: repoRootReal,
@@ -314,33 +316,39 @@ export async function setupGitWorktree(
     };
   }
 
-  if (!(await hasBranch(worktreeBranch))) {
+  if (existingWorktree) {
+    let dirValid = false;
+    try {
+      const stat = await Bun.file(existingWorktree).stat();
+      dirValid = stat.isDirectory();
+    } catch {
+      dirValid = false;
+    }
+
+    if (!dirValid) {
+      info(`Stale worktree reference found, pruning...`);
+      const pruneProc = await Bun.spawn(["git", "worktree", "prune"]);
+      await pruneProc.exited;
+      existingWorktree = null;
+    }
+  }
+
+  const branchExists = await hasBranch(worktreeBranch);
+  let isReused = false;
+
+  if (!branchExists) {
     info(`Creating worktree branch: ${worktreeBranch}`);
     info(`Worktree path: ${worktreeDir}`);
 
-    await createWorktree(worktreeBranch, worktreeDir);
+    await createWorktree(worktreeBranch, worktreeDir, false);
     info("Worktree created successfully");
+  } else if (!existingWorktree) {
+    info(`Recreating missing worktree path: ${worktreeDir}`);
+    await createWorktree(worktreeBranch, worktreeDir, true);
+    info("Worktree recreated successfully");
+    isReused = true;
   } else {
-    const existingWorktree = await findWorktreeForBranch(
-      worktreeList,
-      worktreeBranch
-    );
-
-    if (existingWorktree) {
-      const worktreeDirReal = await realpath(existingWorktree);
-
-      return {
-        worktreeDir: worktreeDirReal,
-        worktreeBranch,
-        baseCommit: null,
-        gitDir,
-        projDir,
-        sourceRepoRoot: repoRootReal,
-        sourceBranch: sourceBranch || null,
-        sourceHead,
-        sourceRefLabel: formatRefLabel(sourceBranch, sourceHead),
-      };
-    }
+    isReused = true;
   }
 
   const finalWorktreeList = await getWorktreeList();
@@ -351,10 +359,8 @@ export async function setupGitWorktree(
 
   if (!foundWorktreeDir) {
     error(
-      `Branch ${worktreeBranch} exists but is not a git worktree - you'll need to manually review it.`
+      `Failed to locate worktree for ${worktreeBranch} after setup.`
     );
-    info(`to review:   git diff ${worktreeBranch}`);
-    info(`to delete:   git branch -D ${worktreeBranch}`);
     process.exit(1);
   }
 
@@ -363,7 +369,7 @@ export async function setupGitWorktree(
   return {
     worktreeDir: worktreeDirReal,
     worktreeBranch,
-    baseCommit: sourceHead,
+    baseCommit: isReused ? null : sourceHead,
     gitDir,
     projDir,
     sourceRepoRoot: repoRootReal,

@@ -24,6 +24,7 @@ const tests: TestCase[] = [
   { name: "agentreadonly-home-directory-must-exist", fn: testAgentreadonlyHomeDirectoryMustExist },
   { name: "worktree-branch-created", fn: testWorktreeBranchCreated },
   { name: "existing-scoder-worktree-reused", fn: testExistingScoderWorktreeReused },
+  { name: "worktree-recreated-if-missing", fn: testWorktreeRecreatedIfMissing },
   { name: "symlinked-agents-skills-available", fn: testSymlinkedAgentsSkillsAvailable },
   { name: "sandbox-agents-md-overlay-visible", fn: testSandboxAgentsMdOverlayVisible },
   { name: "agents-md-overlay-in-direct-mode", fn: testAgentsMdOverlayInDirectMode },
@@ -202,6 +203,34 @@ async function testExistingScoderWorktreeReused(): Promise<boolean> {
 
   const output = await runScoderInDir(worktreeDir, ["--dry-run", "/bin/true"]);
   return output.includes("Already in scoder worktree") && !output.includes("uncommitted changes");
+}
+
+async function testWorktreeRecreatedIfMissing(): Promise<boolean> {
+  const repoDir = await createTestRepo("worktree-recreated");
+  
+  // Create a file to verify it appears in the worktree
+  await $`echo "persisted_file" > ${repoDir}/test_file.txt`;
+  await $`git -C ${repoDir} add test_file.txt`.quiet();
+  await $`git -C ${repoDir} commit -m "add test_file"`.quiet();
+
+  // Run scoder to generate the worktree
+  await runScoder(repoDir, ["-q", "/bin/bash", "-c", "echo SETUP"]);
+
+  // Find the worktree path
+  const worktreeList = await $`git -C ${repoDir} worktree list --porcelain`.text();
+  const worktreeLine = worktreeList.split("\n").find((line) => line.startsWith("worktree ") && line.includes("/tmp/scoder/"));
+  const worktreeDir = worktreeLine?.split(" ")[1];
+
+  if (!worktreeDir) {
+    return false;
+  }
+
+  // Simulate reboot / clearing of /tmp
+  await $`rm -rf ${worktreeDir}`;
+
+  // Run scoder again. It should detect the missing directory, prune the worktree, and recreate it.
+  const output = await runScoder(repoDir, ["-q", "/bin/bash", "-c", "cat test_file.txt"]);
+  return output.includes("persisted_file");
 }
 
 async function testSymlinkedAgentsSkillsAvailable(): Promise<boolean> {

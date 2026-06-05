@@ -14,6 +14,9 @@ import {
   getCommitCount,
   getDiffStat,
   hasUncommittedChanges,
+  getProjDir,
+  isInGitRepo,
+  getGitCommonDir,
 } from "./git/worktree.ts";
 import { TOOL_PRESETS } from "./tools/presets.ts";
 import { buildBwrapCommand } from "./sandbox/builder.ts";
@@ -132,11 +135,12 @@ async function main(): Promise<void> {
 
   let worktreeInfo: GitWorktreeInfo | null = null;
   let protectionConfig = undefined;
+  let sandboxProjDir = "";
 
   if (options.worktree) {
     worktreeInfo = await setupGitWorktree(true);
 
-    const sandboxProjDir = `${SCODER_HOME}/${worktreeInfo!.projDir}`;
+    sandboxProjDir = `${SCODER_HOME}/${worktreeInfo!.projDir}`;
     protectionConfig = await setupProtection(
       worktreeInfo!.worktreeDir,
       sandboxProjDir
@@ -166,7 +170,9 @@ async function main(): Promise<void> {
     }
   } else {
     const cwd = process.cwd();
-    protectionConfig = await setupProtection(cwd, cwd);
+    const projDir = await getProjDir(cwd);
+    sandboxProjDir = `${SCODER_HOME}/${projDir}`;
+    protectionConfig = await setupProtection(cwd, sandboxProjDir);
 
     const agentsSnapshotBind = await setupAgentsSnapshot();
     if (agentsSnapshotBind && protectionConfig) {
@@ -184,7 +190,7 @@ async function main(): Promise<void> {
     ) {
       const agentsMdBind = getAgentsMdOverlayBind(
         protectionConfig.agentsMdOverlay,
-        cwd
+        sandboxProjDir
       );
       if (agentsMdBind) {
         protectionConfig.safeBinds.push(agentsMdBind);
@@ -194,6 +200,7 @@ async function main(): Promise<void> {
 
   const config = {
     worktreeInfo,
+    sandboxProjDir,
     options,
     toolBinds,
     toolDirs,
@@ -204,6 +211,14 @@ async function main(): Promise<void> {
 
   const bwrapCmd = await buildBwrapCommand(config);
 
+  if (options.worktree && worktreeInfo) {
+    info(`Agent working files can be found at:   ${worktreeInfo.worktreeDir}`);
+    info(`and interim commits viewed with:       git diff ${worktreeInfo.worktreeBranch}`);
+  } else if (!options.worktree) {
+    info(`Running in direct mode (no worktree isolation)`);
+    info(`Working directory: ${process.cwd()}`);
+  }
+
   if (options.dryRun) {
     info("Dry run — would execute:");
     console.log("");
@@ -213,14 +228,6 @@ async function main(): Promise<void> {
   }
 
   info(`Launching ${toolDescription} in sandbox...`);
-
-  if (options.worktree && worktreeInfo) {
-    info(`Agent working files can be found at:   ${worktreeInfo.worktreeDir}`);
-    info(`and interim commits viewed with:       git diff ${worktreeInfo.worktreeBranch}`);
-  } else if (!options.worktree) {
-    info(`Running in direct mode (no worktree isolation)`);
-    info(`Working directory: ${process.cwd()}`);
-  }
 
   const proc = Bun.spawn(bwrapCmd, {
     stdout: "inherit",

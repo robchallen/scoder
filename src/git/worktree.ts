@@ -422,3 +422,22 @@ function formatRefLabel(
 
   return `HEAD@${shortHead}`;
 }
+
+export async function getProjDir(cwd: string): Promise<string> {
+  const realHome = process.env.HOME || "/home/user";
+  let rootDir = cwd;
+
+  try {
+    if (await isInGitRepo()) {
+      rootDir = await getRepoRoot();
+    }
+  } catch {
+    // Ignore and use cwd
+  }
+
+  if (rootDir.startsWith(realHome)) {
+    return rootDir.slice(realHome.length + 1);
+  } else {
+    return rootDir.slice(1);
+  }
+}

@@ -36,6 +36,7 @@ export interface ProtectionConfig {
   protectedPaths: string[];
   safeBinds: BindMount[];
   agentsMdOverlay?: string;
+  dirs?: string[];
 }
 
 export async function setupProtection(
@@ -44,6 +45,7 @@ export async function setupProtection(
 ): Promise<ProtectionConfig> {
   const protectedPaths: string[] = [];
   const safeBinds: BindMount[] = [];
+  const dirs: string[] = [];
   let agentsMdOverlay: string | undefined;
 
   const agentreadonlyPath = `${sourceDir}/.agentreadonly`;
@@ -59,7 +61,7 @@ export async function setupProtection(
       }
 
       if (line.startsWith("$HOME/")) {
-        await registerAgentreadonlyHomeBind(line, safeBinds);
+        await registerAgentreadonlyHomeBind(line, safeBinds, dirs);
         continue;
       }
 
@@ -100,12 +102,13 @@ export async function setupProtection(
 
   agentsMdOverlay = await setupAgentsMdOverlay(sourceDir, sandboxProjDir);
 
-  return { protectedPaths, safeBinds, agentsMdOverlay };
+  return { protectedPaths, safeBinds, agentsMdOverlay, dirs };
 }
 
 async function registerAgentreadonlyHomeBind(
   homePathExpr: string,
-  binds: BindMount[]
+  binds: BindMount[],
+  dirs: string[]
 ): Promise<void> {
   const realHome = process.env.HOME || "/home/user";
   const relativePath = homePathExpr.slice("$HOME/".length);
@@ -139,7 +142,19 @@ async function registerAgentreadonlyHomeBind(
     }
   }
 
-  await addScoderDirTree(sandboxDest, binds);
+  const SCODER_HOME = "/home/scoder";
+  if (sandboxDest !== SCODER_HOME) {
+    const rel = sandboxDest.slice(`${SCODER_HOME}/`.length);
+    const parts = rel.split("/");
+    let currentPath = SCODER_HOME;
+    for (const part of parts) {
+      currentPath = `${currentPath}/${part}`;
+      if (!dirs.includes(currentPath)) {
+        dirs.push(currentPath);
+      }
+    }
+  }
+
   binds.push({
     type: "ro-bind",
     source: sourceReal,
@@ -147,32 +162,6 @@ async function registerAgentreadonlyHomeBind(
   });
 
   info(`Binding ${homePathExpr} to ${sandboxDest} (read-only)`);
-}
-
-async function addScoderDirTree(
-  sandboxPath: string,
-  binds: BindMount[]
-): Promise<void> {
-  const SCODER_HOME = "/home/scoder";
-
-  if (sandboxPath === SCODER_HOME) {
-    return;
-  }
-
-  const relativePath = sandboxPath.slice(`${SCODER_HOME}/`.length);
-  const parts = relativePath.split("/");
-
-  let currentPath = SCODER_HOME;
-  for (const part of parts) {
-    currentPath = `${currentPath}/${part}`
-    if (!binds.some((b) => b.dest === currentPath)) {
-      binds.push({
-        type: "bind",
-        source: currentPath,
-        dest: currentPath,
-      });
-    }
-  }
 }
 
 function pathsOverlap(left: string, right: string): boolean {

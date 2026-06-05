@@ -7,11 +7,13 @@ import {
   setupResolvConf,
   ProtectionConfig,
 } from "../git/protection.ts";
+import { isInGitRepo, getGitCommonDir } from "../git/worktree.ts";
 
 const SCODER_HOME = "/home/scoder";
 
 export interface SandboxConfig {
   worktreeInfo: GitWorktreeInfo | null;
+  sandboxProjDir: string;
   options: ScoderOptions;
   toolBinds: BindMount[];
   toolDirs: string[];
@@ -25,6 +27,7 @@ export async function buildBwrapCommand(
 ): Promise<string[]> {
   const {
     worktreeInfo,
+    sandboxProjDir,
     options,
     toolBinds,
     toolDirs,
@@ -94,13 +97,7 @@ export async function buildBwrapCommand(
     `${SCODER_HOME}/.cache`
   );
 
-  const sandboxProjDir = worktreeInfo
-    ? `${SCODER_HOME}/${worktreeInfo.projDir}`
-    : `${SCODER_HOME}${realHome}`;
-
-  if (worktreeInfo) {
-    cmd.push("--dir", sandboxProjDir);
-  }
+  cmd.push("--dir", sandboxProjDir);
 
   for (const dir of toolDirs) {
     cmd.push("--dir", dir);
@@ -118,6 +115,22 @@ export async function buildBwrapCommand(
   if (worktreeInfo) {
     cmd.push("--bind", worktreeInfo.worktreeDir, sandboxProjDir);
     cmd.push("--bind", worktreeInfo.gitDir, worktreeInfo.gitDir);
+  } else {
+    cmd.push("--bind", process.cwd(), sandboxProjDir);
+    if (await isInGitRepo()) {
+      try {
+        const gitDir = await getGitCommonDir();
+        cmd.push("--bind", gitDir, gitDir);
+      } catch {
+        // Ignore if gitDir not found
+      }
+    }
+  }
+
+  if (protectionConfig?.dirs) {
+    for (const dir of protectionConfig.dirs) {
+      cmd.push("--dir", dir);
+    }
   }
 
   if (protectionConfig) {
@@ -126,7 +139,7 @@ export async function buildBwrapCommand(
     }
   }
 
-  const sandboxPath = await buildSandboxPath(worktreeInfo, SCODER_HOME);
+  const sandboxPath = await buildSandboxPath(sandboxProjDir, SCODER_HOME);
 
   cmd.push(
     "--chdir",
@@ -353,7 +366,7 @@ async function buildExtraBinds(
 }
 
 async function buildSandboxPath(
-  worktreeInfo: GitWorktreeInfo | null,
+  sandboxProjDir: string,
   sandboxHome: string
 ): Promise<string> {
   const paths = [
@@ -366,22 +379,20 @@ async function buildSandboxPath(
     `${sandboxHome}/.local/bin`,
   ];
 
-  if (worktreeInfo) {
-    const projDir = `${sandboxHome}/${worktreeInfo.projDir}`;
-
-    if (await dirExists(`${projDir}/.venv/bin`)) {
-      paths.unshift(`${projDir}/.venv/bin`);
+  if (sandboxProjDir) {
+    if (await dirExists(`${sandboxProjDir}/.venv/bin`)) {
+      paths.unshift(`${sandboxProjDir}/.venv/bin`);
     }
 
-    if (await dirExists(`${projDir}/node_modules/.bin`)) {
-      paths.unshift(`${projDir}/node_modules/.bin`);
+    if (await dirExists(`${sandboxProjDir}/node_modules/.bin`)) {
+      paths.unshift(`${sandboxProjDir}/node_modules/.bin`);
     }
 
     if (
-      (await dirExists(`${projDir}/bin`)) &&
-      (await fileExists(`${projDir}/go.mod`))
+      (await dirExists(`${sandboxProjDir}/bin`)) &&
+      (await fileExists(`${sandboxProjDir}/go.mod`))
     ) {
-      paths.unshift(`${projDir}/bin`);
+      paths.unshift(`${sandboxProjDir}/bin`);
     }
   }
 

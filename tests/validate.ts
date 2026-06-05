@@ -46,7 +46,8 @@ async function main(): Promise<void> {
         console.log("  PASS\n");
         passed++;
       } else {
-        console.log("  FAIL\n");
+        console.log("  FAIL");
+        // Print more details here or run it in a way we can see
         failed++;
       }
     } catch (err) {
@@ -190,7 +191,7 @@ async function testExistingScoderWorktreeReused(): Promise<boolean> {
   }
 
   const worktreeList = await $`git -C ${repoDir} worktree list --porcelain`.text();
-  const worktreeLine = worktreeList.split("\n").find((line) => line.startsWith("worktree "));
+  const worktreeLine = worktreeList.split("\n").find((line) => line.startsWith("worktree ") && line.includes("/tmp/scoder/"));
   const worktreeDir = worktreeLine?.split(" ")[1];
 
   if (!worktreeDir) {
@@ -381,7 +382,7 @@ async function runScoder(repoDir: string, args: string[], env?: Record<string, s
         cwd: repoDir,
         stdout: "pipe",
         stderr: "pipe",
-        env: env || {},
+        env: { ...process.env, ...env },
       }
     );
 

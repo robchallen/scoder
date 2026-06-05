@@ -1,22 +1,22 @@
 # scoder Design Decisions & Architecture
 
 This document records the design decisions, trade-offs, and technical
-discoveries made during the v2.0.0 rewrite of scoder. It is intended as a
-reference for future contributors and for the original author when returning
-to the codebase after time away.
+discoveries made during the v2.1.0 TypeScript migration of scoder. It is
+intended as a reference for future contributors and for the original author
+when returning to the codebase after time away.
 
 ## Table of Contents
 
 - [Goals and Non-Goals](#goals-and-non-goals)
 - [Architecture Overview](#architecture-overview)
+- [TypeScript Migration Rationale](#typescript-migration-rationale)
 - [Sandboxing Strategy](#sandboxing-strategy)
 - [Git Worktree Lifecycle](#git-worktree-lifecycle)
+- [Direct Mode (`--no-worktree`)](#direct-mode-no-worktree)
 - [Tool Preset System](#tool-preset-system)
 - [Path Mirroring](#path-mirroring)
 - [Infrastructure Protection](#infrastructure-protection)
 - [AppArmor Compatibility](#apparmor-compatibility)
-- [Bash Pitfalls Encountered](#bash-pitfalls-encountered)
-- [Decisions Explicitly Rejected](#decisions-explicitly-rejected)
 - [Known Limitations and Future Work](#known-limitations-and-future-work)
 
 ---
@@ -25,17 +25,19 @@ to the codebase after time away.
 
 ### Goals
 
-1. **Multi-tool sandboxing** — support opencode, claude, copilot, and
+1. **Multi-tool sandboxing** — support opencode, claude, copilot, pi, and
    arbitrary commands, each with sensible defaults.
-2. **Git isolation** — all file changes happen on a disposable branch via
-   git worktrees. The user's working tree is never modified.
+2. **Flexible git isolation** — worktree mode (default) for full isolation,
+   or direct mode for quick sandboxing without branch management.
 3. **Minimal configuration** — no config files. Flags and environment
    variables only. Assume the user has already set up their tools (e.g.,
    `gh auth login`).
 4. **Transparency** — the user should always know what happened. Print a
    session summary on exit with branch name, commit count, and merge/discard
-   instructions.
-5. **Single-file script** — no dependencies beyond bash, bwrap, pasta, and git.
+   instructions (worktree mode only).
+5. **Type safety and extensibility** — TypeScript with strict mode, clear
+   interfaces, and modular architecture for easier maintenance and feature
+   additions.
 
 ### Non-Goals
 
@@ -55,20 +57,72 @@ to the codebase after time away.
 
 ## Architecture Overview
 
-The script is structured in sequential phases:
+The TypeScript codebase is organized into modular components:
 
 ```
-Option parsing
-  -> Early validation (bwrap/pasta exist, AppArmor check)
-  -> Special modes (--configure-apparmor) exit early
-  -> Tool preset selection and defaults merging
-  -> Git worktree creation (branch + /tmp directory)
-  -> EXIT trap registered for session summary
-  -> Tool-specific config bind-mount setup
-  -> Infrastructure protection overlays
-  -> bwrap command array construction
-  -> bwrap starts pasta, pasta starts the tool in a nested network namespace
+src/
+├── index.ts              # Main entry point, orchestrates all phases
+├── types.ts              # TypeScript interfaces and types
+├── cli/
+│   ├── parse-args.ts     # Option parsing and validation
+│   └── apparmor.ts       # AppArmor profile installation
+├── git/
+│   ├── worktree.ts       # Git worktree lifecycle management
+│   └── protection.ts     # .agentreadonly, AGENTS.md overlay, ~/.agents snapshot
+├── tools/
+│   └── presets.ts        # Tool presets (opencode, claude, copilot, pi)
+├── sandbox/
+│   └── builder.ts        # bwrap command construction
+└── utils/
+    ├── logger.ts         # Colored output functions
+    └── checks.ts         # System checks (bwrap, pasta, ports)
+
+tests/
+└── validate.ts           # Validation test suite
 ```
+
+### Execution Flow
+
+```
+Option parsing (--help, --version, --worktree/--no-worktree, etc.)
+  → Early validation (bwrap/pasta exist, AppArmor check)
+  → Special modes exit early (--configure-apparmor, --install-dependencies)
+  → Tool preset selection and validation
+  → If worktree mode: Git worktree creation (branch + /tmp directory)
+  → Infrastructure protection setup (.agentreadonly parsing, AGENTS.md overlay)
+  → Agent skills snapshot (~/.agents copied to /tmp)
+  → Resolver config snapshot (/etc/resolv.conf)
+  → bwrap command construction with all bind mounts
+  → bwrap starts pasta, pasta starts the tool in a nested network namespace
+  → On exit: commit changes (worktree mode only), print summary, cleanup temp files
+```
+
+---
+
+## TypeScript Migration Rationale
+
+### Why TypeScript?
+
+The original bash script was ~1500 lines. While functional, it had limitations:
+
+1. **Type safety** — No type checking for arrays, strings, or function signatures
+2. **Error handling** — Bash error handling is primitive (exit codes, traps)
+3. **Testing** — Bash tests are slow and hard to write
+4. **Extensibility** — Adding new features requires careful string manipulation
+5. **Tooling** — Limited IDE support, no autocomplete, refactoring is manual
+
+### Why Bun?
+
+- **Fast** — Faster than Node.js for CLI tools
+- **Native TypeScript** — No transpilation step needed
+- **Single binary** — Can compile to standalone executable
+- **Modern APIs** — `Bun.spawn()`, `Bun.file()`, template literals
+
+### Trade-offs
+
+- **Runtime dependency** — Requires bun (though wrapper script handles this)
+- **Verbosity** — TypeScript is more verbose than bash (~2400 lines vs ~1500)
+- **Learning curve** — Contributors need TypeScript knowledge
 
 ---
 
@@ -84,7 +138,7 @@ filesystem view without requiring root. Key capabilities we use:
   read-only
 - `--tmpfs` — ephemeral in-memory filesystems (for HOME, /tmp)
 - `--dir` — create empty directories in the sandbox
-- `--unshare-net` — network namespace isolation
+- `--unshare-user` — user namespace isolation
 - `--clearenv` / `--setenv` — environment variable control
 - `--new-session` — new session ID (prevents signal leakage)
 - `--die-with-parent` — kill sandbox if parent dies
@@ -101,13 +155,14 @@ to host-local TCP services on `127.0.0.1` and `::1`.
 
 ```
 /usr, /bin, /lib, /etc, /sys, /run  → read-only from host
-/dev                                → devtmpfs (or restricted subset)
+/dev                                → devtmpfs (full device access)
 /proc                               → procfs
 /tmp                                → ephemeral tmpfs
 /home/scoder                        → ephemeral tmpfs (sandbox HOME)
   └── .config/, .local/, .cache/    → empty dirs + selective bind-mounts
-<worktree-real-path>                → bind from /tmp/scoder/<git-repo-path>
-<git-dir-real-path>                 → bind from host .git (rw)
+<worktree-real-path>                → bind from /tmp/scoder/<git-repo-path> (worktree mode)
+<cwd>                               → bind from current directory (direct mode)
+<git-dir-real-path>                 → bind from host .git (rw, worktree mode only)
 ```
 
 ### Environment
@@ -118,6 +173,7 @@ The sandbox starts with `--clearenv` and explicitly sets:
 - `USER`, `LOGNAME` — `scoder`
 - `TERM`, `LANG` — inherited from host
 - `EDITOR`, `VISUAL`, `NO_COLOR`, `FORCE_COLOR` — passed through if set
+- Tool-specific env vars (API keys, config paths, etc.)
 
 `GIT_WORK_TREE` is intentionally **not** set. See [Path Mirroring](#path-mirroring).
 
@@ -191,22 +247,17 @@ path without cloning the entire repository. This gives us:
 3. **No duplication** — the worktree shares the same `.git` object store
    as the main checkout.
 
-### Lifecycle
+### Lifecycle (Worktree Mode)
 
 1. **Create**: `git worktree add -b scoder/<git-repo-name> /tmp/scoder/<git-repo-path> HEAD`
-2. **Use**: the tool operates on the worktree. If scoder is started from that
-   worktree later, it reuses the current checkout instead of trying to set it
-   up again. Commits go to the same branch. If the sandbox needs the latest
-   changes from `main`, the intended flow is `git fetch origin` followed by
-   `git rebase origin/main` (or `git merge origin/main`) from inside the
-   sandbox worktree.
-3. **Exit**: the EXIT trap commits changes, prints a summary (commit count, diffstat)
-   and leaves the worktree + branch for the user to review or merge.
-4. **Cleanup** (manual): `git worktree remove <path> && git branch -D <branch>`
+2. **Reuse check**: If already in a scoder worktree, reuse it
+3. **Use**: the tool operates on the worktree. Commits go to the scoder branch.
+4. **Exit**: commit changes, print summary (commit count, diffstat), leave worktree + branch for review
+5. **Cleanup** (manual): `git worktree remove <path> && git branch -D <branch>`
 
 ### Branch Naming
 
-Format: `scoder/<git-proj-name>`
+Format: `scoder/<git-repo-name>`
 
 scoder sessions always take place in the same branch and will reuse the same worktree if
 it exists.
@@ -218,9 +269,43 @@ visible through the branch ref alone.
 ### Uncommitted Changes Warning
 
 If the user has uncommitted changes in their working tree when starting
-scoder, we exit with error. The one exception is when the current checkout is
-already the repo's registered `scoder/<name>` worktree, in which case those
-in-progress changes are the session state we want to continue using.
+scoder (and not already in a scoder worktree), we prompt to commit them first.
+This ensures a clean base for the worktree.
+
+---
+
+## Direct Mode (`--no-worktree`)
+
+### Rationale
+
+Sometimes you want sandboxing without git branch management:
+- Quick experiments
+- Non-git projects
+- Testing without branch accumulation
+- Faster startup (no worktree creation)
+
+### Behavior
+
+- No git worktree created
+- No branch created
+- Sandboxed execution in current directory
+- `.agentreadonly` protection still applies
+- AGENTS.md overlay still created
+- No commit on exit
+- Changes are immediate in working directory
+
+### When to Use
+
+**Use worktree mode (default)** when:
+- Working on a git repository
+- You want isolated changes
+- You want to review/merge/discard easily
+
+**Use direct mode** when:
+- Quick sandboxing without git overhead
+- Testing a tool's behavior
+- Non-git projects
+- You're comfortable with immediate changes
 
 ---
 
@@ -228,15 +313,21 @@ in-progress changes are the session state we want to continue using.
 
 ### Design
 
-Each supported tool has three functions:
+Each supported tool has an async function pair:
 
-- `preset_<tool>()` — sets default values
-- `preset_<tool>_config_binds()` — populates `TOOL_BINDS[]` and `TOOL_DIRS[]`
-  arrays with bind-mount specifications
-- `preset_<tool>_validate()` — checks prerequisites (tool installed, etc.)
+```typescript
+interface ToolPreset {
+  description: string;
+  configBinds: (realHome: string, sandboxHome: string) => Promise<ToolBindSpec>;
+  validate: () => Promise<boolean>;
+}
+```
 
-This convention-based dispatch (`"preset_${TOOL_NAME}_config_binds"`) avoids
-the need for a registry or case statement for each operation.
+- `configBinds()` — populates bind mounts and directory creation specs
+- `validate()` — checks prerequisites (tool installed, dependencies, etc.)
+
+This interface-based approach avoids convention-based dispatch and provides
+type safety.
 
 ### Per-Tool Details
 
@@ -244,12 +335,13 @@ the need for a registry or case statement for each operation.
 |------|--------------|-------|
 | opencode | `~/.config/opencode` (ro), `~/.local/share/opencode` (rw), `~/.cache/opencode` (rw) | Data/cache dirs created if missing |
 | claude | `~/.claude` (ro), `~/.config/claude` (ro) | Both paths checked (location varies) |
-| copilot | `~/.config/gh` (ro), `~/.config/github-copilot` (ro), `~/.local/share/github-copilot` (rw) | Config paths based on docs, not verified with real tool |
+| copilot | `~/.config/gh` (ro), `~/.config/github-copilot` (ro), `~/.local/share/github-copilot` (rw) | Config paths based on docs |
+| pi | `~/.pi/agent` (rw), `~/.local/share/pi` (rw), `~/.cache/pi` (rw) | Pi Coding Agent |
 
 ### Generic Commands
 
-Any command not matching a preset name gets a generic sandbox: The validation tests use
-`/bin/bash` this way.
+Any command not matching a preset name gets a generic sandbox with no
+tool-specific binds. The validation tests use `/bin/bash` this way.
 
 ---
 
@@ -298,20 +390,42 @@ Certain files should not be modified by sandboxed tools:
 
 - **`.github/`** — CI/CD workflows. A malicious or confused AI could inject
   workflow steps, copilot agents and skills.
-- **`.opencode/`, `.claude/`, `opencode.json`** opencode and claude agents and skills
+- **`.claude/`, `opencode.json`** — opencode and claude agents and skills
 - **`.gitignore`** — changing ignore rules could hide malicious files from
   review.
 - **Lockfiles** (`package-lock.json`, `poetry.lock`, `Cargo.lock`,
   `pnpm-lock.yaml`, `yarn.lock`, `mise.toml`) — supply chain attack vector if modified.
 
-These are overlaid with `--ro-bind` **after** the worktree bind, which
-makes them read-only even though the worktree itself is writable. The
-`--allow-infra` flag disables this protection.
+### Default Protection
 
-The `.git` directory protection works differently: since the worktree's
-`.git` is a file pointing to the main repository's `.git` directory, we
-control access by binding the main `.git` directory as either `--ro-bind`
-or `--bind` depending on `--allow-git`.
+By default, these paths are protected (read-only). The list can be customized
+via `.agentreadonly` in the repository root.
+
+### `.agentreadonly` File
+
+Format: similar to `.gitignore`
+
+- One path per line
+- Comments start with `#`
+- Empty file = all paths writable (except `.agentreadonly` itself)
+- `$HOME/...` entries bind host home directories read-only
+
+Example:
+```
+# Protect additional paths
+src/config/
+docs/
+
+# Bind a reference directory from host home
+$HOME/Git/other-project
+```
+
+### Implementation
+
+Protected paths are overlaid with `--ro-bind` **after** the worktree bind,
+which makes them read-only even though the worktree itself is writable.
+
+The `.agentreadonly` file itself is always protected (cannot be modified).
 
 ---
 
@@ -346,7 +460,7 @@ profile grants `userns` permission to the bwrap binary and nothing else
 
 ### Early Diagnostic
 
-`check_bwrap_userns()` runs before any main logic. It attempts
+`checkBwrapUserns()` runs before any main logic. It attempts
 `bwrap --bind / / /bin/true` and if that fails:
 
 1. Checks if the failure looks like a user namespace error
@@ -355,90 +469,6 @@ profile grants `userns` permission to the bwrap binary and nothing else
    the existing profile"
 
 This saves users from debugging opaque bwrap errors.
-
----
-
-## Bash Pitfalls Encountered
-
-### `set -e` and `((var++))`
-
-With `set -e` (errexit), the arithmetic expression `((var++))` when `var`
-is 0 evaluates to 0, which is falsy, and triggers immediate exit. Fixed by
-using `var=$((var + 1))` instead of `((var++))`.
-
-### Empty Arrays with `set -u`
-
-Referencing `"${ARRAY[@]}"` when `ARRAY` is empty triggers an "unbound
-variable" error under `set -u` (nounset) in bash versions before 4.4.
-Protected with:
-
-```bash
-if [[ ${#ARRAY[@]} -gt 0 ]]; then
-    cmd "${ARRAY[@]}"
-fi
-```
-
-### Cleanup Trap and `set -e`
-
-The EXIT trap function (`cleanup_worktree_summary`) starts with `set +e`
-to ensure it runs to completion even if individual commands within it fail
-(e.g., git commands on a partially-created worktree).
-
-### `/sbin` May Be a Symlink
-
-On some systems, `/sbin` is a symlink to `/usr/sbin`. Binding a symlink
-as `--ro-bind /sbin /sbin` fails. The script checks
-`[[ -d /sbin && ! -L /sbin ]]` before adding the bind.
-
----
-
-## Decisions Explicitly Rejected
-
-### Landlock / landrun
-
-Investigated as an additional restriction layer. Removed because:
-- The Landlock enforcement was incomplete for the filesystem paths we cared
-  about.
-- Bubblewrap already provides the namespace-based isolation we need.
-- Adding a second layer increased complexity without measurable security
-  benefit.
-
-### Remapping Paths Inside the Sandbox
-
-Considered mounting the worktree at `/home/scoder/workspace` for a cleaner
-sandbox layout. Initially rejected because git worktree cross-references use absolute
-paths, and remapping would break them. However current version maps files in sandbox to
-same location in real filesystem and appears to work, so `/home/$USER/Git/project-a` is
-created as a worktree in `/tmp/scoder/Git/project-a` which is mapped in the
-sandbox to `/home/scoder/Git/project-a`. This needs monitoring.
-
-### Config File
-
-Considered `scoder.json` or `~/.config/scoder/config`. Rejected in favor
-of flags and environment variables only. The tool should be opinionated
-enough that configuration is rarely needed, and when it is, a flag is more
-discoverable and composable than a config file.
-
-### Automatic Cleanup of Worktrees
-
-Considered automatically deleting the worktree and branch on exit if no
-changes were made. Rejected because:
-- The user might want to inspect even an unchanged worktree to verify the
-  sandbox worked correctly.
-- Automatic deletion of the branch with changes is dangerous.
-- Manual cleanup instructions are printed on every exit.
-
-### Setting GIT_WORK_TREE
-
-Rejected. See [Path Mirroring](#path-mirroring).
-
-### Per-Tool Network Defaults
-
-All tools currently default to network=on. Considered making some tools
-default to network=off, but every supported tool (opencode, gh, claude,
-copilot) genuinely needs network access to function. A tool that doesn't
-need network access is the exception, not the rule, so `--no-net` is the
-opt-in flag.
 
 ---
 
@@ -453,7 +483,7 @@ installed on the development machine). They may need adjustment.
 
 ### Live Tool Testing
 
-The validation suite lives in `tests/validate.sh`. It uses `/bin/bash` as the
+The validation suite (`tests/validate.ts`) uses `/bin/bash` as the
 sandboxed tool, which exercises the sandbox mechanics (HOME isolation,
 filesystem protection, worktree creation and worktree reuse). However, it does
 not test with real tools (opencode, gh, claude, copilot). Edge cases in how
@@ -463,21 +493,18 @@ to, signals they handle) may surface during real use.
 ### Worktree Accumulation
 
 scoder creates worktrees and branches but never cleans them up
-automatically. Because we reuse branches and worktrees for multiple
-.
+automatically. Because we reuse branches and worktrees for multiple sessions,
+this is usually acceptable. However, over time, old branches may accumulate.
 
-### Signal Handling
+Manual cleanup:
+```bash
+# List scoder branches
+git branch --list 'scoder/*'
 
-The current signal setup is:
-- `trap cleanup_worktree_summary EXIT` — always runs on exit
-- `trap 'exit 130' INT` — converts SIGINT to exit code 130 (triggering EXIT trap)
-- `trap 'exit 143' TERM` — converts SIGTERM to exit code 143
-
-Originally the final line was `exec bwrap ...`, but the shell process was replaced
-and these traps are no longer active during tool execution, and the cleanup was
-not being triggered when the tool finished, so the exec was removed.
-Bwrap's `--die-with-parent` ensures cleanup if the parent process dies.
-
+# Remove a specific worktree and branch
+git worktree remove /tmp/scoder/<path>
+git branch -D scoder/<name>
+```
 
 ### No Nested Sandbox Detection
 
@@ -493,3 +520,22 @@ opencode's `~/.local/share/opencode`). This means the sandboxed tool can
 modify persistent state on the host. This is intentional — these tools
 need to persist session data, databases, and caches — but it does create
 a limited escape from the sandbox's filesystem isolation.
+
+### Signal Handling
+
+The current signal handling relies on:
+- Bun's async/await for cleanup
+- `process.exit()` for controlled termination
+- bwrap's `--die-with-parent` ensures cleanup if parent dies
+
+Unlike the bash version, there's no explicit signal trap. This is generally
+fine because the TypeScript runtime handles cleanup properly, but edge cases
+(SIGKILL, system crash) may leave temp files behind.
+
+### Validation Test Speed
+
+The validation test suite creates git worktrees, which is slow (several
+seconds per test). Future optimization could:
+- Use lighter-weight tests for basic functionality
+- Parallelize independent tests
+- Mock filesystem operations where possible

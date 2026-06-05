@@ -1,13 +1,13 @@
 # Validation Test Scripts
 
-This document explains what `tests/validate.sh` checks in plain language.
+This document explains what `tests/validate.ts` checks in plain language.
 
 ## How the validation script works
 
 The script is developer-facing and is intended to be run from the repository:
 
 ```bash
-./tests/validate.sh
+bun run tests/validate.ts
 ```
 
 For each test case it:
@@ -27,43 +27,43 @@ An outer cleanup trap also removes any leftover temporary repos, worktrees, and 
 
 Runs `scoder` and prints `$HOME` from inside the sandbox.
 
-Expected result: the sandboxed process sees `/home/scoder`, not the developer's real home directory.
+**Expected result:** the sandboxed process sees `/home/scoder`, not the developer's real home directory.
 
 ### 2. `system-read-only`
 
 Tries to create a file under `/usr/bin` from inside the sandbox.
 
-Expected result: the write fails because system directories are mounted read-only.
+**Expected result:** the write fails because system directories are mounted read-only.
 
 ### 3. `worktree-writable`
 
 Creates a new file in the project working tree from inside the sandbox.
 
-Expected result: the write succeeds, proving the sandbox can modify the isolated project worktree.
+**Expected result:** the write succeeds, proving the sandbox can modify the isolated project worktree.
 
 ### 4. `github-protected`
 
 Tries to create a file inside `.github/`.
 
-Expected result: the write fails because `.github/` is protected read-only by default.
+**Expected result:** the write fails because `.github/` is protected read-only by default.
 
 ### 5. `gitignore-protected`
 
 Tries to append text to `.gitignore`.
 
-Expected result: the write fails because `.gitignore` is protected read-only by default.
+**Expected result:** the write fails because `.gitignore` is protected read-only by default.
 
 ### 6. `empty-agentreadonly-allows-writes`
 
 Creates an empty `.agentreadonly`, commits it, then tries to create a file inside `.github/`.
 
-Expected result: the write succeeds. An empty `.agentreadonly` removes the default workspace protection list, while `.agentreadonly` itself remains protected separately.
+**Expected result:** the write succeeds. An empty `.agentreadonly` removes the default workspace protection list, while `.agentreadonly` itself remains protected separately.
 
 ### 7. `agentreadonly-protected`
 
 Creates and commits an empty `.agentreadonly`, then tries to modify that file from inside the sandbox.
 
-Expected result: the write fails because `.agentreadonly` is always mounted read-only.
+**Expected result:** the write fails because `.agentreadonly` is always mounted read-only.
 
 ### 8. `agentreadonly-home-directory-readonly`
 
@@ -71,8 +71,7 @@ Creates a fake home directory with a reference directory outside the repository,
 adds `$HOME/Git/other-project` to `.agentreadonly`, and runs `scoder` with that
 fake home.
 
-Expected result:
-
+**Expected result:**
 - the sandbox can read `/home/scoder/Git/other-project/data.txt`
 - writes to that mirrored path fail because the bind is read-only
 
@@ -84,7 +83,7 @@ read-only host home directory binds mirrored under `/home/scoder/`.
 Creates a fake home directory without the referenced path, adds
 `$HOME/Git/missing-project` to `.agentreadonly`, and runs `scoder`.
 
-Expected result: `scoder` exits with an error explaining that the HOME bind
+**Expected result:** `scoder` exits with an error explaining that the HOME bind
 must reference an existing directory.
 
 This verifies the validation guard for missing external reference directories.
@@ -93,14 +92,13 @@ This verifies the validation guard for missing external reference directories.
 
 Runs `scoder` once, then checks the source repository for a `scoder/*` branch.
 
-Expected result: a `scoder/<repo-name>` branch exists, proving the worktree lifecycle was set up.
+**Expected result:** a `scoder/<repo-name>` branch exists, proving the worktree lifecycle was set up.
 
 ### 11. `existing-scoder-worktree-reused`
 
 Runs `scoder` once to create the worktree, writes an uncommitted file directly into that scoder worktree, then runs `scoder` again from inside that same worktree.
 
-Expected result:
-
+**Expected result:**
 - `scoder` reports that it is already in the scoder worktree.
 - The second run is not blocked by the uncommitted change.
 
@@ -112,7 +110,7 @@ Creates a fake home directory where `~/.agents/skills/linked-skill` is a
 symlink to a real skill directory elsewhere on the host, then runs `scoder`
 with that fake home.
 
-Expected result: the skill file is present at
+**Expected result:** the skill file is present at
 `/home/scoder/.agents/skills/linked-skill/SKILL.md` inside the sandbox.
 
 This verifies that scoder snapshots `~/.agents` at startup with symlinks
@@ -123,21 +121,18 @@ contains symlinked entries.
 
 Creates a repository `AGENTS.md`, runs `scoder`, and checks the sandbox copy.
 
-Expected result:
-
-- the sandbox sees both the repository text and the injected `scoder sandbox`
-  notice
+**Expected result:**
+- the sandbox sees both the repository text and the injected `scoder sandbox` notice
 - the host repository `AGENTS.md` is unchanged
 
-This verifies that scoder overlays `AGENTS.md` inside the sandbox without
-modifying the real repository file.
+This verifies that scoder overlays `AGENTS.md` inside the sandbox without modifying the real repository file.
 
 ### 14. `host-loopback-blocked`
 
 Starts a temporary HTTP server on the host bound to `127.0.0.1`, then runs
 `scoder` and tries to reach that server from inside the sandbox.
 
-Expected result: the request fails and the test sees `BLOCKED`.
+**Expected result:** the request fails and the test sees `BLOCKED`.
 
 This verifies the loopback restriction added around the `pasta`-managed tool
 network namespace.
@@ -148,37 +143,77 @@ Starts a temporary HTTP server on the host bound to `127.0.0.1`, then runs
 `scoder --llm-port=<port>` and tries to reach that server from inside the
 sandbox.
 
-Expected result: the request succeeds and returns `SUCCESS`.
+**Expected result:** the request succeeds and returns `SUCCESS`.
 
 This verifies that the optional localhost exemption is applied only when an
 explicit LLM port is configured.
 
-### 16. `dry-run-uses-pasta`
+### 16. `outbound-dns-works`
+
+Runs `scoder` and, from inside the sandbox, uses Python's standard library to resolve `example.com`.
+
+**Expected result:** the command prints `SUCCESS`.
+
+This verifies that the nested tool namespace has working DNS resolution.
+
+### 17. `dry-run-uses-pasta`
 
 Runs `scoder --dry-run /bin/true` and inspects the printed command line.
 
-Expected result: the dry-run output includes `pasta`.
+**Expected result:** the dry-run output includes `pasta`.
 
-This verifies that scoder now launches tools through the `pasta` network layer.
+This verifies that scoder launches tools through the `pasta` network layer.
 
-### 17. `outbound-dns-and-https-work`
+### 18. `no-worktree-mode`
 
-Runs `scoder` and, from inside the sandbox, uses Python's standard library to:
+Runs `scoder --no-worktree --dry-run /bin/true` and checks:
+- the output mentions "direct mode"
+- no `scoder/*` branch is created
 
-1. resolve `example.com`
-2. fetch `https://example.com`
+**Expected result:** both conditions are true.
 
-Expected result: the command prints `SUCCESS`.
-
-This verifies that the nested tool namespace still has working outbound
-networking and DNS resolution after the loopback restrictions and
-`resolv.conf` overlay are applied.
+This verifies that the `--no-worktree` flag bypasses git worktree creation.
 
 ## Current network coverage
 
 The validation suite currently tests both sides of the network behavior:
 
-- host loopback access is blocked
-- a configured localhost LLM port can be reached
-- outbound DNS resolution works
-- outbound HTTPS egress works
+- ✅ host loopback access is blocked (`host-loopback-blocked`)
+- ✅ a configured localhost LLM port can be reached (`llm-port-allows-host-loopback`)
+- ✅ outbound DNS resolution works (`outbound-dns-works`)
+
+## Test Implementation Notes
+
+### Environment Variable Passing
+
+Some tests need to override environment variables (e.g., `HOME` for testing
+`$HOME/...` binds). The `runScoder()` helper accepts an optional `env` parameter:
+
+```typescript
+const output = await runScoder(repoDir, ["-q", "/bin/bash", "-c", "echo $HOME"], {
+  HOME: fakeHome,
+});
+```
+
+### Server Cleanup
+
+Tests that create HTTP servers must clean them up in a `finally` block:
+
+```typescript
+const server = Bun.serve({ ... });
+try {
+  // test logic
+} finally {
+  server.stop();
+}
+```
+
+### Worktree Detection
+
+The `existing-scoder-worktree-reused` test parses `git worktree list --porcelain`
+output to find the worktree directory, then runs scoder from that directory.
+
+### Temp Directory Cleanup
+
+All tests create repos under a shared `TEST_BASE` directory, which is removed
+by the `cleanup()` function in a finally block.

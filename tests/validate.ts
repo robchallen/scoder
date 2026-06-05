@@ -18,9 +18,16 @@ const tests: TestCase[] = [
   { name: "worktree-writable", fn: testWorktreeWritable },
   { name: "github-protected", fn: testGithubProtected },
   { name: "gitignore-protected", fn: testGitignoreProtected },
+  { name: "empty-agentreadonly-allows-writes", fn: testEmptyAgentreadonlyAllowsWrites },
   { name: "agentreadonly-protected", fn: testAgentreadonlyProtected },
+  { name: "agentreadonly-home-directory-readonly", fn: testAgentreadonlyHomeDirectoryReadonly },
+  { name: "agentreadonly-home-directory-must-exist", fn: testAgentreadonlyHomeDirectoryMustExist },
   { name: "worktree-branch-created", fn: testWorktreeBranchCreated },
+  { name: "existing-scoder-worktree-reused", fn: testExistingScoderWorktreeReused },
+  { name: "symlinked-agents-skills-available", fn: testSymlinkedAgentsSkillsAvailable },
+  { name: "sandbox-agents-md-overlay-visible", fn: testSandboxAgentsMdOverlayVisible },
   { name: "host-loopback-blocked", fn: testHostLoopbackBlocked },
+  { name: "llm-port-allows-host-loopback", fn: testLlmPortAllowsHostLoopback },
   { name: "outbound-dns-works", fn: testOutboundDnsWorks },
   { name: "dry-run-uses-pasta", fn: testDryRunUsesPasta },
   { name: "no-worktree-mode", fn: testNoWorktreeMode },
@@ -100,6 +107,16 @@ async function testGitignoreProtected(): Promise<boolean> {
   );
 }
 
+async function testEmptyAgentreadonlyAllowsWrites(): Promise<boolean> {
+  const repoDir = await createTestRepo("empty-agentreadonly");
+  await $`touch ${repoDir}/.agentreadonly`;
+  await $`git -C ${repoDir} add -A`.quiet();
+  await $`git -C ${repoDir} commit -m "add agentreadonly"`.quiet();
+
+  const output = await runScoder(repoDir, ["-q", "/bin/bash", "-c", "touch .github/test && echo SUCCESS"]);
+  return output.includes("SUCCESS");
+}
+
 async function testAgentreadonlyProtected(): Promise<boolean> {
   const repoDir = await createTestRepo("agentreadonly-protected");
   await $`touch ${repoDir}/.agentreadonly`;
@@ -114,12 +131,116 @@ async function testAgentreadonlyProtected(): Promise<boolean> {
   );
 }
 
+async function testAgentreadonlyHomeDirectoryReadonly(): Promise<boolean> {
+  const repoDir = await createTestRepo("agentreadonly-home-readonly");
+  const fakeHome = `${TEST_BASE}/bind-home`;
+  const referenceDir = `${fakeHome}/Git/other-project`;
+
+  await $`mkdir -p ${referenceDir}`;
+  await $`echo "reference-data" > ${referenceDir}/data.txt`;
+  await $`echo '$HOME/Git/other-project' > ${repoDir}/.agentreadonly`;
+  await $`git -C ${repoDir} add -A`.quiet();
+  await $`git -C ${repoDir} commit -m "add home readonly bind"`.quiet();
+
+  const output = await runScoder(repoDir, [
+    "-q",
+    "/bin/bash",
+    "-c",
+    `cat /home/scoder/Git/other-project/data.txt && echo "test" >> /home/scoder/Git/other-project/data.txt 2>&1 || true`,
+  ], { HOME: fakeHome });
+
+  return output.includes("reference-data") && (
+    output.includes("Read-only") ||
+    output.includes("Permission denied") ||
+    output.includes("cannot")
+  );
+}
+
+async function testAgentreadonlyHomeDirectoryMustExist(): Promise<boolean> {
+  const repoDir = await createTestRepo("agentreadonly-home-missing");
+  const fakeHome = `${TEST_BASE}/missing-bind-home`;
+
+  await $`mkdir -p ${fakeHome}`;
+  await $`echo '$HOME/Git/missing-project' > ${repoDir}/.agentreadonly`;
+  await $`git -C ${repoDir} add -A`.quiet();
+  await $`git -C ${repoDir} commit -m "add missing home readonly bind"`.quiet();
+
+  const output = await runScoder(repoDir, ["-q", "/bin/true"], { HOME: fakeHome });
+  return output.includes("HOME bind must reference an existing directory");
+}
+
 async function testWorktreeBranchCreated(): Promise<boolean> {
   const repoDir = await createTestRepo("worktree-branch");
   await runScoder(repoDir, ["-q", "/bin/bash", "-c", "echo READY"]);
 
   const branches = await $`git -C ${repoDir} branch --list 'scoder/*'`.text();
   return branches.trim().length > 0;
+}
+
+async function testExistingScoderWorktreeReused(): Promise<boolean> {
+  const repoDir = await createTestRepo("worktree-reuse");
+  await runScoder(repoDir, ["-q", "/bin/bash", "-c", "echo READY"]);
+
+  const branches = await $`git -C ${repoDir} branch --list 'scoder/*'`.text();
+  const branchName = branches.trim().split("\n")[0]?.replace(/^\*\?\s*/, "");
+
+  if (!branchName) {
+    return false;
+  }
+
+  const worktreeList = await $`git -C ${repoDir} worktree list --porcelain`.text();
+  const worktreeLine = worktreeList.split("\n").find((line) => line.startsWith("worktree "));
+  const worktreeDir = worktreeLine?.split(" ")[1];
+
+  if (!worktreeDir) {
+    return false;
+  }
+
+  await $`echo "dirty" > ${worktreeDir}/reuse.txt`;
+
+  const output = await runScoderInDir(worktreeDir, ["--dry-run", "/bin/true"]);
+  return output.includes("Already in scoder worktree") && !output.includes("uncommitted changes");
+}
+
+async function testSymlinkedAgentsSkillsAvailable(): Promise<boolean> {
+  const repoDir = await createTestRepo("agents-skills");
+  const fakeHome = `${TEST_BASE}/agents-home`;
+  const skillTarget = `${TEST_BASE}/linked-skill`;
+
+  await $`mkdir -p ${fakeHome}/.agents/skills`;
+  await $`mkdir -p ${skillTarget}`;
+  await $`echo -e "---\nname: linked-skill\ndescription: 'Test skill for validation.'\n---" > ${skillTarget}/SKILL.md`;
+  await $`ln -s ${skillTarget} ${fakeHome}/.agents/skills/linked-skill`;
+
+  const output = await runScoder(repoDir, [
+    "-q",
+    "/bin/bash",
+    "-c",
+    "test -f /home/scoder/.agents/skills/linked-skill/SKILL.md && echo SUCCESS",
+  ], { HOME: fakeHome });
+
+  return output.includes("SUCCESS");
+}
+
+async function testSandboxAgentsMdOverlayVisible(): Promise<boolean> {
+  const repoDir = await createTestRepo("agents-md-overlay");
+  await $`echo "# Repo instructions" > ${repoDir}/AGENTS.md`;
+  await $`git -C ${repoDir} add -A`.quiet();
+  await $`git -C ${repoDir} commit -m "add agents instructions"`.quiet();
+
+  const output = await runScoder(repoDir, [
+    "-q",
+    "/bin/bash",
+    "-c",
+    "grep -q 'Repo instructions' AGENTS.md && grep -q 'scoder sandbox' AGENTS.md && echo SUCCESS",
+  ]);
+
+  if (!output.includes("SUCCESS")) {
+    return false;
+  }
+
+  const hostContent = await Bun.file(`${repoDir}/AGENTS.md`).text();
+  return !hostContent.includes("scoder sandbox");
 }
 
 async function testHostLoopbackBlocked(): Promise<boolean> {
@@ -143,6 +264,33 @@ async function testHostLoopbackBlocked(): Promise<boolean> {
     ]);
 
     return output.includes("BLOCKED");
+  } finally {
+    server.stop();
+  }
+}
+
+async function testLlmPortAllowsHostLoopback(): Promise<boolean> {
+  const repoDir = await createTestRepo("llm-port");
+
+  const server = Bun.serve({
+    port: 0,
+    hostname: "127.0.0.1",
+    fetch() {
+      return new Response("SUCCESS");
+    },
+  });
+
+  try {
+    const port = server.port;
+    const output = await runScoder(repoDir, [
+      "-q",
+      `--llm-port=${port}`,
+      "/bin/bash",
+      "-c",
+      `curl -fsS --max-time 2 http://127.0.0.1:${port}/`,
+    ]);
+
+    return output.includes("SUCCESS");
   } finally {
     server.stop();
   }
@@ -194,13 +342,37 @@ async function createTestRepo(name: string): Promise<string> {
   return repoDir;
 }
 
-async function runScoder(repoDir: string, args: string[]): Promise<string> {
+async function runScoder(repoDir: string, args: string[], env?: Record<string, string>): Promise<string> {
   try {
     const scoderScript = `${process.cwd()}/src/index.ts`;
     const proc = await Bun.spawn(
       ["bun", "run", scoderScript, ...args],
       {
         cwd: repoDir,
+        stdout: "pipe",
+        stderr: "pipe",
+        env: env || {},
+      }
+    );
+
+    await proc.exited;
+
+    const stdoutBytes = await new Response(proc.stdout).arrayBuffer();
+    const stderrBytes = await new Response(proc.stderr).arrayBuffer();
+
+    return new TextDecoder().decode(stdoutBytes) + new TextDecoder().decode(stderrBytes);
+  } catch (err) {
+    return String(err);
+  }
+}
+
+async function runScoderInDir(runDir: string, args: string[]): Promise<string> {
+  try {
+    const scoderScript = `${process.cwd()}/src/index.ts`;
+    const proc = await Bun.spawn(
+      ["bun", "run", scoderScript, ...args],
+      {
+        cwd: runDir,
         stdout: "pipe",
         stderr: "pipe",
       }

@@ -219,7 +219,8 @@ async function runScoder(repoDir: string, args: string[]): Promise<string> {
 
 async function mktemp(pattern: string): Promise<string> {
   const proc = await $`mktemp -d ${pattern}`.quiet();
-  return proc.text().then((t) => t.trim());
+  const output = new TextDecoder().decode(proc.stdout);
+  return output.trim();
 }
 
 async function cleanup(): Promise<void> {

@@ -1,6 +1,6 @@
 ---
 name: working-in-a-scoder-sandbox
-description: 'Use when the current git branch matches `scoder/*` or when the user tells you that you are in a scoder sandbox or scoder worktree. Use this if the user requests you update your copy of the code to incorporate changes from upstream and you detect you are in a sandbox. Use if you find that full paths that previously worked fail and your home directory is now `/home/scoder`. Use if you are unexpectedly unable to write to a configuration file in your home directory like AGENTS.md. Do NOT use for generic Git advice outside scoder or for unrelated sandbox/container environments.'
+description: 'Use when the current git branch matches `scoder/*` or when the user tells you that you are in a scoder sandbox or scoder worktree. Also use when the user mentions `--no-worktree` mode. Use this if the user requests you update your copy of the code to incorporate changes from upstream and you detect you are in a sandbox. Use if you find that full paths that previously worked fail and your home directory is now `/home/scoder`. Use if you are unexpectedly unable to write to a configuration file in your home directory like AGENTS.md. Do NOT use for generic Git advice outside scoder or for unrelated sandbox/container environments.'
 license: MIT
 allowed-tools: Read Bash Grep Glob
 ---
@@ -31,6 +31,7 @@ Use this skill when:
 
 - the current branch name matches `scoder/*` and your home directory is now `/home/scoder/`
 - the user says that you are in a scoder sandbox or scoder worktree
+- **the user mentions running scoder with `--no-worktree` (direct mode, no branch created)**
 - you need to decide whether a file write is likely to succeed inside scoder
 - you need to bring upstream `main` changes into an in-progress sandbox session
 - you need to know whether another checkout can already see sandbox changes
@@ -72,6 +73,10 @@ you should be able to find the file.
 Symbolic links outside of the repository will probably be broken. A common problem is
 with agent skill directories and this means you may not have a complete set of skills available.
 
+**Note on modes:** In worktree mode (default), your working directory is at
+`/tmp/scoder/<git-repo-path>` mapped to `/home/scoder/<git-repo-path>`. In direct mode
+(`--no-worktree`), your working directory is the current directory.
+
 ### 2. Assume the sandbox branch started from the user's current `HEAD`
 
 There is nothing special about `main`. A scoder session starts from whatever
@@ -80,6 +85,10 @@ branch or commit the user launched it from, then creates or reuses
 
 This matters when reasoning about diffs and rebases: compare against the
 current branch context, not against `main` by default.
+
+**Exception:** In `--no-worktree` mode, no branch is created. Changes happen
+directly in the working directory and are immediate (no commit required, but
+also no isolation).
 
 ### 3. Work as if the project worktree is writable but the environment is selective
 
@@ -111,13 +120,15 @@ local code is where the relevant changes are.
 Prefer:
 
 ```bash
-git rebase main
+git fetch origin
+git rebase origin/main
 ```
 
 or:
 
 ```bash
-git merge main
+git fetch origin
+git merge origin/main
 ```
 
 Use this when the user asks to pick up their latest local changes, or when you discover
@@ -130,7 +141,7 @@ real option is for the user to fix things outside the sandbox.
 
 ### 5. Treat commits as the visibility boundary
 
-Other checkouts do not see sandbox changes just because files were edited in
+**In worktree mode:** Other checkouts do not see sandbox changes just because files were edited in
 the scoder sandbox. They see changes when commits move the `scoder/*` branch.
 
 That means:
@@ -139,6 +150,10 @@ That means:
 - `git log`, `git diff <branch>`, merge, and rebase from another checkout only
   reflect committed state
 - if the user expects review or integration from another checkout, commit first
+
+**In `--no-worktree` mode:** Changes are immediate in the working directory.
+No commit is required, but there is also no isolation - changes affect the
+actual working tree directly.
 
 ### 6. Commit at meaningful checkpoints
 
@@ -204,6 +219,17 @@ If they need another checkout to see the changes through the branch, commit.
 
 That is expected to reuse the existing scoder worktree rather than blocking on
 its uncommitted changes.
+
+### You detect `--no-worktree` mode
+
+If the user mentions running with `--no-worktree`, or if you notice there's no
+`scoder/*` branch but the user says they're in a sandbox:
+
+- Changes are immediate (no commit needed)
+- No worktree is created
+- `.agentreadonly` protection still applies
+- `AGENTS.md` overlay is still created, but without worktree-specific messages
+- You can edit files directly in the current directory
 
 ## References
 

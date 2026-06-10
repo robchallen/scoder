@@ -22,6 +22,8 @@ async function ensureDir(path: string): Promise<void> {
   await Bun.spawn(["mkdir", "-p", path]);
 }
 
+// ### TOOL_PRESETS
+// [IMPLEMENTS](/design/features/tool-presets.md)
 export const TOOL_PRESETS: Record<string, ToolPreset> = {
   opencode: {
     description: "OpenCode",

@@ -172,6 +172,8 @@ async function testAgentreadonlyHomeDirectoryMustExist(): Promise<boolean> {
   return output.includes("HOME bind must reference an existing directory");
 }
 
+// ### testWorktreeBranchCreated
+// [TESTS](/design/features/git-worktree-isolation.md)
 async function testWorktreeBranchCreated(): Promise<boolean> {
   const repoDir = await createTestRepo("worktree-branch");
   await runScoder(repoDir, ["-q", "-w", "/bin/bash", "-c", "echo READY"]);
@@ -180,6 +182,8 @@ async function testWorktreeBranchCreated(): Promise<boolean> {
   return branches.trim().length > 0;
 }
 
+// ### testExistingScoderWorktreeReused
+// [TESTS](/design/features/git-worktree-isolation.md)
 async function testExistingScoderWorktreeReused(): Promise<boolean> {
   const repoDir = await createTestRepo("worktree-reuse");
   await runScoder(repoDir, ["-q", "-w", "/bin/bash", "-c", "echo READY"]);
@@ -205,6 +209,8 @@ async function testExistingScoderWorktreeReused(): Promise<boolean> {
   return output.includes("Already in scoder worktree") && !output.includes("uncommitted changes");
 }
 
+// ### testWorktreeRecreatedIfMissing
+// [TESTS](/design/features/git-worktree-isolation.md)
 async function testWorktreeRecreatedIfMissing(): Promise<boolean> {
   const repoDir = await createTestRepo("worktree-recreated");
   

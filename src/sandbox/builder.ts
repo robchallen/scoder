@@ -22,6 +22,11 @@ export interface SandboxConfig {
   protectionConfig?: ProtectionConfig;
 }
 
+// ### buildBwrapCommand
+// [IMPLEMENTS](/design/features/sandbox-isolation.md)
+// [IMPLEMENTS](/design/features/network-isolation.md)
+// [IMPLEMENTS](/design/features/path-mirroring.md)
+// [IMPLEMENTS](/design/features/host-tool-binding.md)
 export async function buildBwrapCommand(
   config: SandboxConfig
 ): Promise<string[]> {
@@ -248,6 +253,8 @@ export async function buildBwrapCommand(
   return cmd;
 }
 
+// ### buildExtraBinds
+// [IMPLEMENTS](/design/features/host-tool-binding.md)
 async function buildExtraBinds(
   realHome: string,
   sandboxHome: string

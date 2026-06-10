@@ -39,6 +39,8 @@ export interface ProtectionConfig {
   dirs?: string[];
 }
 
+// ### setupProtection
+// [IMPLEMENTS](/design/features/infrastructure-protection.md)
 export async function setupProtection(
   sourceDir: string,
   sandboxProjDir: string
@@ -269,6 +271,8 @@ async function createTempFile(prefix: string): Promise<string> {
   return new TextDecoder().decode(stdoutBytes).trim();
 }
 
+// ### getAgentsMdOverlayBind
+// [IMPLEMENTS](/design/features/agents-md-overlay.md)
 export function getAgentsMdOverlayBind(
   overlayFile: string,
   sandboxProjDir: string
@@ -329,6 +333,8 @@ async function safeCopyDirRecursive(
   visited.delete(realSrc);
 }
 
+// ### setupAgentsSnapshot
+// [IMPLEMENTS](/design/features/agents-skills-snapshot.md)
 export async function setupAgentsSnapshot(): Promise<BindMount | null> {
   const agentsSrc = `${process.env.HOME}/.agents`;
 

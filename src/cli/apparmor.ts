@@ -2,6 +2,8 @@ import { error, info, warning } from "../utils/logger.ts";
 
 const APPARMOR_PROFILE_PATH = "/etc/apparmor.d/bwrap";
 
+// ### configureAppArmor
+// [IMPLEMENTS](/design/features/apparmor-compatibility.md)
 export async function configureAppArmor(): Promise<void> {
   if (process.getuid?.() !== 0) {
     error("--configure-apparmor must be run as root");

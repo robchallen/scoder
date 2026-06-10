@@ -185,6 +185,7 @@ export async function commitAllChanges(message: string): Promise<void> {
   }
 }
 
+// ### hasUncommittedChanges
 export async function hasUncommittedChanges(
   repoDir: string
 ): Promise<boolean> {
@@ -260,6 +261,11 @@ export async function getDiffStat(
   return new TextDecoder().decode(stdoutBytes);
 }
 
+// ### setupGitWorktree
+// [IMPLEMENTS](/design/features/git-worktree-isolation.md)
+// [IMPLEMENTED_BY](/tests/validate.ts#testWorktreeBranchCreated)
+// [IMPLEMENTED_BY](/tests/validate.ts#testExistingScoderWorktreeReused)
+// [IMPLEMENTED_BY](/tests/validate.ts#testWorktreeRecreatedIfMissing)
 export async function setupGitWorktree(
   useWorktree: boolean
 ): Promise<GitWorktreeInfo | null> {

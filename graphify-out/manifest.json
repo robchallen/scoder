@@ -1,0 +1,217 @@
+{
+  "/home/vp22681/Git/scoder/em": {
+    "mtime": 1781104605.2524502,
+    "ast_hash": "755769da86ead9fe0adb6fa655d7e2fb",
+    "semantic_hash": ""
+  },
+  "/home/vp22681/Git/scoder/scoder": {
+    "mtime": 1780674836.6388276,
+    "ast_hash": "93cc3a8e404661e3b9043ee392ecf304",
+    "semantic_hash": ""
+  },
+  "/home/vp22681/Git/scoder/package.json": {
+    "mtime": 1780676501.8840554,
+    "ast_hash": "93d07244ff84d18439fb74c494cd3293",
+    "semantic_hash": ""
+  },
+  "/home/vp22681/Git/scoder/tsconfig.json": {
+    "mtime": 1780668601.691922,
+    "ast_hash": "f2554e4033d13206c020cb87adf9be65",
+    "semantic_hash": ""
+  },
+  "/home/vp22681/Git/scoder/src/types.ts": {
+    "mtime": 1780668827.3806915,
+    "ast_hash": "392a5e221f8f645bf206345fb2c7d3d6",
+    "semantic_hash": ""
+  },
+  "/home/vp22681/Git/scoder/src/index.ts": {
+    "mtime": 1780677182.8292866,
+    "ast_hash": "6b0fb05c5d28f02e95237f3a19211a6b",
+    "semantic_hash": ""
+  },
+  "/home/vp22681/Git/scoder/src/tools/presets.ts": {
+    "mtime": 1781105171.1768181,
+    "ast_hash": "3db323da4122b22b80c527d3a2fc05ab",
+    "semantic_hash": ""
+  },
+  "/home/vp22681/Git/scoder/src/cli/apparmor.ts": {
+    "mtime": 1781105233.0302205,
+    "ast_hash": "09deaae6f8e07f1718d636dcc841c4ef",
+    "semantic_hash": ""
+  },
+  "/home/vp22681/Git/scoder/src/cli/parse-args.ts": {
+    "mtime": 1780692470.0639536,
+    "ast_hash": "077f34ebb40eaf63e58b799aa02c3090",
+    "semantic_hash": ""
+  },
+  "/home/vp22681/Git/scoder/src/utils/checks.ts": {
+    "mtime": 1780668836.350722,
+    "ast_hash": "b382a345dce2aa096806e9640c842fce",
+    "semantic_hash": ""
+  },
+  "/home/vp22681/Git/scoder/src/utils/logger.ts": {
+    "mtime": 1780668602.6929255,
+    "ast_hash": "18ae1392c6e28271ed3dc78787d10d41",
+    "semantic_hash": ""
+  },
+  "/home/vp22681/Git/scoder/src/sandbox/builder.ts": {
+    "mtime": 1781104912.9158475,
+    "ast_hash": "d7016f6c894fdbfd888137a7cb287799",
+    "semantic_hash": ""
+  },
+  "/home/vp22681/Git/scoder/src/git/protection.ts": {
+    "mtime": 1781105102.264342,
+    "ast_hash": "d2a56b44f339fbb751be3f74003d4b1e",
+    "semantic_hash": ""
+  },
+  "/home/vp22681/Git/scoder/src/git/worktree.ts": {
+    "mtime": 1781105013.7056806,
+    "ast_hash": "b1ff8bd83db50c741f17c72b7ad9cc4f",
+    "semantic_hash": ""
+  },
+  "/home/vp22681/Git/scoder/.opencode/package.json": {
+    "mtime": 1780694247.6610165,
+    "ast_hash": "2b576b7d6ef34276ecf54ac04c7a9fab",
+    "semantic_hash": ""
+  },
+  "/home/vp22681/Git/scoder/tests/validate.ts": {
+    "mtime": 1781105327.8517978,
+    "ast_hash": "d4be7361f4413b9eaa61103360f75a56",
+    "semantic_hash": ""
+  },
+  "/home/vp22681/Git/scoder/TEST_SCRIPTS.md": {
+    "mtime": 1780691879.0785964,
+    "ast_hash": "bf706b1050b7f95c16c9be6e82203449",
+    "semantic_hash": ""
+  },
+  "/home/vp22681/Git/scoder/ISSUES.md": {
+    "mtime": 1780692402.1846886,
+    "ast_hash": "4fa0aa76db7d1a82b1ecfea3fd8fed9e",
+    "semantic_hash": ""
+  },
+  "/home/vp22681/Git/scoder/AGENTS.md": {
+    "mtime": 1780670703.1474748,
+    "ast_hash": "6e2d426e429e2210772dce3cffd374ec",
+    "semantic_hash": ""
+  },
+  "/home/vp22681/Git/scoder/RETIREMENT_SUMMARY.md": {
+    "mtime": 1780674555.3308492,
+    "ast_hash": "56c8e25258d08323393d819d5a5e0a05",
+    "semantic_hash": ""
+  },
+  "/home/vp22681/Git/scoder/README.md": {
+    "mtime": 1780670622.924192,
+    "ast_hash": "78b1c6f552157b53bf7e8f3e0b0e133c",
+    "semantic_hash": ""
+  },
+  "/home/vp22681/Git/scoder/COVERAGE_ANALYSIS.md": {
+    "mtime": 1780671312.6958537,
+    "ast_hash": "60acf74ab6b2e95cd2d8d5728fd17d73",
+    "semantic_hash": ""
+  },
+  "/home/vp22681/Git/scoder/ROADMAP.md": {
+    "mtime": 1780674531.2567654,
+    "ast_hash": "78e685cfc34bd756e0c2c6b09ef7206b",
+    "semantic_hash": ""
+  },
+  "/home/vp22681/Git/scoder/DESIGN.md": {
+    "mtime": 1780670675.2493765,
+    "ast_hash": "f3d5a30456bc3e43ce8f2ef8ff4c7c1a",
+    "semantic_hash": ""
+  },
+  "/home/vp22681/Git/scoder/design/SCOPE.md": {
+    "mtime": 1781103494.3334599,
+    "ast_hash": "ce9b9cd0e515b2ec2b540530313512e7",
+    "semantic_hash": ""
+  },
+  "/home/vp22681/Git/scoder/design/implementation/issues/uncommitted-changes-warning.md": {
+    "mtime": 1781104428.1520422,
+    "ast_hash": "fd895d6be93f9d8ca819f150dbc2ed5a",
+    "semantic_hash": ""
+  },
+  "/home/vp22681/Git/scoder/design/features/network-isolation.md": {
+    "mtime": 1781105931.2117593,
+    "ast_hash": "743a14463d6e25f104093fa0d502717c",
+    "semantic_hash": ""
+  },
+  "/home/vp22681/Git/scoder/design/features/sandbox-isolation.md": {
+    "mtime": 1781106020.570135,
+    "ast_hash": "3b0ee87d937ba3f4784efd261db40cd4",
+    "semantic_hash": ""
+  },
+  "/home/vp22681/Git/scoder/design/features/host-tool-binding.md": {
+    "mtime": 1781104172.5484881,
+    "ast_hash": "c08edb48ca343057c36b3ea272a5551c",
+    "semantic_hash": ""
+  },
+  "/home/vp22681/Git/scoder/design/features/agents-md-overlay.md": {
+    "mtime": 1781105931.2117593,
+    "ast_hash": "314f8964d1edd4497a9a5e65e62cd1fd",
+    "semantic_hash": ""
+  },
+  "/home/vp22681/Git/scoder/design/features/git-worktree-isolation.md": {
+    "mtime": 1781105931.2117593,
+    "ast_hash": "57f9f91d85fdf41c56b05302149412da",
+    "semantic_hash": ""
+  },
+  "/home/vp22681/Git/scoder/design/features/agents-skills-snapshot.md": {
+    "mtime": 1781105931.2117593,
+    "ast_hash": "d14b89ac936e17e998c2c38021dca724",
+    "semantic_hash": ""
+  },
+  "/home/vp22681/Git/scoder/design/features/infrastructure-protection.md": {
+    "mtime": 1781105931.2117593,
+    "ast_hash": "856810828aeac1c4b53055f5b34d6b46",
+    "semantic_hash": ""
+  },
+  "/home/vp22681/Git/scoder/design/features/dry-run-mode.md": {
+    "mtime": 1781105931.2117593,
+    "ast_hash": "6c2e31761a41fa6711108e8c264e5dcb",
+    "semantic_hash": ""
+  },
+  "/home/vp22681/Git/scoder/design/features/apparmor-compatibility.md": {
+    "mtime": 1781105931.2117593,
+    "ast_hash": "6d900c2a4f82c791608f76e8b4dff452",
+    "semantic_hash": ""
+  },
+  "/home/vp22681/Git/scoder/design/features/tool-presets.md": {
+    "mtime": 1781103967.4370892,
+    "ast_hash": "5666b7d6ebded17a2b090f2d1875e266",
+    "semantic_hash": ""
+  },
+  "/home/vp22681/Git/scoder/design/features/path-mirroring.md": {
+    "mtime": 1781104035.8882165,
+    "ast_hash": "843601f38334d3b4635398293c53f7ae",
+    "semantic_hash": ""
+  },
+  "/home/vp22681/Git/scoder/design/test-scripts/validation-suite.md": {
+    "mtime": 1781105886.875569,
+    "ast_hash": "1c6cc1f4cd24584a25acef76aa879fac",
+    "semantic_hash": ""
+  },
+  "/home/vp22681/Git/scoder/skills/working-in-a-scoder-sandbox/SKILL.md": {
+    "mtime": 1780671670.650837,
+    "ast_hash": "2b74486af22b53ff0960cafa29dd3dc6",
+    "semantic_hash": ""
+  },
+  "/home/vp22681/Git/scoder/skills/working-in-a-scoder-sandbox/references/scoder-sandbox-behavior.md": {
+    "mtime": 1780671677.8448615,
+    "ast_hash": "782cb2639b6533d10ddb5d552646783f",
+    "semantic_hash": ""
+  },
+  "/home/vp22681/Git/scoder/architecture/STANDARDS.md": {
+    "mtime": 1781103745.8417292,
+    "ast_hash": "dea14e5a9281d03450d7ff6c71fde517",
+    "semantic_hash": ""
+  },
+  "/home/vp22681/Git/scoder/architecture/FRAMEWORK.md": {
+    "mtime": 1781103667.7126265,
+    "ast_hash": "e231be6629ddf228f02704a07815e496",
+    "semantic_hash": ""
+  },
+  "/home/vp22681/Git/scoder/.opencode/memory/project.md": {
+    "mtime": 1780691111.2823014,
+    "ast_hash": "bc064defc4070338e269c66c654bbba2",
+    "semantic_hash": ""
+  }
+}

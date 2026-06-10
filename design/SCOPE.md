@@ -39,9 +39,19 @@ localhost services by default.
 
 [HAS_FEATURE](./features/host-tool-binding.md) - Selective read-only binding of host tools and configs (.gitconfig, .local/bin, .cargo, .rustup, mise, R, .m2, .npmrc, .pypirc).
 
+[HAS_FEATURE](./features/direct-mode.md) - Direct mode (`--no-worktree`) runs the tool in the current directory without git worktree isolation.
+
 ## Planned Features
 
-None currently in scope.
+From [ROADMAP.md](/ROADMAP.md), not yet in development:
+
+- **Additional AI tool presets** — as new coding assistants emerge, add presets following the existing convention.
+- **Restricted `/dev`** — bind only essential devices (`/dev/null`, `/dev/zero`, `/dev/random`, `/dev/urandom`, `/dev/tty`, `/dev/pts`, `/dev/fd`).
+- **Nested sandbox detection** — detect when scoder runs inside an existing scoder session (`SCODER_SANDBOX=1`) and refuse or adjust behaviour.
+- **Auto-cleanup on no changes** — optionally remove the worktree and branch if the session made no commits.
+- **R environment variables** — pass through `R_LIBS`, `R_LIBS_USER`, `R_HOME` and bind `~/.Renviron`.
+- **Configurable env var passthrough** — make the set of passed-through environment variables user-configurable.
+- **Real-tool integration tests** — extend `tests/validate.ts` to optionally test with an actual tool preset.
 
 ## Non-Goals
 

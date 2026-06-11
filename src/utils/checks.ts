@@ -1,8 +1,12 @@
 import { error, info, warning } from "./logger.ts";
 
+// EM: System checks for bwrap, pasta, AppArmor compatibility, and port detection
+// EM: Implements apparmor-compatibility feature for Ubuntu 24.04+ systems
+
 const APPARMOR_PROFILE_PATH = "/etc/apparmor.d/bwrap";
 
 export async function commandExists(cmd: string): Promise<boolean> {
+  // EM: Check if a command exists in PATH
   try {
     const proc = await Bun.spawn(["which", cmd], {
       stdout: "pipe",
@@ -16,6 +20,8 @@ export async function commandExists(cmd: string): Promise<boolean> {
 }
 
 export async function checkBwrapUserns(): Promise<void> {
+  // EM: Verify bwrap can create user namespaces (AppArmor compatibility check)
+  // EM: Implements apparmor-compatibility feature for Ubuntu 24.04+
   try {
     const proc = await Bun.spawn(
       ["bwrap", "--bind", "/", "/", "/bin/true"],

@@ -1,9 +1,13 @@
 import { error, info, warning } from "../utils/logger.ts";
 
+// EM: AppArmor profile installation for bwrap (Ubuntu 24.04+ compatibility)
+// EM: Implements apparmor-compatibility feature to allow unprivileged user namespaces
+
 const APPARMOR_PROFILE_PATH = "/etc/apparmor.d/bwrap";
 
 // ### configureAppArmor
 // [IMPLEMENTS](/design/features/apparmor-compatibility.md)
+// EM: Install AppArmor profile granting bwrap userns permission
 export async function configureAppArmor(): Promise<void> {
   if (process.getuid?.() !== 0) {
     error("--configure-apparmor must be run as root");

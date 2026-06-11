@@ -1,3 +1,6 @@
+// EM: Colored output functions for scoder CLI
+// EM: Provides error, warning, info, and infoBlue with quiet mode support
+
 const RED = "\x1b[0;31m";
 const YELLOW = "\x1b[1;33m";
 const GREEN = "\x1b[0;32m";

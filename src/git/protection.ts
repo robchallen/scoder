@@ -2,6 +2,9 @@ import { info, error, warning } from "../utils/logger.ts";
 import { BindMount } from "../types.ts";
 import { readdir, mkdir, stat, realpath as fsRealpath } from "node:fs/promises";
 
+// EM: Infrastructure protection via .agentreadonly and AGENTS.md overlay
+// EM: Implements infrastructure-protection, agents-md-overlay, and agents-skills-snapshot features
+
 const DEFAULT_PROTECTED = [
   ".github/",
   ".claude/",
@@ -74,6 +77,7 @@ export async function setupProtection(
     }
   } else {
     protectedPaths.push(...DEFAULT_PROTECTED);
+    // EM: Default .agentreadonly created with protected infrastructure paths
     await Bun.write(agentreadonlyPath, DEFAULT_PROTECTED.join("\n") + "\n");
   }
 

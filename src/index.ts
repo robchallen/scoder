@@ -1,5 +1,9 @@
 #!/usr/bin/env bun
 
+// EM: Main orchestration entry point for scoder sandbox runner
+// EM: Implements dry-run-mode, sandbox-isolation, and git-worktree-isolation features
+// EM: Coordinates CLI parsing, tool preset selection, sandbox construction, and session management
+
 import { parseArgs, printUsage, printVersion } from "./cli/parse-args.ts";
 import { setQuiet, error, info, infoBlue, warning } from "./utils/logger.ts";
 import {
@@ -31,6 +35,7 @@ import { GitWorktreeInfo, BindMount } from "./types.ts";
 const SCODER_HOME = "/home/scoder";
 
 async function main(): Promise<void> {
+  // EM: Parse command line arguments into ScoderOptions
   const args = Bun.argv.slice(2);
   const result = parseArgs(args);
 
@@ -220,6 +225,8 @@ async function main(): Promise<void> {
   }
 
   if (options.dryRun) {
+    // EM: Dry-run mode outputs bwrap command without executing
+    // EM: Implements HAS_FEATURE: dry-run-mode
     info("Dry run — would execute:");
     console.log("");
     printBwrapCommand(bwrapCmd);
@@ -238,11 +245,14 @@ async function main(): Promise<void> {
   const exitCode = await proc.exited;
 
   if (options.worktree && worktreeInfo && protectionConfig) {
+    // EM: Commit changes and print session summary for worktree mode
+    // EM: Implements git-worktree-isolation feature
     await printSessionSummary(
       worktreeInfo,
       protectionConfig.agentsMdOverlay
     );
   } else if (!options.worktree && protectionConfig) {
+    // EM: Direct mode - no git worktree, changes are immediate
     if (protectionConfig.agentsMdOverlay) {
       await Bun.write(protectionConfig.agentsMdOverlay, "");
     }
@@ -256,6 +266,7 @@ async function printSessionSummary(
   worktreeInfo: GitWorktreeInfo,
   agentsMdOverlay?: string
 ): Promise<void> {
+  // EM: Print commit count, diffstat, and merge/discard commands after session
   try {
     if (agentsMdOverlay) {
       await Bun.write(agentsMdOverlay, "");

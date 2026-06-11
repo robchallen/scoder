@@ -1,7 +1,11 @@
 import { error, info, warning, infoBlue } from "../utils/logger.ts";
 import { GitWorktreeInfo } from "../types.ts";
 
+// EM: Git worktree lifecycle management for scoder sandbox isolation
+// EM: Implements git-worktree-isolation feature with branch creation, worktree setup, and cleanup
+
 export async function isInGitRepo(): Promise<boolean> {
+  // EM: Check if current directory is in a git repository
   try {
     const proc = await Bun.spawn(
       ["git", "rev-parse", "--git-dir"],
@@ -20,6 +24,7 @@ export async function isInGitRepo(): Promise<boolean> {
 }
 
 export async function getGitCommonDir(): Promise<string> {
+  // EM: Get the git common directory (where git objects are stored)
   const proc = await Bun.spawn(
     ["git", "rev-parse", "--path-format=absolute", "--git-common-dir"],
     {

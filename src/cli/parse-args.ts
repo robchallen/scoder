@@ -1,5 +1,8 @@
 import { ScoderOptions } from "../types.ts";
 
+// EM: CLI argument parsing for scoder command-line interface
+// EM: Implements dry-run-mode and tool preset selection via --llm-port
+
 const USAGE = `scoder 2.1.0
 Sandboxed runner for coding tools using bubblewrap and pasta.
 
@@ -44,6 +47,7 @@ interface ParseResult {
 }
 
 export function parseArgs(args: string[]): ParseResult {
+  // EM: Parse command line arguments into ScoderOptions and tool specification
   const options: ScoderOptions = {
     quiet: false,
     dryRun: false,

@@ -9,6 +9,9 @@ import {
 } from "../git/protection.ts";
 import { isInGitRepo, getGitCommonDir } from "../git/worktree.ts";
 
+// EM: Implements sandbox-isolation, network-isolation, path-mirroring, and host-tool-binding features
+// EM: Constructs bwrap command with system mounts, binds, env vars, and pasta networking
+
 const SCODER_HOME = "/home/scoder";
 
 export interface SandboxConfig {
@@ -27,6 +30,7 @@ export interface SandboxConfig {
 // [IMPLEMENTS](/design/features/network-isolation.md)
 // [IMPLEMENTS](/design/features/path-mirroring.md)
 // [IMPLEMENTS](/design/features/host-tool-binding.md)
+// EM: Constructs complete bwrap command with all mount options and pasta networking
 export async function buildBwrapCommand(
   config: SandboxConfig
 ): Promise<string[]> {
@@ -42,6 +46,7 @@ export async function buildBwrapCommand(
   } = config;
 
   const realHome = process.env.HOME || "/home/user";
+  // EM: Build system mounts - read-only bind host directories
   const cmd: string[] = [
     "bwrap",
     "--ro-bind",
@@ -78,6 +83,7 @@ export async function buildBwrapCommand(
 
   cmd.push("--ro-bind", "/etc", "/etc");
 
+  // EM: Add device, proc, tmpfs mounts for sandbox filesystem
   cmd.push(
     "--dev-bind",
     "/dev",
@@ -118,9 +124,11 @@ export async function buildBwrapCommand(
   }
 
   if (worktreeInfo) {
+    // EM: Bind worktree at real absolute path for git cross-references (path-mirroring)
     cmd.push("--bind", worktreeInfo.worktreeDir, sandboxProjDir);
     cmd.push("--bind", worktreeInfo.gitDir, worktreeInfo.gitDir);
   } else {
+    // EM: Direct mode - bind current directory instead of worktree
     cmd.push("--bind", process.cwd(), sandboxProjDir);
     if (await isInGitRepo()) {
       try {
@@ -240,6 +248,7 @@ export async function buildBwrapCommand(
     "none"
   );
 
+  // EM: Add localhost forwarding for LLM ports, block host loopback by default
   if (options.llmPorts.length > 0) {
     for (const port of options.llmPorts) {
       cmd.push("--tcp-ns", port.toString());

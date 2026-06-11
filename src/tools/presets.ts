@@ -1,6 +1,9 @@
 import { ToolPreset, ToolBindSpec, BindMount } from "../types.ts";
 import { warning, error } from "../utils/logger.ts";
 
+// EM: Tool preset system for opencode, claude, copilot, and pi
+// EM: Implements tool-presets feature with tool-specific config/data bindings
+
 async function fileExists(path: string): Promise<boolean> {
   try {
     return await Bun.file(path).exists();
@@ -24,6 +27,7 @@ async function ensureDir(path: string): Promise<void> {
 
 // ### TOOL_PRESETS
 // [IMPLEMENTS](/design/features/tool-presets.md)
+// EM: Mapping of tool names to preset configurations for sandboxing
 export const TOOL_PRESETS: Record<string, ToolPreset> = {
   opencode: {
     description: "OpenCode",

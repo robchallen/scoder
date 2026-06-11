@@ -1,5 +1,8 @@
 #!/usr/bin/env bun
 
+// EM: Validation test suite for scoder sandbox functionality
+// EM: Implements HAS_TEST: validation-suite feature tests
+
 import { $ } from "bun";
 
 const SCODER_HOME = "/home/scoder";
@@ -13,25 +16,45 @@ interface TestCase {
 }
 
 const tests: TestCase[] = [
+  // EM: home-isolation - verify sandbox HOME is /home/scoder
   { name: "home-isolation", fn: testHomeIsolation },
+  // EM: system-read-only - verify system directories are read-only
   { name: "system-read-only", fn: testSystemReadOnly },
+  // EM: worktree-writable - verify worktree is writable
   { name: "worktree-writable", fn: testWorktreeWritable },
+  // EM: github-protected - verify .github/ is protected
   { name: "github-protected", fn: testGithubProtected },
+  // EM: gitignore-protected - verify .gitignore is protected
   { name: "gitignore-protected", fn: testGitignoreProtected },
+  // EM: empty-agentreadonly-allows-writes - verify empty .agentreadonly removes protection
   { name: "empty-agentreadonly-allows-writes", fn: testEmptyAgentreadonlyAllowsWrites },
+  // EM: agentreadonly-protected - verify .agentreadonly itself is always protected
   { name: "agentreadonly-protected", fn: testAgentreadonlyProtected },
+  // EM: agentreadonly-home-directory-readonly - verify $HOME/ binds are read-only
   { name: "agentreadonly-home-directory-readonly", fn: testAgentreadonlyHomeDirectoryReadonly },
+  // EM: agentreadonly-home-directory-must-exist - verify $HOME/ paths must exist
   { name: "agentreadonly-home-directory-must-exist", fn: testAgentreadonlyHomeDirectoryMustExist },
+  // EM: worktree-branch-created - verify scoder branch is created
   { name: "worktree-branch-created", fn: testWorktreeBranchCreated },
+  // EM: existing-scoder-worktree-reused - verify worktree reuse works
   { name: "existing-scoder-worktree-reused", fn: testExistingScoderWorktreeReused },
+  // EM: worktree-recreated-if-missing - verify worktree recreation after reboot
   { name: "worktree-recreated-if-missing", fn: testWorktreeRecreatedIfMissing },
+  // EM: symlinked-agents-skills-available - verify symlinked skills work
   { name: "symlinked-agents-skills-available", fn: testSymlinkedAgentsSkillsAvailable },
+  // EM: sandbox-agents-md-overlay-visible - verify AGENTS.md overlay works
   { name: "sandbox-agents-md-overlay-visible", fn: testSandboxAgentsMdOverlayVisible },
+  // EM: agents-md-overlay-in-direct-mode - verify direct mode overlay
   { name: "agents-md-overlay-in-direct-mode", fn: testAgentsMdOverlayInDirectMode },
+  // EM: host-loopback-blocked - verify host localhost is blocked
   { name: "host-loopback-blocked", fn: testHostLoopbackBlocked },
+  // EM: llm-port-allows-host-loopback - verify --llm-port exception works
   { name: "llm-port-allows-host-loopback", fn: testLlmPortAllowsHostLoopback },
+  // EM: outbound-dns-works - verify DNS resolution works in sandbox
   { name: "outbound-dns-works", fn: testOutboundDnsWorks },
+  // EM: dry-run-uses-pasta - verify dry-run includes pasta
   { name: "dry-run-uses-pasta", fn: testDryRunUsesPasta },
+  // EM: no-worktree-mode - verify --no-worktree flag works
   { name: "no-worktree-mode", fn: testNoWorktreeMode },
 ];
 

@@ -31,6 +31,7 @@ import {
 
 // EM: Nested sandbox detection - check if already in a worktree or running in scoder
 const GIT_DIR = ".git";
+
 import { error, info, infoBlue, setQuiet, warning } from "./utils/logger.ts";
 
 const SCODER_HOME = "/home/scoder";
@@ -71,7 +72,9 @@ async function main(): Promise<void> {
 		if (gitContent.startsWith("gitdir:")) {
 			error("scoder is already running inside a git worktree");
 			error("This creates a nested sandbox which bubblewrap cannot handle");
-			error("Use --no-worktree to run scoder directly in the current directory");
+			error(
+				"Use --no-worktree to run scoder directly in the current directory",
+			);
 			process.exit(1);
 		}
 	}

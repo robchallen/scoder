@@ -29,7 +29,7 @@ import {
 	detectDefaultLlmPort,
 } from "./utils/checks.ts";
 
-// EM: Nested sandbox detection - check if already in a worktree
+// EM: Nested sandbox detection - check if already in a worktree or running in scoder
 const GIT_DIR = ".git";
 import { error, info, infoBlue, setQuiet, warning } from "./utils/logger.ts";
 
@@ -58,10 +58,15 @@ async function main(): Promise<void> {
 
 	const { options, toolName, toolArgs } = result;
 
-	// EM: Nested sandbox detection - refuse if already in a worktree
+	// EM: Nested sandbox detection - refuse if already in a worktree or running in scoder
 	const gitDir = GIT_DIR;
-	const gitDirStat = await Bun.file(gitDir).stat();
-	if (gitDirStat.isFile()) {
+	let gitDirStat: import("node:fs").Stats | undefined;
+	try {
+		gitDirStat = await Bun.file(gitDir).stat();
+	} catch {
+		// File doesn't exist or can't be read
+	}
+	if (gitDirStat?.isFile()) {
 		const gitContent = await Bun.file(gitDir).text();
 		if (gitContent.startsWith("gitdir:")) {
 			error("scoder is already running inside a git worktree");
@@ -69,6 +74,13 @@ async function main(): Promise<void> {
 			error("Use --no-worktree to run scoder directly in the current directory");
 			process.exit(1);
 		}
+	}
+
+	// EM: Also check for SCODER_SANDBOX environment variable
+	if (process.env.SCODER_SANDBOX === "1") {
+		error("scoder cannot run inside an existing scoder sandbox");
+		error("Use --no-worktree to run directly in the current directory");
+		process.exit(1);
 	}
 
 	setQuiet(options.quiet);

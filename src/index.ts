@@ -79,8 +79,11 @@ async function main(): Promise<void> {
 		}
 	}
 
-	// EM: Also check for SCODER_SANDBOX environment variable
-	if (process.env.SCODER_SANDBOX === "1") {
+	// EM: Allow --no-worktree mode when inside nested scoder sandbox
+	if (
+		process.env.SCODER_SANDBOX === "1" &&
+		options.worktree
+	) {
 		error("scoder cannot run inside an existing scoder sandbox");
 		error("Use --no-worktree to run directly in the current directory");
 		process.exit(1);

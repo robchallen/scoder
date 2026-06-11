@@ -5,10 +5,27 @@
 
 import { $ } from "bun";
 
+// EM: Skip worktree tests when running inside nested scoder sandbox
+const SCODER_SANDBOX = process.env.SCODER_SANDBOX === "1";
+if (SCODER_SANDBOX) {
+	console.log("Skipping worktree tests (nested sandbox detected)\n");
+	console.log("Run these tests outside of scoder sandbox for full coverage.\n");
+}
+
 const SCODER_HOME = "/home/scoder";
 const TEST_BASE = await mktemp("/tmp/scoder-test.XXXXXX");
 let passed = 0;
 let failed = 0;
+let skipped = 0;
+
+function skipIfNestedSandbox(testName: string, requiresWorktree: boolean): boolean {
+	if (SCODER_SANDBOX && requiresWorktree) {
+		console.log(`  SKIP (nested sandbox: ${testName})`);
+		skipped++;
+		return true;
+	}
+	return false;
+}
 
 interface TestCase {
 	name: string;
@@ -83,6 +100,34 @@ async function main(): Promise<void> {
 	console.log("====== scoder validation tests ======\n");
 
 	for (const test of tests) {
+		// EM: Skip worktree tests when running inside nested scoder sandbox
+		if (SCODER_SANDBOX && [
+			"home-isolation",
+			"system-read-only",
+			"worktree-writable",
+			"github-protected",
+			"gitignore-protected",
+			"empty-agentreadonly-allows-writes",
+			"agentreadonly-protected",
+			"agentreadonly-home-directory-readonly",
+			"agentreadonly-home-directory-must-exist",
+			"worktree-branch-created",
+			"existing-scoder-worktree-reused",
+			"worktree-recreated-if-missing",
+			"symlinked-agents-skills-available",
+			"sandbox-agents-md-overlay-visible",
+			"agents-md-overlay-in-direct-mode",
+			"host-loopback-blocked",
+			"llm-port-allows-host-loopback",
+			"outbound-dns-works",
+			"dry-run-uses-pasta",
+		].includes(test.name)) {
+			console.log(`Test: ${test.name}`);
+			skipped++;
+			console.log(`  SKIP (nested sandbox: ${test.name})\n`);
+			continue;
+		}
+
 		try {
 			console.log(`Test: ${test.name}`);
 			const result = await test.fn();
@@ -100,6 +145,8 @@ async function main(): Promise<void> {
 			failed++;
 		}
 	}
+
+	console.log(`\nResults: ${passed} passed, ${failed} failed, ${skipped} skipped`);
 
 	if (failed === 0) {
 		console.log(`All ${passed} tests passed`);

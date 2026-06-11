@@ -330,15 +330,19 @@ test("agents-md-overlay-in-direct-mode", async () => {
 // ### testHostLoopbackBlocked
 test("host-loopback-blocked", async () => {
 	const repoDir = await createTestRepo("host-loopback");
-	const output = await runScoder(repoDir, [
-		"-q",
-		"-w",
-		"/bin/sh",
-		"-c",
-		"curl -s --connect-timeout 1 http://127.0.0.1 2>&1 || true",
-	]);
-	// Network isolation should block loopback access
-	expect(output.length).toBeGreaterThan(0);
+	const proc = await spawn(["bun", "run", `${import.meta.dir}/../src/index.ts`, "-q", "-w", "/bin/sh", "-c", "curl -v --connect-timeout 1 http://127.0.0.1 2>&1"], {
+		cwd: repoDir,
+		stdout: "pipe",
+		stderr: "pipe",
+	});
+
+	await proc.exited;
+
+	const stdout = await new Response(proc.stdout).text();
+	const stderr = await new Response(proc.stderr).text();
+
+	// Network isolation should block loopback access - curl should fail
+	expect(stdout + stderr).toContain("Connection refused");
 });
 
 // ### testLlmPortAllowsHostLoopback

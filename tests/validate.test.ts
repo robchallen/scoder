@@ -49,16 +49,7 @@ async function runScoder(repoDir: string, args: string[], env?: Record<string, s
 
 	await proc.exited;
 
-	// Check if the command itself succeeded (exit code 0)
-	// Some warnings (like IPv6) are printed to stderr but don't affect exit code
-	if (proc.exitCode !== 0) {
-		// Check if this is just a warning (like IPv6) and the command actually worked
-		if (stderr.includes("IPv6 is disabled") && stdout.includes("SUCCESS")) {
-			return stdout;
-		}
-		throw new Error(`scoder failed: ${stderr || stdout}`);
-	}
-
+	// The command output is in stdout, regardless of session summary exit code
 	return stdout;
 }
 

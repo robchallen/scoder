@@ -104,6 +104,9 @@ export async function setupProtection(
 			dest: `${sandboxProjDir}/.agentreadonly`,
 		});
 	}
+
+	agentsMdOverlay = await _setupAgentsMdOverlay(sourceDir, sandboxProjDir);
+
 	return { protectedPaths, safeBinds, agentsMdOverlay, dirs };
 }
 

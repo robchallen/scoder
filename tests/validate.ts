@@ -356,12 +356,12 @@ async function testExistingScoderWorktreeReused(): Promise<boolean> {
 
 	const output = await runScoderInDir(worktreeDir, [
 		"--dry-run",
-		"-w",
+		"--no-worktree",
 		"/bin/true",
 	]);
 	return (
-		output.includes("Already in scoder worktree") &&
-		!output.includes("uncommitted changes")
+		output.includes("already running inside a git worktree") &&
+		output.includes("nested sandbox")
 	);
 }
 

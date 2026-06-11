@@ -116,6 +116,9 @@ cmd_check() {
         echo ""
         echo "Code duplication analysis:"
         bunx jscpd src tests 2>&1 || echo "No duplication found or jscpd not available"
+        echo ""
+        echo "Code formatting and linting (Biome):"
+        bunx biome check src tests 2>&1 || echo "Biome not available or no issues found"
     } >> "$CHECK_LOG"
 
     echo "Code quality check complete. Report written to $CHECK_LOG"

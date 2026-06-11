@@ -1,4 +1,4 @@
-import { ScoderOptions } from "../types.ts";
+import type { ScoderOptions } from "../types.ts";
 
 // EM: CLI argument parsing for scoder command-line interface
 // EM: Implements dry-run-mode and tool preset selection via --llm-port
@@ -38,169 +38,171 @@ Setup (run once, requires sudo):
 const VERSION = "2.1.0";
 
 interface ParseResult {
-  options: ScoderOptions;
-  toolName: string | null;
-  toolArgs: string[];
-  showHelp: boolean;
-  showVersion: boolean;
-  error?: string;
+	options: ScoderOptions;
+	toolName: string | null;
+	toolArgs: string[];
+	showHelp: boolean;
+	showVersion: boolean;
+	error?: string;
 }
 
 export function parseArgs(args: string[]): ParseResult {
-  // EM: Parse command line arguments into ScoderOptions and tool specification
-  const options: ScoderOptions = {
-    quiet: false,
-    dryRun: false,
-    llmPorts: [],
-    configureAppArmor: false,
-    installDependencies: false,
-    worktree: false,
-  };
+	// EM: Parse command line arguments into ScoderOptions and tool specification
+	const options: ScoderOptions = {
+		quiet: false,
+		dryRun: false,
+		llmPorts: [],
+		configureAppArmor: false,
+		installDependencies: false,
+		worktree: false,
+	};
 
-  let toolName: string | null = null;
-  let toolArgs: string[] = [];
-  let showHelp = false;
-  let showVersion = false;
+	let toolName: string | null = null;
+	let toolArgs: string[] = [];
+	let showHelp = false;
+	let showVersion = false;
 
-  let i = 0;
-  while (i < args.length) {
-    const arg = args[i];
+	let i = 0;
+	while (i < args.length) {
+		const arg = args[i];
 
-    if (arg === "-h" || arg === "--help") {
-      showHelp = true;
-      break;
-    }
+		if (arg === "-h" || arg === "--help") {
+			showHelp = true;
+			break;
+		}
 
-    if (arg === "-V" || arg === "--version") {
-      showVersion = true;
-      break;
-    }
+		if (arg === "-V" || arg === "--version") {
+			showVersion = true;
+			break;
+		}
 
-    if (arg === "-q" || arg === "--quiet") {
-      options.quiet = true;
-      i++;
-      continue;
-    }
+		if (arg === "-q" || arg === "--quiet") {
+			options.quiet = true;
+			i++;
+			continue;
+		}
 
-    if (arg === "-w" || arg === "--worktree") {
-      options.worktree = true;
-      i++;
-      continue;
-    }
+		if (arg === "-w" || arg === "--worktree") {
+			options.worktree = true;
+			i++;
+			continue;
+		}
 
-    if (arg === "--no-worktree") {
-      options.worktree = false;
-      i++;
-      continue;
-    }
+		if (arg === "--no-worktree") {
+			options.worktree = false;
+			i++;
+			continue;
+		}
 
-    if (arg === "--dry-run") {
-      options.dryRun = true;
-      i++;
-      continue;
-    }
+		if (arg === "--dry-run") {
+			options.dryRun = true;
+			i++;
+			continue;
+		}
 
-    if (arg === "--configure-apparmor") {
-      options.configureAppArmor = true;
-      i++;
-      continue;
-    }
+		if (arg === "--configure-apparmor") {
+			options.configureAppArmor = true;
+			i++;
+			continue;
+		}
 
-    if (arg === "--install-dependencies") {
-      options.installDependencies = true;
-      i++;
-      continue;
-    }
+		if (arg === "--install-dependencies") {
+			options.installDependencies = true;
+			i++;
+			continue;
+		}
 
-    if (arg.startsWith("--llm-port=")) {
-      const portStr = arg.slice("--llm-port=".length);
-      const ports = parsePorts(portStr);
-      if (ports === null) {
-        return {
-          options,
-          toolName: null,
-          toolArgs: [],
-          showHelp: false,
-          showVersion: false,
-          error: "--llm-port must be a comma-separated list of integers between 1 and 65535",
-        };
-      }
-      options.llmPorts = ports;
-      i++;
-      continue;
-    }
+		if (arg.startsWith("--llm-port=")) {
+			const portStr = arg.slice("--llm-port=".length);
+			const ports = parsePorts(portStr);
+			if (ports === null) {
+				return {
+					options,
+					toolName: null,
+					toolArgs: [],
+					showHelp: false,
+					showVersion: false,
+					error:
+						"--llm-port must be a comma-separated list of integers between 1 and 65535",
+				};
+			}
+			options.llmPorts = ports;
+			i++;
+			continue;
+		}
 
-    if (arg === "--llm-port") {
-      if (i + 1 >= args.length) {
-        return {
-          options,
-          toolName: null,
-          toolArgs: [],
-          showHelp: false,
-          showVersion: false,
-          error: "--llm-port requires a port number",
-        };
-      }
-      const ports = parsePorts(args[i + 1]);
-      if (ports === null) {
-        return {
-          options,
-          toolName: null,
-          toolArgs: [],
-          showHelp: false,
-          showVersion: false,
-          error: "--llm-port must be a comma-separated list of integers between 1 and 65535",
-        };
-      }
-      options.llmPorts = ports;
-      i += 2;
-      continue;
-    }
+		if (arg === "--llm-port") {
+			if (i + 1 >= args.length) {
+				return {
+					options,
+					toolName: null,
+					toolArgs: [],
+					showHelp: false,
+					showVersion: false,
+					error: "--llm-port requires a port number",
+				};
+			}
+			const ports = parsePorts(args[i + 1]);
+			if (ports === null) {
+				return {
+					options,
+					toolName: null,
+					toolArgs: [],
+					showHelp: false,
+					showVersion: false,
+					error:
+						"--llm-port must be a comma-separated list of integers between 1 and 65535",
+				};
+			}
+			options.llmPorts = ports;
+			i += 2;
+			continue;
+		}
 
-    if (arg.startsWith("-")) {
-      return {
-        options,
-        toolName: null,
-        toolArgs: [],
-        showHelp: false,
-        showVersion: false,
-        error: `unknown option: ${arg}`,
-      };
-    }
+		if (arg.startsWith("-")) {
+			return {
+				options,
+				toolName: null,
+				toolArgs: [],
+				showHelp: false,
+				showVersion: false,
+				error: `unknown option: ${arg}`,
+			};
+		}
 
-    toolName = arg;
-    toolArgs = args.slice(i + 1);
-    break;
-  }
+		toolName = arg;
+		toolArgs = args.slice(i + 1);
+		break;
+	}
 
-  return {
-    options,
-    toolName,
-    toolArgs,
-    showHelp,
-    showVersion,
-  };
+	return {
+		options,
+		toolName,
+		toolArgs,
+		showHelp,
+		showVersion,
+	};
 }
 
 function parsePorts(portStr: string): number[] | null {
-  const ports = portStr.split(",");
-  const result: number[] = [];
+	const ports = portStr.split(",");
+	const result: number[] = [];
 
-  for (const port of ports) {
-    const num = parseInt(port, 10);
-    if (isNaN(num) || num < 1 || num > 65535) {
-      return null;
-    }
-    result.push(num);
-  }
+	for (const port of ports) {
+		const num = parseInt(port, 10);
+		if (Number.isNaN(num) || num < 1 || num > 65535) {
+			return null;
+		}
+		result.push(num);
+	}
 
-  return result;
+	return result;
 }
 
 export function printUsage(): void {
-  console.log(USAGE);
+	console.log(USAGE);
 }
 
 export function printVersion(): void {
-  console.log(`scoder ${VERSION}`);
+	console.log(`scoder ${VERSION}`);
 }

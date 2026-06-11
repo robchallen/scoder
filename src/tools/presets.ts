@@ -1,274 +1,274 @@
-import { ToolPreset, ToolBindSpec, BindMount } from "../types.ts";
-import { warning, error } from "../utils/logger.ts";
+import type { BindMount, ToolPreset } from "../types.ts";
+import { error, warning } from "../utils/logger.ts";
 
 // EM: Tool preset system for opencode, claude, copilot, and pi
 // EM: Implements tool-presets feature with tool-specific config/data bindings
 
-async function fileExists(path: string): Promise<boolean> {
-  try {
-    return await Bun.file(path).exists();
-  } catch {
-    return false;
-  }
+async function _fileExists(path: string): Promise<boolean> {
+	try {
+		return await Bun.file(path).exists();
+	} catch {
+		return false;
+	}
 }
 
 async function dirExists(path: string): Promise<boolean> {
-  try {
-    const stat = await Bun.file(path).stat();
-    return stat.isDirectory();
-  } catch {
-    return false;
-  }
+	try {
+		const stat = await Bun.file(path).stat();
+		return stat.isDirectory();
+	} catch {
+		return false;
+	}
 }
 
 async function ensureDir(path: string): Promise<void> {
-  await Bun.spawn(["mkdir", "-p", path]);
+	await Bun.spawn(["mkdir", "-p", path]);
 }
 
 // ### TOOL_PRESETS
 // [IMPLEMENTS](/design/features/tool-presets.md)
 // EM: Mapping of tool names to preset configurations for sandboxing
 export const TOOL_PRESETS: Record<string, ToolPreset> = {
-  opencode: {
-    description: "OpenCode",
+	opencode: {
+		description: "OpenCode",
 
-    configBinds: async (realHome, sandboxHome) => {
-      const binds: BindMount[] = [];
-      const dirs: string[] = [];
+		configBinds: async (realHome, sandboxHome) => {
+			const binds: BindMount[] = [];
+			const dirs: string[] = [];
 
-      const configDir = `${realHome}/.config/opencode`;
-      if (await dirExists(configDir)) {
-        dirs.push(`${sandboxHome}/.config/opencode`);
-        binds.push({
-          type: "ro-bind",
-          source: configDir,
-          dest: `${sandboxHome}/.config/opencode`,
-        });
-      }
+			const configDir = `${realHome}/.config/opencode`;
+			if (await dirExists(configDir)) {
+				dirs.push(`${sandboxHome}/.config/opencode`);
+				binds.push({
+					type: "ro-bind",
+					source: configDir,
+					dest: `${sandboxHome}/.config/opencode`,
+				});
+			}
 
-      const dataDir = `${realHome}/.local/share/opencode`;
-      await ensureDir(dataDir);
-      dirs.push(`${sandboxHome}/.local/share/opencode`);
-      binds.push({
-        type: "bind",
-        source: dataDir,
-        dest: `${sandboxHome}/.local/share/opencode`,
-      });
+			const dataDir = `${realHome}/.local/share/opencode`;
+			await ensureDir(dataDir);
+			dirs.push(`${sandboxHome}/.local/share/opencode`);
+			binds.push({
+				type: "bind",
+				source: dataDir,
+				dest: `${sandboxHome}/.local/share/opencode`,
+			});
 
-      const cacheDir = `${realHome}/.cache/opencode`;
-      await ensureDir(cacheDir);
-      dirs.push(`${sandboxHome}/.cache/opencode`);
-      binds.push({
-        type: "bind",
-        source: cacheDir,
-        dest: `${sandboxHome}/.cache/opencode`,
-      });
+			const cacheDir = `${realHome}/.cache/opencode`;
+			await ensureDir(cacheDir);
+			dirs.push(`${sandboxHome}/.cache/opencode`);
+			binds.push({
+				type: "bind",
+				source: cacheDir,
+				dest: `${sandboxHome}/.cache/opencode`,
+			});
 
-      return { binds, dirs };
-    },
+			return { binds, dirs };
+		},
 
-    validate: async () => {
-      const exists = await commandExists("opencode");
-      if (!exists) {
-        error("opencode not found in PATH");
-        error("Install: https://opencode.ai");
-        return false;
-      }
-      return true;
-    },
-  },
+		validate: async () => {
+			const exists = await commandExists("opencode");
+			if (!exists) {
+				error("opencode not found in PATH");
+				error("Install: https://opencode.ai");
+				return false;
+			}
+			return true;
+		},
+	},
 
-  claude: {
-    description: "Claude Code",
+	claude: {
+		description: "Claude Code",
 
-    configBinds: async (realHome, sandboxHome) => {
-      const binds: BindMount[] = [];
-      const dirs: string[] = [];
+		configBinds: async (realHome, sandboxHome) => {
+			const binds: BindMount[] = [];
+			const dirs: string[] = [];
 
-      const claudeDir = `${realHome}/.claude`;
-      if (await dirExists(claudeDir)) {
-        dirs.push(`${sandboxHome}/.claude`);
-        binds.push({
-          type: "ro-bind",
-          source: claudeDir,
-          dest: `${sandboxHome}/.claude`,
-        });
-      } else {
-        warning("Claude config not found at ~/.claude/");
-        warning("Run 'claude' once first to initialize");
-      }
+			const claudeDir = `${realHome}/.claude`;
+			if (await dirExists(claudeDir)) {
+				dirs.push(`${sandboxHome}/.claude`);
+				binds.push({
+					type: "ro-bind",
+					source: claudeDir,
+					dest: `${sandboxHome}/.claude`,
+				});
+			} else {
+				warning("Claude config not found at ~/.claude/");
+				warning("Run 'claude' once first to initialize");
+			}
 
-      const configClaudeDir = `${realHome}/.config/claude`;
-      if (await dirExists(configClaudeDir)) {
-        dirs.push(`${sandboxHome}/.config/claude`);
-        binds.push({
-          type: "ro-bind",
-          source: configClaudeDir,
-          dest: `${sandboxHome}/.config/claude`,
-        });
-      }
+			const configClaudeDir = `${realHome}/.config/claude`;
+			if (await dirExists(configClaudeDir)) {
+				dirs.push(`${sandboxHome}/.config/claude`);
+				binds.push({
+					type: "ro-bind",
+					source: configClaudeDir,
+					dest: `${sandboxHome}/.config/claude`,
+				});
+			}
 
-      return { binds, dirs };
-    },
+			return { binds, dirs };
+		},
 
-    validate: async () => {
-      const claudeExists = await commandExists("claude");
-      if (!claudeExists) {
-        error("claude not found in PATH");
-        error("Install: npm install -g @anthropic-ai/claude-code");
-        return false;
-      }
+		validate: async () => {
+			const claudeExists = await commandExists("claude");
+			if (!claudeExists) {
+				error("claude not found in PATH");
+				error("Install: npm install -g @anthropic-ai/claude-code");
+				return false;
+			}
 
-      const nodeExists = await commandExists("node");
-      if (!nodeExists) {
-        error("node not found in PATH (required by Claude Code)");
-        return false;
-      }
+			const nodeExists = await commandExists("node");
+			if (!nodeExists) {
+				error("node not found in PATH (required by Claude Code)");
+				return false;
+			}
 
-      return true;
-    },
-  },
+			return true;
+		},
+	},
 
-  copilot: {
-    description: "GitHub Copilot CLI",
+	copilot: {
+		description: "GitHub Copilot CLI",
 
-    configBinds: async (realHome, sandboxHome) => {
-      const binds: BindMount[] = [];
-      const dirs: string[] = [];
+		configBinds: async (realHome, sandboxHome) => {
+			const binds: BindMount[] = [];
+			const dirs: string[] = [];
 
-      const ghDir = `${realHome}/.config/gh`;
-      if (await dirExists(ghDir)) {
-        dirs.push(`${sandboxHome}/.config/gh`);
-        binds.push({
-          type: "ro-bind",
-          source: ghDir,
-          dest: `${sandboxHome}/.config/gh`,
-        });
-      } else {
-        warning("gh config not found at ~/.config/gh/");
-        warning("Run 'gh auth login' first to authenticate");
-      }
+			const ghDir = `${realHome}/.config/gh`;
+			if (await dirExists(ghDir)) {
+				dirs.push(`${sandboxHome}/.config/gh`);
+				binds.push({
+					type: "ro-bind",
+					source: ghDir,
+					dest: `${sandboxHome}/.config/gh`,
+				});
+			} else {
+				warning("gh config not found at ~/.config/gh/");
+				warning("Run 'gh auth login' first to authenticate");
+			}
 
-      const copilotDir = `${realHome}/.config/github-copilot`;
-      if (await dirExists(copilotDir)) {
-        dirs.push(`${sandboxHome}/.config/github-copilot`);
-        binds.push({
-          type: "bind",
-          source: copilotDir,
-          dest: `${sandboxHome}/.config/github-copilot`,
-        });
-      }
+			const copilotDir = `${realHome}/.config/github-copilot`;
+			if (await dirExists(copilotDir)) {
+				dirs.push(`${sandboxHome}/.config/github-copilot`);
+				binds.push({
+					type: "bind",
+					source: copilotDir,
+					dest: `${sandboxHome}/.config/github-copilot`,
+				});
+			}
 
-      const copilotHomeDir = `${realHome}/.copilot`;
-      if (await dirExists(copilotHomeDir)) {
-        dirs.push(`${sandboxHome}/.copilot`);
-        binds.push({
-          type: "bind",
-          source: copilotHomeDir,
-          dest: `${sandboxHome}/.copilot`,
-        });
-      }
+			const copilotHomeDir = `${realHome}/.copilot`;
+			if (await dirExists(copilotHomeDir)) {
+				dirs.push(`${sandboxHome}/.copilot`);
+				binds.push({
+					type: "bind",
+					source: copilotHomeDir,
+					dest: `${sandboxHome}/.copilot`,
+				});
+			}
 
-      const copilotCacheDir = `${realHome}/.cache/copilot`;
-      if (await dirExists(copilotCacheDir)) {
-        dirs.push(`${sandboxHome}/.cache/copilot`);
-        binds.push({
-          type: "bind",
-          source: copilotCacheDir,
-          dest: `${sandboxHome}/.cache/copilot`,
-        });
-      }
+			const copilotCacheDir = `${realHome}/.cache/copilot`;
+			if (await dirExists(copilotCacheDir)) {
+				dirs.push(`${sandboxHome}/.cache/copilot`);
+				binds.push({
+					type: "bind",
+					source: copilotCacheDir,
+					dest: `${sandboxHome}/.cache/copilot`,
+				});
+			}
 
-      const dataDir = `${realHome}/.local/share/github-copilot`;
-      await ensureDir(dataDir);
-      dirs.push(`${sandboxHome}/.local/share/github-copilot`);
-      binds.push({
-        type: "bind",
-        source: dataDir,
-        dest: `${sandboxHome}/.local/share/github-copilot`,
-      });
+			const dataDir = `${realHome}/.local/share/github-copilot`;
+			await ensureDir(dataDir);
+			dirs.push(`${sandboxHome}/.local/share/github-copilot`);
+			binds.push({
+				type: "bind",
+				source: dataDir,
+				dest: `${sandboxHome}/.local/share/github-copilot`,
+			});
 
-      return { binds, dirs };
-    },
+			return { binds, dirs };
+		},
 
-    validate: async () => {
-      const copilotExists = await commandExists("copilot");
-      if (!copilotExists) {
-        error("copilot not found in PATH");
-        error("Install: npm install -g @github/copilot");
-        error("    or:  brew install copilot-cli");
-        return false;
-      }
+		validate: async () => {
+			const copilotExists = await commandExists("copilot");
+			if (!copilotExists) {
+				error("copilot not found in PATH");
+				error("Install: npm install -g @github/copilot");
+				error("    or:  brew install copilot-cli");
+				return false;
+			}
 
-      const nodeExists = await commandExists("node");
-      if (!nodeExists) {
-        error("node not found in PATH (required by Copilot CLI)");
-        return false;
-      }
+			const nodeExists = await commandExists("node");
+			if (!nodeExists) {
+				error("node not found in PATH (required by Copilot CLI)");
+				return false;
+			}
 
-      return true;
-    },
-  },
+			return true;
+		},
+	},
 
-  pi: {
-    description: "Pi Coding Agent",
+	pi: {
+		description: "Pi Coding Agent",
 
-    configBinds: async (realHome, sandboxHome) => {
-      const binds: BindMount[] = [];
-      const dirs: string[] = [];
+		configBinds: async (realHome, sandboxHome) => {
+			const binds: BindMount[] = [];
+			const dirs: string[] = [];
 
-      const piDir = `${realHome}/.pi/agent`;
-      if (await dirExists(piDir)) {
-        dirs.push(`${sandboxHome}/.pi/agent`);
-        binds.push({
-          type: "bind",
-          source: piDir,
-          dest: `${sandboxHome}/.pi/agent`,
-        });
-      }
+			const piDir = `${realHome}/.pi/agent`;
+			if (await dirExists(piDir)) {
+				dirs.push(`${sandboxHome}/.pi/agent`);
+				binds.push({
+					type: "bind",
+					source: piDir,
+					dest: `${sandboxHome}/.pi/agent`,
+				});
+			}
 
-      const dataDir = `${realHome}/.local/share/pi`;
-      await ensureDir(dataDir);
-      dirs.push(`${sandboxHome}/.local/share/pi`);
-      binds.push({
-        type: "bind",
-        source: dataDir,
-        dest: `${sandboxHome}/.local/share/pi`,
-      });
+			const dataDir = `${realHome}/.local/share/pi`;
+			await ensureDir(dataDir);
+			dirs.push(`${sandboxHome}/.local/share/pi`);
+			binds.push({
+				type: "bind",
+				source: dataDir,
+				dest: `${sandboxHome}/.local/share/pi`,
+			});
 
-      const cacheDir = `${realHome}/.cache/pi`;
-      await ensureDir(cacheDir);
-      dirs.push(`${sandboxHome}/.cache/pi`);
-      binds.push({
-        type: "bind",
-        source: cacheDir,
-        dest: `${sandboxHome}/.cache/pi`,
-      });
+			const cacheDir = `${realHome}/.cache/pi`;
+			await ensureDir(cacheDir);
+			dirs.push(`${sandboxHome}/.cache/pi`);
+			binds.push({
+				type: "bind",
+				source: cacheDir,
+				dest: `${sandboxHome}/.cache/pi`,
+			});
 
-      return { binds, dirs };
-    },
+			return { binds, dirs };
+		},
 
-    validate: async () => {
-      const piExists = await commandExists("pi");
-      if (!piExists) {
-        error("pi not found in PATH");
-        error("Install: https://pi.dev");
-        return false;
-      }
-      return true;
-    },
-  },
+		validate: async () => {
+			const piExists = await commandExists("pi");
+			if (!piExists) {
+				error("pi not found in PATH");
+				error("Install: https://pi.dev");
+				return false;
+			}
+			return true;
+		},
+	},
 };
 
 async function commandExists(cmd: string): Promise<boolean> {
-  try {
-    const proc = await Bun.spawn(["which", cmd], {
-      stdout: "pipe",
-      stderr: "pipe",
-    });
-    await proc.exited;
-    return proc.exitCode === 0;
-  } catch {
-    return false;
-  }
+	try {
+		const proc = await Bun.spawn(["which", cmd], {
+			stdout: "pipe",
+			stderr: "pipe",
+		});
+		await proc.exited;
+		return proc.exitCode === 0;
+	} catch {
+		return false;
+	}
 }

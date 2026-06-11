@@ -42,5 +42,5 @@ if (options.worktree) {
 }
 ```
 
-[IMPACTS](/src/index.ts)
-[IMPACTS](/src/git/worktree.ts#hasUncommittedChanges)
+Note: This issue documents a gap in implementation. Once addressed,
+the feature implementation would link to these files using IMPLEMENTS syntax.

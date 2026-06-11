@@ -51,7 +51,7 @@ From [ROADMAP.md](/ROADMAP.md), not yet in development:
 - **Auto-cleanup on no changes** — optionally remove the worktree and branch if the session made no commits.
 - **R environment variables** — pass through `R_LIBS`, `R_LIBS_USER`, `R_HOME` and bind `~/.Renviron`.
 - **Configurable env var passthrough** — make the set of passed-through environment variables user-configurable.
-- **Real-tool integration tests** — extend `tests/validate.ts` to optionally test with an actual tool preset.
+- **Real-tool integration tests** — extend `tests/scoder.test.ts` to optionally test with an actual tool preset.
 
 ## Non-Goals
 

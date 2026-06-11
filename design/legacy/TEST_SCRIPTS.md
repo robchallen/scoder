@@ -1,13 +1,13 @@
 # Validation Test Scripts
 
-This document explains what `tests/validate.ts` checks in plain language.
+This document explains what `tests/scoder.test.ts` checks in plain language.
 
 ## How the validation script works
 
 The script is developer-facing and is intended to be run from the repository:
 
 ```bash
-bun run tests/validate.ts
+bun run tests/scoder.test.ts
 ```
 
 For each test case it:

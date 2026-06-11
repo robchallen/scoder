@@ -71,10 +71,23 @@ cmd_test() {
     echo "Starting 'test' command..."
     ensure_em_dir
 
-    echo "Running with code coverage..." | tee "$TEST_LOG"
-    bun run test:coverage 2>&1 | tee -a "$TEST_LOG"
+    echo "Running tests..." | tee "$TEST_LOG"
+    
+    # Run tests and capture output
+    # Note: Integration tests run scoder via Bun.spawn(), which executes in a separate
+    # process. Coverage only tracks code in the same process, so source files aren't
+    # covered when using process isolation. For true coverage, tests would import
+    # and call scoder functions directly.
+    if bun test 2>&1 | tee -a "$TEST_LOG"; then
+        exit_code=0
+    else
+        exit_code=1
+    fi
 
+    echo ""
     echo "Test suite complete. Output saved to $TEST_LOG"
+    
+    return $exit_code
 }
 
 cmd_doc() {

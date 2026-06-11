@@ -1,0 +1,14 @@
+# Bun test configuration for scoder project
+
+[test]
+# Note: Integration tests run scoder via Bun.spawn(), which executes in a separate
+# process. Bun's coverage only tracks code in the same process, so coverage won't
+# be generated for the source files when using process isolation.
+# For true coverage, tests would need to import and call scoder functions directly.
+# See: https://bun.com/docs/test/code-coverage
+coverageSkipTestFiles = true
+
+# Coverage path ignore patterns
+coveragePathIgnorePatterns = [
+  "node_modules/**",
+]

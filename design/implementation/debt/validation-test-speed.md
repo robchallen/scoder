@@ -22,5 +22,5 @@ change takes 30+ seconds.
 - Parallelize independent tests
 - Mock filesystem operations where possible
 
-[IMPACTS](/tests/validate.ts)
+[IMPACTS](/tests/scoder.test.ts)
 [HAS_FEATURE](/design/features/git-worktree-isolation.md)

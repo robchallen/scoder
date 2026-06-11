@@ -8,7 +8,7 @@ tags: [debt, testing, validation]
 
 ## Summary
 
-The validation suite (`tests/validate.ts`) uses `/bin/bash` as the
+The validation suite (`tests/scoder.test.ts`) uses `/bin/bash` as the
 sandboxed tool, which exercises sandbox mechanics but does not test with
 real tools (opencode, gh, claude, copilot).
 
@@ -21,5 +21,5 @@ write to, signals they handle) may surface only during real use.
 
 Design document analysis during v2.1.0 TypeScript migration.
 
-[IMPACTS](/tests/validate.ts)
+[IMPACTS](/tests/scoder.test.ts)
 [HAS_FEATURE](/design/features/tool-presets.md)

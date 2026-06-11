@@ -11,8 +11,7 @@
     "build": "bun build src/index.ts --target bun --compile --outfile dist/scoder",
     "dev": "bun run src/index.ts",
     "typecheck": "tsc --noEmit",
-    "test": "bun test",
-    "test:coverage": "c8 --reporter=text --reporter=html --include='src/**/*.ts' bun run tests/validate.ts"
+    "test": "bun test"
   },
   "keywords": ["sandbox", "bubblewrap", "git", "ai"],
   "license": "MIT",

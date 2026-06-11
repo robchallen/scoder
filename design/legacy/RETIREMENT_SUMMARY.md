@@ -12,7 +12,7 @@ The monolithic bash script has been completely migrated to TypeScript with:
 - Same functionality plus new `--no-worktree` mode
 
 ### 2. Bash Test Suite (`tests/validate.sh` - 452 lines)
-**Replaced with:** TypeScript test suite (`tests/validate.ts` - 408 lines)
+**Replaced with:** TypeScript test suite (`tests/scoder.test.ts` - 408 lines)
 
 The new test suite:
 - Uses Bun's test runner
@@ -101,7 +101,7 @@ All documentation now references TypeScript:
 ```
 
 **For developers:**
-- Tests now run with `bun run tests/validate.ts` instead of `./tests/validate.sh`
+- Tests now run with `bun run tests/scoder.test.ts` instead of `./tests/validate.sh`
 - Source code is in `src/` directory, not root level
 - Type checking available via `bun run typecheck`
 

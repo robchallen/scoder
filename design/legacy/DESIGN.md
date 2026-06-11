@@ -78,7 +78,7 @@ src/
     └── checks.ts         # System checks (bwrap, pasta, ports)
 
 tests/
-└── validate.ts           # Validation test suite
+└── scoder.test.ts        # Validation test suite
 ```
 
 ### Execution Flow
@@ -483,7 +483,7 @@ installed on the development machine). They may need adjustment.
 
 ### Live Tool Testing
 
-The validation suite (`tests/validate.ts`) uses `/bin/bash` as the
+The validation suite (`tests/scoder.test.ts`) uses `/bin/bash` as the
 sandboxed tool, which exercises the sandbox mechanics (HOME isolation,
 filesystem protection, worktree creation and worktree reuse). However, it does
 not test with real tools (opencode, gh, claude, copilot). Edge cases in how

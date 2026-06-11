@@ -9,6 +9,7 @@ RUN_LOG="$EM_DIR/run-output"
 TEST_LOG="$EM_DIR/test-output"
 DOC_LOG="$EM_DIR/docs-output"
 CHECK_LOG="$EM_DIR/check-output"
+DESIGN_LOG="$EM_DIR/design-output"
 
 # --- Helper Functions ---
 ensure_em_dir() {
@@ -21,7 +22,7 @@ show_help() {
     echo "Supported sub-commands:"
     echo "  setup   Installs prerequisites, checks runtime versions, and resolves dependencies"
     echo "  run     Builds and executes the project (logs to $RUN_LOG)"
-    echo "  test    Builds and runs all automated tests and code coverage (outputs to terminal and $TEST_LOG)"
+    echo "  test    Builds and runs all automated tests with coverage (outputs to terminal and $TEST_LOG)"
     echo "  doc     Runs documentation tools (logs warnings/errors to $DOC_LOG)"
     echo "  check   Runs linters and code quality checks (logs report to $CHECK_LOG)"
     echo "  design  Runs design consistency checks (logs report to $EM_DIR/design-output)"
@@ -70,12 +71,8 @@ cmd_test() {
     echo "Starting 'test' command..."
     ensure_em_dir
 
-    echo "Type checking..." | tee "$TEST_LOG"
-    bun run typecheck 2>&1 | tee -a "$TEST_LOG"
-    echo "" | tee -a "$TEST_LOG"
-
-    echo "Running validation tests..." | tee -a "$TEST_LOG"
-    bun run tests/validate.ts 2>&1 | tee -a "$TEST_LOG"
+    echo "Running with code coverage..." | tee "$TEST_LOG"
+    bun run test:coverage 2>&1 | tee -a "$TEST_LOG"
 
     echo "Test suite complete. Output saved to $TEST_LOG"
 }
@@ -116,6 +113,9 @@ cmd_check() {
         echo ""
         echo "Test files:"
         find tests -name "*.ts" -type f | sort
+        echo ""
+        echo "Code duplication analysis:"
+        bunx jscpd src tests 2>&1 || echo "No duplication found or jscpd not available"
     } >> "$CHECK_LOG"
 
     echo "Code quality check complete. Report written to $CHECK_LOG"
@@ -129,8 +129,16 @@ cmd_design() {
 
     echo "Running design consistency checks..." > "$DESIGN_LOG"
 
+    # Try multiple possible locations for design-check.R
+    DESIGN_SCRIPT=""
     if [ -f ".agents/skills/practice-continuous-evolutionary-design/scripts/design-check.R" ]; then
-        .agents/skills/practice-continuous-evolutionary-design/scripts/design-check.R --dir=. 2>&1 | tee -a "$DESIGN_LOG"
+        DESIGN_SCRIPT=".agents/skills/practice-continuous-evolutionary-design/scripts/design-check.R"
+    elif [ -f "$HOME/.agents/skills/practice-continuous-evolutionary-design/scripts/design-check.R" ]; then
+        DESIGN_SCRIPT="$HOME/.agents/skills/practice-continuous-evolutionary-design/scripts/design-check.R"
+    fi
+
+    if [ -n "$DESIGN_SCRIPT" ]; then
+        Rscript "$DESIGN_SCRIPT" --dir=. 2>&1 | tee -a "$DESIGN_LOG"
     else
         echo "[WARNING] design-check.R not found - skipping automated design checks." | tee -a "$DESIGN_LOG"
     fi

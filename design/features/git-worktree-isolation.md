@@ -34,3 +34,4 @@ Flow:
 [HAS_FEATURE](./path-mirroring.md)
 
 [HAS_TEST](../test-scripts/validation-suite.md)
+[TESTED_BY](/tests/validate.ts)

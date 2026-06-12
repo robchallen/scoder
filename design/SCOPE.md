@@ -19,7 +19,7 @@ localhost services by default.
 
 [HAS_FEATURE](./features/sandbox-isolation.md) - Filesystem isolation via bubblewrap with read-only system mounts and ephemeral HOME.
 
-[HAS_FEATURE](./features/network-isolation.md) - Outbound network access through pasta with host loopback blocking and optional LLM port forwarding.
+[HAS_FEATURE](./features/network-isolation.md) - Outbound network access through pasta with host loopback blocking, optional LLM port forwarding, and auto-detection of localhost APIs (via SCODER_LLM_PORT).
 
 [HAS_FEATURE](./features/git-worktree-isolation.md) - Optional git worktree mode that isolates changes to a scoped branch in /tmp.
 
@@ -41,12 +41,13 @@ localhost services by default.
 
 [HAS_FEATURE](./features/direct-mode.md) - Direct mode (`--no-worktree`) runs the tool in the current directory without git worktree isolation.
 
-## Planned Features
+[HAS_FEATURE](./features/local-bin-resolution.md) - Startup-time snapshot of ~/.local/bin with broken symlinks replaced by forwarding shims.
 
 From [ROADMAP.md](/ROADMAP.md), not yet in development:
 
 - **Additional AI tool presets** — as new coding assistants emerge, add presets following the existing convention.
 - **Restricted `/dev`** — bind only essential devices (`/dev/null`, `/dev/zero`, `/dev/random`, `/dev/urandom`, `/dev/tty`, `/dev/pts`, `/dev/fd`).
+- **Local bin symlink resolution** — resolve `~/.local/bin` symlinks pointing outside the sandbox with forwarding shims (in progress).
 - **Nested sandbox detection** — detect when scoder runs inside an existing scoder session (`SCODER_SANDBOX=1`) and refuse or adjust behaviour.
 - **Auto-cleanup on no changes** — optionally remove the worktree and branch if the session made no commits.
 - **R environment variables** — pass through `R_LIBS`, `R_LIBS_USER`, `R_HOME` and bind `~/.Renviron`.

@@ -3,7 +3,7 @@ import type { ScoderOptions } from "../types.ts";
 // EM: CLI argument parsing for scoder command-line interface
 // EM: Implements dry-run-mode and tool preset selection via --llm-port
 
-const USAGE = `scoder 2.1.0
+const USAGE = `scoder 2.2.0
 Sandboxed runner for coding tools using bubblewrap and pasta.
 
 Usage:
@@ -25,6 +25,7 @@ Options:
        --no-worktree       Run directly in current directory (no worktree) (default)
        --llm-port PORTS    Allow localhost TCP access to these comma-separated ports
                             instead of the auto-detected default on 11434
+                            (override with SCODER_LLM_PORT)
        --dry-run           Print the bwrap command without executing
 
 Setup (run once, requires sudo):
@@ -35,7 +36,7 @@ Setup (run once, requires sudo):
                           uses apt to install packages bubblewrap, passt
 `;
 
-const VERSION = "2.1.0";
+const VERSION = "2.2.0";
 
 interface ParseResult {
 	options: ScoderOptions;

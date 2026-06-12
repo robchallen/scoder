@@ -10,6 +10,7 @@ import {
 	getAgentsMdOverlayBind,
 	type ProtectionConfig,
 	setupAgentsSnapshot,
+	setupLocalBinSnapshot,
 	setupProtection,
 	setupResolvConf,
 } from "./git/protection.ts";
@@ -188,6 +189,11 @@ async function main(): Promise<void> {
 			protectionConfig.safeBinds.push(agentsSnapshotBind);
 		}
 
+		const localBinBind = await setupLocalBinSnapshot();
+		if (localBinBind && protectionConfig) {
+			protectionConfig.safeBinds.push(localBinBind);
+		}
+
 		const resolvConfBind = await setupResolvConf();
 		if (resolvConfBind && protectionConfig) {
 			protectionConfig.safeBinds.push(resolvConfBind);
@@ -211,6 +217,11 @@ async function main(): Promise<void> {
 		const agentsSnapshotBind = await setupAgentsSnapshot();
 		if (agentsSnapshotBind && protectionConfig) {
 			protectionConfig.safeBinds.push(agentsSnapshotBind);
+		}
+
+		const localBinBind = await setupLocalBinSnapshot();
+		if (localBinBind && protectionConfig) {
+			protectionConfig.safeBinds.push(localBinBind);
 		}
 
 		const resolvConfBind = await setupResolvConf();

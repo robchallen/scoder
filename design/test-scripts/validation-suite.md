@@ -12,6 +12,7 @@ tags: [test-script, validation]
 [HAS_FEATURE](../features/infrastructure-protection.md)
 [HAS_FEATURE](../features/agents-md-overlay.md)
 [HAS_FEATURE](../features/agents-skills-snapshot.md)
+[HAS_FEATURE](../features/local-bin-resolution.md)
 [HAS_FEATURE](../features/dry-run-mode.md)
 [HAS_FEATURE](../features/apparmor-compatibility.md)
 [HAS_FEATURE](../features/direct-mode.md)
@@ -144,10 +145,36 @@ Dry-run output includes `pasta` in the command line.
 
 `--no-worktree` flag bypasses git worktree creation and the output mentions "direct mode".
 
+### 21. local-bin-symlink-resolved
+[TESTED_BY](/tests/scoder.test.ts#testLocalBinSymlinkResolved)
+
+A symlink in `~/.local/bin` pointing to a host path outside the sandbox is
+resolved via a forwarding shim and the tool executes correctly.
+
+### 22. local-bin-relative-symlink
+[TESTED_BY](/tests/scoder.test.ts#testLocalBinRelativeSymlink)
+
+A symlink pointing to a target that already exists inside the sandbox
+(via other bind mounts) is copied as-is and works.
+
+### 23. local-bin-regular-file
+[TESTED_BY](/tests/scoder.test.ts#testLocalBinRegularFile)
+
+Regular executable files in `~/.local/bin` are copied with their
+permissions intact and work inside the sandbox.
+
+### 24. llm-port-auto-detect
+[TESTED_BY](/tests/scoder.test.ts#testLlmPortAutoDetect)
+
+When `SCODER_LLM_PORT` is set and the port is open on localhost, scoder
+auto-detects it and allows the sandbox to reach that port without
+explicitly passing `--llm-port`.
+
 ## Current Network Coverage
 
 - Host loopback access is blocked (`host-loopback-blocked`)
 - A configured localhost LLM port can be reached (`llm-port-allows-host-loopback`)
+- Auto-detection of an open LLM port enables that port without `--llm-port` (`llm-port-auto-detect`)
 - Outbound DNS resolution works (`outbound-dns-works`)
 
 ## Test Implementation Notes

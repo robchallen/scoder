@@ -24,7 +24,12 @@ localhost) unless explicitly allowed.
 
 - pasta runs with `--tcp-ns none --udp-ns none` by default (no localhost forwarding)
 - DNS: snapshots `/etc/resolv.conf`, preferring `/run/systemd/resolve/resolv.conf` when the host uses 127.0.0.53 (systemd-resolved)
-- LLM port forwarding: `--llm-port=<port>` injects `--tcp-ns <port>` to allow a single localhost port (e.g., Ollama on 11434)
+- LLM port forwarding: `--llm-port=<port>` injects `--tcp-ns <port>` to
+  allow a single localhost port (e.g., Ollama on 11434)
+- **Auto-detection**: when `--llm-port` is not specified, scoder checks
+  if port 11434 is open on localhost at startup. If something responds
+  (e.g. Ollama, Open WebUI), that port is auto-enabled. Override the
+  default port with `SCODER_LLM_PORT`.
 
 [HAS_FEATURE](./sandbox-isolation.md)
 

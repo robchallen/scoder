@@ -1,4 +1,4 @@
-import { realpath as fsRealpath, mkdir, readdir, stat } from "node:fs/promises";
+import { realpath as fsRealpath, mkdir, readdir, readlink, stat } from "node:fs/promises";
 import type { BindMount } from "../types.ts";
 import { error, info } from "../utils/logger.ts";
 
@@ -27,12 +27,28 @@ const RESERVED_SANDBOX_PATHS = [
 	"/home/scoder/.copilot",
 	"/home/scoder/.gitconfig",
 	"/home/scoder/.local",
+	"/home/scoder/.local/share/mise",
 	"/home/scoder/.m2",
 	"/home/scoder/.npmrc",
 	"/home/scoder/.pypirc",
 	"/home/scoder/.Rprofile",
 	"/home/scoder/.rustup",
 	"/home/scoder/R",
+];
+
+// Paths that will be bind-mounted inside the sandbox, used to resolve symlinks
+// in ~/.local/bin during snapshot time. If a symlink target falls under one of
+// these paths, it is considered "sandbox-resolvable" and the symlink is copied
+// as-is. Otherwise a forwarding shim is generated.
+const SANDBOX_MOUNT_PREFIXES = [
+	"/tmp/scoder/",        // worktree
+	"/home/scoder/.local",
+	"/home/scoder/.cargo",
+	"/home/scoder/.rustup",
+	"/home/scoder/.config/mise",
+	"/home/scoder/.local/share/mise",
+	"/home/scoder/R",
+	"/home/scoder/.m2",
 ];
 
 export interface ProtectionConfig {
@@ -323,7 +339,136 @@ async function safeCopyDirRecursive(
 	visited.delete(realSrc);
 }
 
-// ### setupAgentsSnapshot
+// ### setupLocalBinSnapshot
+// [IMPLEMENTS](/design/features/local-bin-resolution.md)
+export async function setupLocalBinSnapshot(): Promise<BindMount | null> {
+	const localBinSrc = `${process.env.HOME}/.local/bin`;
+
+	if (!(await fileOrDirExists(localBinSrc))) {
+		return null;
+	}
+
+	const snapshotDir = await createTempDir("scoder-local-bin");
+
+	try {
+		await resolveLocalBinEntries(localBinSrc, snapshotDir);
+	} catch (err) {
+		error(`Failed to snapshot ~/.local/bin: ${err}`);
+		error(
+			"scoder copies ~/.local/bin at startup so symlinked tools resolve in the sandbox",
+		);
+		process.exit(1);
+	}
+
+	info(`Resolving ~/.local/bin in ${snapshotDir}`);
+
+	return {
+		type: "ro-bind",
+		source: snapshotDir,
+		dest: "/home/scoder/.local/bin",
+	};
+}
+
+// ### resolveLocalBinEntries
+// Walk ~/.local/bin and copy entries into snapshotDir. Regular files
+// get their exec bits preserved. Symlinks are either copied as-is
+// (if the resolved target sits under a sandbox mount prefix) or
+// replaced with a tiny forwarding shim.
+async function resolveLocalBinEntries(
+	srcDir: string,
+	destDir: string,
+): Promise<void> {
+	const entries = await readdir(srcDir, { withFileTypes: true });
+	for (const entry of entries) {
+		const src = `${srcDir}/${entry.name}`;
+		const dest = `${destDir}/${entry.name}`;
+
+		try {
+			if (entry.isSymbolicLink()) {
+			const target = await readlink(src);
+			const targetReal = await realpath(target);
+
+			if (isSandboxResolvable(targetReal)) {
+				// Target already accessible inside sandbox — copy symlink as-is
+				const lastSlash = dest.lastIndexOf("/");
+				if (lastSlash !== -1) {
+					const parentDir = dest.slice(0, lastSlash);
+					await mkdir(parentDir, { recursive: true });
+				}
+				await Bun.spawn(["ln", "-sf", target, dest]).exited;
+				info(`Symlink OK: ${entry.name} → ${targetReal}`);
+			} else {
+				// Target not accessible — copy the binary so it is
+				// available read-only in the sandbox snapshot.
+				const data = await Bun.file(targetReal).arrayBuffer();
+				const lastSlash = dest.lastIndexOf("/");
+				if (lastSlash !== -1) {
+					const parentDir = dest.slice(0, lastSlash);
+					await mkdir(parentDir, { recursive: true });
+				}
+				await Bun.write(dest, data);
+				const st = await stat(targetReal);
+				if (st.mode & 0o111) {
+					const proc = await Bun.spawn(["chmod", "+x", dest]);
+					await proc.exited;
+				}
+				info(`Copied target: ${entry.name} → ${targetReal}`);
+			}
+		} else if (entry.isFile()) {
+			// Regular file — copy and preserve exec bit
+			const data = await Bun.file(src).arrayBuffer();
+			const lastSlash = dest.lastIndexOf("/");
+			if (lastSlash !== -1) {
+				const parentDir = dest.slice(0, lastSlash);
+				await mkdir(parentDir, { recursive: true });
+			}
+			await Bun.write(dest, data);
+
+			// Preserve executable permission
+			const st = await stat(src);
+			if (st.mode & 0o111) {
+				const proc = await Bun.spawn(["chmod", "+x", dest]);
+				await proc.exited;
+			}
+		}
+		// Directories inside ~/.local/bin are silently skipped
+	} catch {
+			// Broken symlink or unreadable file — skip silently
+		}
+}
+}
+
+
+// ### isSandboxResolvable
+// Check if a symlink target (host realpath) would be accessible inside
+// the sandbox. We map the host path into the sandbox namespace by
+// replacing the real home prefix with /home/scoder, then check against
+// known sandbox mount prefixes.
+function isSandboxResolvable(hostPath: string): boolean {
+	// If the path starts with /tmp/scoder/ it's a worktree mount
+	if (hostPath.startsWith("/tmp/scoder/")) {
+		return true;
+	}
+
+	// Map host home → sandbox home
+	const realHome = process.env.HOME || "/home/user";
+	const sandboxPath = hostPath.startsWith(`${realHome}/`)
+		? `/home/scoder${hostPath.slice(realHome.length)}`
+		: hostPath;
+
+	// Check against sandbox mount prefixes
+	if (sandboxPath.startsWith("/tmp/scoder/")) {
+		return true; // worktree
+	}
+	for (const prefix of SANDBOX_MOUNT_PREFIXES) {
+		if (sandboxPath === prefix || sandboxPath.startsWith(`${prefix}/`)) {
+			return true;
+		}
+	}
+	return false;
+}
+
+
 // [IMPLEMENTS](/design/features/agents-skills-snapshot.md)
 export async function setupAgentsSnapshot(): Promise<BindMount | null> {
 	const agentsSrc = `${process.env.HOME}/.agents`;

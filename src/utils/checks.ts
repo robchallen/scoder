@@ -1,3 +1,7 @@
+import { createRequire } from "node:module";
+const require = createRequire(import.meta.url);
+const net = require("node:net");
+
 import { error, info } from "./logger.ts";
 
 // EM: System checks for bwrap, pasta, AppArmor compatibility, and port detection
@@ -100,16 +104,22 @@ async function fileExists(path: string): Promise<boolean> {
 }
 
 export async function detectDefaultLlmPort(): Promise<number | null> {
+	const port =
+		parseInt(process.env.SCODER_LLM_PORT || "", 10) || 11434;
+
 	try {
-		const socket = await Bun.connect({
-			hostname: "127.0.0.1",
-			port: 11434,
-		} as any);
+		const socket = new net.Socket();
+		await new Promise<void>((resolve, reject) => {
+			socket.once("connect", resolve);
+			socket.once("error", reject);
+			socket.connect(port, "127.0.0.1");
+		});
+		socket.destroy();
 
-		socket.end();
-
-		info("Auto-detected local OpenAI-compatible API on 127.0.0.1:11434");
-		return 11434;
+		info(
+			`Auto-detected local OpenAI-compatible API on 127.0.0.1:${port}`,
+		);
+		return port;
 	} catch {
 		return null;
 	}

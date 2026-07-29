@@ -136,19 +136,6 @@ export const TOOL_PRESETS: Record<string, ToolPreset> = {
 			const binds: BindMount[] = [];
 			const dirs: string[] = [];
 
-			const ghDir = `${realHome}/.config/gh`;
-			if (await dirExists(ghDir)) {
-				dirs.push(`${sandboxHome}/.config/gh`);
-				binds.push({
-					type: "ro-bind",
-					source: ghDir,
-					dest: `${sandboxHome}/.config/gh`,
-				});
-			} else {
-				warning("gh config not found at ~/.config/gh/");
-				warning("Run 'gh auth login' first to authenticate");
-			}
-
 			const copilotDir = `${realHome}/.config/github-copilot`;
 			if (await dirExists(copilotDir)) {
 				dirs.push(`${sandboxHome}/.config/github-copilot`);

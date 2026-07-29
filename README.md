@@ -53,7 +53,9 @@ on an isolated git branch via worktrees (or directly in the repo with `--no-work
   for the duration of the session.
 - **Sandbox AGENTS.md notice** — the repository `AGENTS.md` seen inside the
   sandbox is overlaid with an extra scoder section so the agent knows it is
-  running in an isolated worktree with an ephemeral home.
+  running in an isolated worktree with an ephemeral home. The overlay is
+  marked as `--skip-worktree` in git so the agent can use git freely
+  (worktree operations, stash, etc.) without seeing a dirty working tree.
 - **Tools** - executable directories and libraries are available read-only
   for R, Java (maven), Rust, and mise-en-place. Specifically:
   - **R**: `~/R` (user library) and `~/.Rprofile` are bound read-only, so

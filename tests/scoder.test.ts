@@ -6,6 +6,7 @@
 
 // Import test utilities from bun:test
 import { test, expect } from "bun:test";
+import { addGitExclude, removeGitExclude } from "../src/git/protection.ts";
 
 // ### Constants
 const TEST_BASE = "/tmp/scoder-test-repos";
@@ -918,4 +919,140 @@ test("local-bin-symlink-arg-passthrough: Forwarding shim passes all arguments th
 	} finally {
 		await cleanupRepo(repoDir);
 	}
+});
+
+
+
+
+// EM: ### Tests for AGENTS.md overlay masking from git
+// EM: Implements AGENTS.md overlay exclusion via git update-index --skip-worktree
+
+async function createTempRepoSimple(): Promise<string> {
+	const tmpProc = await Bun.spawn(["mktemp", "-d"], { stdout: "pipe", stderr: "pipe" });
+	await tmpProc.exited;
+	const tmpDir = (await new Response(tmpProc.stdout).text()).trim();
+
+	// Create a git repo
+	await Bun.spawn(["git", "init"], { cwd: tmpDir, stdout: "pipe", stderr: "pipe" }).exited;
+	await Bun.spawn(["git", "config", "user.email", "test@test.com"], { cwd: tmpDir }).exited;
+	await Bun.spawn(["git", "config", "user.name", "Test"], { cwd: tmpDir }).exited;
+
+	return tmpDir;
+}
+
+// Helper: check if a file has skip-worktree set in the index
+// git ls-files -v shows 'S' for skip-worktree, 'H' for normal staged
+async function hasSkipWorktree(repoDir: string, path: string): Promise<boolean> {
+	const proc = await Bun.spawn(
+		["git", "ls-files", "-v", path],
+		{ cwd: repoDir, stdout: "pipe", stderr: "pipe" },
+	);
+	await proc.exited;
+	const output = await new Response(proc.stdout).text();
+	// First character is 'S' (uppercase) for skip-worktree files
+	return output.trim().startsWith("S ");
+}
+
+// EM: Unit test — addGitExclude should mark AGENTS.md as skip-worktree
+test("addGitExclude should mark AGENTS.md as skip-worktree", async () => {
+	const repoDir = await createTempRepoSimple();
+
+	// Create AGENTS.md and stage it (skip-worktree only works on staged files)
+	await Bun.write(`${repoDir}/AGENTS.md`, "# Test\n");
+	await Bun.spawn(["git", "add", "AGENTS.md"], { cwd: repoDir }).exited;
+
+	// Before: not in skip-worktree
+	let hasSkip = await hasSkipWorktree(repoDir, "AGENTS.md");
+	expect(hasSkip).toBe(false);
+
+	// Run addGitExclude
+	await addGitExclude(repoDir, "AGENTS.md");
+
+	// After: should be in skip-worktree
+	hasSkip = await hasSkipWorktree(repoDir, "AGENTS.md");
+	expect(hasSkip).toBe(true);
+});
+
+// EM: Unit test — removeGitExclude should restore normal tracking
+test("removeGitExclude should restore normal tracking", async () => {
+	const repoDir = await createTempRepoSimple();
+
+	// Create AGENTS.md and stage it
+	await Bun.write(`${repoDir}/AGENTS.md`, "# Test\n");
+	await Bun.spawn(["git", "add", "AGENTS.md"], { cwd: repoDir }).exited;
+
+	// Mark as skip-worktree
+	await addGitExclude(repoDir, "AGENTS.md");
+	expect(await hasSkipWorktree(repoDir, "AGENTS.md")).toBe(true);
+
+	// Remove skip-worktree
+	await removeGitExclude(repoDir, "AGENTS.md");
+
+	// Should no longer be skip-worktree
+	expect(await hasSkipWorktree(repoDir, "AGENTS.md")).toBe(false);
+});
+
+// EM: Unit test — addGitExclude should be idempotent (calling twice is fine)
+test("addGitExclude should be idempotent", async () => {
+	const repoDir = await createTempRepoSimple();
+
+	// Create AGENTS.md and stage it
+	await Bun.write(`${repoDir}/AGENTS.md`, "# Test\n");
+	await Bun.spawn(["git", "add", "AGENTS.md"], { cwd: repoDir }).exited;
+
+	// Call addGitExclude twice
+	await addGitExclude(repoDir, "AGENTS.md");
+	await addGitExclude(repoDir, "AGENTS.md");
+
+	// Should still have exactly one entry in skip-worktree
+	expect(await hasSkipWorktree(repoDir, "AGENTS.md")).toBe(true);
+});
+
+// EM: Integration test — scoder should succeed with AGENTS.md excluded from git tracking
+test("scoder should succeed in direct mode with AGENTS.md excluded", async () => {
+	const repoDir = await createTempRepoSimple();
+
+	// Create an AGENTS.md and initial commit
+	await Bun.write(`${repoDir}/AGENTS.md`, "# Test repo\n");
+	await Bun.spawn(["git", "add", "AGENTS.md"], { cwd: repoDir }).exited;
+	await Bun.spawn(
+		["git", "-c", "user.email=test@test.com", "-c", "user.name=Test", "commit", "-m", "initial"],
+		{ cwd: repoDir, stdout: "pipe", stderr: "pipe" },
+	).exited;
+
+	// Run scoder in direct mode
+	const scoderResult = await Bun.spawn(
+		[SCODER_PATH, "--no-worktree", "--quiet", "--dry-run", "opencode"],
+		{ cwd: repoDir, stdout: "pipe", stderr: "pipe" },
+	);
+	await scoderResult.exited;
+
+	// Should succeed
+	expect(scoderResult.exitCode).toBe(0);
+
+	// AGENTS.md should no longer be skip-worktree after session
+	expect(await hasSkipWorktree(repoDir, "AGENTS.md")).toBe(false);
+});
+
+// EM: Integration test — scoder should succeed in worktree mode with AGENTS.md excluded from worktree git tracking
+test("scoder should succeed in worktree mode with AGENTS.md excluded from worktree", async () => {
+	const repoDir = await createTempRepoSimple();
+
+	// Create an AGENTS.md and initial commit
+	await Bun.write(`${repoDir}/AGENTS.md`, "# Test repo\n");
+	await Bun.spawn(["git", "add", "AGENTS.md"], { cwd: repoDir }).exited;
+	await Bun.spawn(
+		["git", "-c", "user.email=test@test.com", "-c", "user.name=Test", "commit", "-m", "initial"],
+		{ cwd: repoDir, stdout: "pipe", stderr: "pipe" },
+	).exited;
+
+	// Run scoder in worktree mode
+	const scoderResult = await Bun.spawn(
+		[SCODER_PATH, "--quiet", "--dry-run", "opencode"],
+		{ cwd: repoDir, stdout: "pipe", stderr: "pipe" },
+	);
+	await scoderResult.exited;
+
+	// Should succeed
+	expect(scoderResult.exitCode).toBe(0);
 });

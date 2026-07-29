@@ -1,5 +1,5 @@
 ---
-target-version: 2.1.0
+target-version: 2.2.0
 status: draft
 tags: [test-script, validation]
 ---
@@ -21,13 +21,19 @@ tags: [test-script, validation]
 
 `tests/scoder.test.ts` is a self-contained integration test suite that creates
 temporary git repositories under `/tmp`, runs `scoder` against them using
-`/bin/bash` as the sandboxed command, and asserts expected behaviour. 20
+`/bin/bash` as the sandboxed command, and asserts expected behaviour. 29
 tests cover all sandbox mechanics.
 
 ## How to Run
 
 ```bash
-bun run tests/scoder.test.ts
+bun test tests/scoder.test.ts
+```
+
+or:
+
+```bash
+em test
 ```
 
 ## How It Works
@@ -151,17 +157,16 @@ Dry-run output includes `pasta` in the command line.
 A symlink in `~/.local/bin` pointing to a host path outside the sandbox is
 resolved via a forwarding shim and the tool executes correctly.
 
-### 22. local-bin-relative-symlink
-[TESTED_BY](/tests/scoder.test.ts#testLocalBinRelativeSymlink)
-
-A symlink pointing to a target that already exists inside the sandbox
-(via other bind mounts) is copied as-is and works.
-
-### 23. local-bin-regular-file
+### 22. local-bin-regular-file
 [TESTED_BY](/tests/scoder.test.ts#testLocalBinRegularFile)
 
 Regular executable files in `~/.local/bin` are copied with their
 permissions intact and work inside the sandbox.
+
+### 23. local-bin-symlink-arg-passthrough
+[TESTED_BY](/tests/scoder.test.ts#testLocalBinSymlinkArgPassthrough)
+
+Forwarding shim passes all arguments through to the underlying tool.
 
 ### 24. llm-port-auto-detect
 [TESTED_BY](/tests/scoder.test.ts#testLlmPortAutoDetect)
@@ -169,6 +174,36 @@ permissions intact and work inside the sandbox.
 When `SCODER_LLM_PORT` is set and the port is open on localhost, scoder
 auto-detects it and allows the sandbox to reach that port without
 explicitly passing `--llm-port`.
+
+### 25. addGitExclude should mark AGENTS.md as skip-worktree
+[TESTED_BY](/tests/scoder.test.ts#testAddGitExclude)
+
+`addGitExclude` sets the `--skip-worktree` index flag on `AGENTS.md` so git
+ignores the overlay modification. This is what prevents the overlay from
+appearing as a dirty working tree inside the sandbox.
+
+### 26. removeGitExclude should restore normal tracking
+[TESTED_BY](/tests/scoder.test.ts#testRemoveGitExclude)
+
+`removeGitExclude` clears the `--skip-worktree` flag after the session ends,
+restoring normal git tracking for `AGENTS.md`.
+
+### 27. addGitExclude should be idempotent
+[TESTED_BY](/tests/scoder.test.ts#testAddGitExcludeIdempotent)
+
+Calling `addGitExclude` multiple times does not duplicate entries in the git index.
+
+### 28. scoder should succeed in direct mode with AGENTS.md excluded
+[TESTED_BY](/tests/scoder.test.ts#testScoderDirectModeExclude)
+
+scoder runs successfully in `--no-worktree` mode with AGENTS.md excluded from
+git tracking. The exclude is cleaned up after the session.
+
+### 29. scoder should succeed in worktree mode with AGENTS.md excluded
+[TESTED_BY](/tests/scoder.test.ts#testScoderWorktreeModeExclude)
+
+scoder runs successfully in worktree mode with AGENTS.md excluded from the
+worktree git index. The exclude is cleaned up after the session.
 
 ## Current Network Coverage
 
@@ -207,8 +242,15 @@ try {
 The `existing-scoder-worktree-reused` test parses `git worktree list --porcelain`
 output to find the worktree directory, then runs scoder from that directory.
 
+The `worktree-recreated-if-missing` test identifies the scoder branch worktree
+(skipping the main worktree) by looking for `branch refs/heads/scoder/*` entries.
+
+### Git Skip-Worktree Detection
+
+Tests use `git ls-files -v` to check `--skip-worktree` state: uppercase `S`
+means skip-worktree, uppercase `H` means normal staged file.
+
 ### Temp Directory Cleanup
 
 All tests create repos under a shared `TEST_BASE` directory, which is removed
 by the `cleanup()` function in a finally block.
-

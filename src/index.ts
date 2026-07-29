@@ -13,6 +13,8 @@ import {
 	setupLocalBinSnapshot,
 	setupProtection,
 	setupResolvConf,
+	addGitExclude,
+	removeGitExclude,
 } from "./git/protection.ts";
 import {
 	commitAllChanges,
@@ -273,29 +275,41 @@ async function main(): Promise<void> {
 		process.exit(0);
 	}
 
-	info(`Launching ${toolDescription} in sandbox...`);
+	// EM: Mask AGENTS.md overlay from git so the agent can use git freely inside the sandbox
+	// EM: Implements AGENTS.md overlay exclusion via .git/info/exclude
+	const repoRoot = options.worktree && worktreeInfo
+		? worktreeInfo.worktreeDir
+		: process.cwd();
+	await addGitExclude(repoRoot, "AGENTS.md");
 
-	const proc = Bun.spawn(bwrapCmd, {
-		stdout: "inherit",
-		stderr: "inherit",
-		stdin: "inherit",
-	});
+	try {
+		info(`Launching ${toolDescription} in sandbox...`);
 
-	const exitCode = await proc.exited;
+		const proc = Bun.spawn(bwrapCmd, {
+			stdout: "inherit",
+			stderr: "inherit",
+			stdin: "inherit",
+		});
 
-	if (options.worktree && worktreeInfo && protectionConfig) {
-		// EM: Commit changes and print session summary for worktree mode
-		// EM: Implements git-worktree-isolation feature
-		await printSessionSummary(worktreeInfo, protectionConfig.agentsMdOverlay);
-	} else if (!options.worktree && protectionConfig) {
-		// EM: Direct mode - no git worktree, changes are immediate
-		if (protectionConfig.agentsMdOverlay) {
-			await Bun.write(protectionConfig.agentsMdOverlay, "");
+		const exitCode = await proc.exited;
+
+		if (options.worktree && worktreeInfo && protectionConfig) {
+			// EM: Commit changes and print session summary for worktree mode
+			// EM: Implements git-worktree-isolation feature
+			await printSessionSummary(worktreeInfo, protectionConfig.agentsMdOverlay);
+		} else if (!options.worktree && protectionConfig) {
+			// EM: Direct mode - no git worktree, changes are immediate
+			if (protectionConfig.agentsMdOverlay) {
+				await Bun.write(protectionConfig.agentsMdOverlay, "");
+			}
+			info("Direct mode session complete (no git worktree changes to commit)");
 		}
-		info("Direct mode session complete (no git worktree changes to commit)");
-	}
 
-	process.exit(exitCode);
+		process.exit(exitCode);
+	} finally {
+		// EM: Restore normal git tracking for AGENTS.md after session
+		await removeGitExclude(repoRoot, "AGENTS.md");
+	}
 }
 
 async function printSessionSummary(

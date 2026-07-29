@@ -1,6 +1,6 @@
 ---
 name: working-in-a-scoder-sandbox
-description: 'Use when the current git branch matches `scoder/*` or when the user tells you that you are in a scoder sandbox or scoder worktree. Also use when the user mentions `--no-worktree` mode. Use this if the user requests you update your copy of the code to incorporate changes from upstream and you detect you are in a sandbox. Use if you find that full paths that previously worked fail and your home directory is now `/home/scoder`. Use if you are unexpectedly unable to write to a configuration file in your home directory like AGENTS.md. Do NOT use for generic Git advice outside scoder or for unrelated sandbox/container environments.'
+description: 'Use when the current git branch matches `scoder/*` or when the user tells you that you are in a scoder sandbox or scoder worktree. Also use when the user mentions `--no-worktree` mode. Use this if the user requests you update your copy of the code to incorporate changes from upstream and you detect you are in a sandbox. Use if you find that full paths that previously worked fail and your home directory is now `/home/scoder`. Do NOT use for generic Git advice outside scoder or for unrelated sandbox/container environments.'
 license: MIT
 allowed-tools: Read Bash Grep Glob
 ---
@@ -42,20 +42,66 @@ Do not use this skill for:
 - ordinary Git workflows outside scoder
 - generic container, VM, or sandbox guidance unrelated to scoder
 
-## Prerequisites
+## Environment
 
-- A Git checkout where the active branch is a `scoder/*` branch, or the user
-  has explicitly said the session is running inside scoder.
-- Read access to the repository docs if you need to confirm details:
-  [`references/scoder-sandbox-behavior.md`](references/scoder-sandbox-behavior.md).
+### Confirming you are in a sandbox
+
+The primary detection is the `SCODER_SANDBOX=1` environment variable.
+Check it first:
+
+```bash
+echo $SCODER_SANDBOX
+```
+
+If it prints `1` you are inside a scoder sandbox. The `$HOME` variable will be
+`/home/scoder/`, `$USER` and `$LOGNAME` will be `scoder`, and the working
+directory will be either the worktree path (worktree mode) or the actual
+project directory (direct mode).
+
+If `SCODER_SANDBOX` is not set but you are on a `scoder/*` branch, you may be
+looking at the repository outside the sandbox (the real checkout).
+
+### Sandbox environment variables
+
+| Variable | Value | Notes |
+|---|---|---|
+| `$HOME` | `/home/scoder` | Ephemeral, on tmpfs — lost when sandbox exits |
+| `$USER` | `scoder` | Not your real username |
+| `$LOGNAME` | `scoder` | Not your real login name |
+| `$SCODER_SANDBOX` | `1` | Set only inside the sandbox |
+| `$TERM` | from host | Passed through |
+| `$LANG` | from host | Passed through |
+| `$PATH` | modified | Includes sandbox-local `~/.local/bin` |
+
+### Environment variables passed through
+
+The sandbox clears the environment then selectively passes through:
+
+- **Editor tools**: `EDITOR`, `VISUAL`
+- **Colour control**: `NO_COLOR`, `FORCE_COLOR`
+- **AI keys**: `OPENROUTER_API_KEY`, `ANTHROPIC_*`, `OPENAI_*`, `GEMINI_*`, `MISTRAL_*`, `DEEPSEEK_*`, `GROQ_*`, `CEREBRAS_*`, `CLOUDFLARE_*`, `XAI_*`, `OPENCODE_*`, `HF_TOKEN`, `FIREWORKS_*`, `TOGETHER_*`, `KIMI_*`, `MINIMAX_*`, `XIAOMI_*`, `AI_GATEWAY_API_KEY`
+- **Azure**: `AZURE_OPENAI_*`
+- **AWS**: `AWS_PROFILE`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_BEARER_TOKEN_BEDROCK`, `AWS_REGION`
+- **Google Cloud**: `GOOGLE_CLOUD_*`
+- **Pi-specific**: `PI_SKIP_VERSION_CHECK`, `PI_OFFLINE`
+- **Tool-specific**: `OPENCODE_CONFIG`, `OPENCODE_CONFIG_CONTENT`, `CLAUDE_MODEL`, `COPILOT_*`
+
+All other environment variables from your host are **not** available inside
+the sandbox.
 
 ## Workflow
 
 ### 1. Confirm you are really in the sandbox workflow
 
-The strongest signal for this skill is that the current branch is `scoder/*`.
-If the user only mentions scoder in passing, verify the branch or the current
-working arrangement before giving sandbox-specific advice. Your `$HOME` is "/home/scoder"
+The strongest signal for this skill is `SCODER_SANDBOX=1`. Check this first:
+
+```bash
+echo $SCODER_SANDBOX
+```
+
+If it returns `1`, you are inside a scoder sandbox. Your `$HOME` is `/home/scoder/`.
+If the user only mentions scoder in passing, verify the env var or the branch
+before giving sandbox-specific advice.
 
 ### 2. Absolute paths may be different
 
@@ -71,13 +117,16 @@ session was started outside of the sandbox. If you replace their `$HOME` with `/
 you should be able to find the file.
 
 Symbolic links outside of the repository will probably be broken. A common problem is
-with agent skill directories and this means you may not have a complete set of skills available.
+with agent skill directories. scoder copies `~/.agents` to a temp directory and
+bind-mounts it read-only, so symlinked skills resolve correctly as a snapshot
+taken at sandbox start.
 
 **Note on modes:** In worktree mode (default), your working directory is at
 `/tmp/scoder/<git-repo-path>` mapped to `/home/scoder/<git-repo-path>`. In direct mode
-(`--no-worktree`), your working directory is the current directory.
+(`--no-worktree`), your working directory is the current directory of the real
+project checkout.
 
-### 2. Assume the sandbox branch started from the user's current `HEAD`
+### 3. Assume the sandbox branch started from the user's current `HEAD`
 
 There is nothing special about `main`. A scoder session starts from whatever
 branch or commit the user launched it from, then creates or reuses
@@ -90,12 +139,12 @@ current branch context, not against `main` by default.
 directly in the working directory and are immediate (no commit required, but
 also no isolation).
 
-### 3. Work as if the project worktree is writable but the environment is selective
+### 4. Work as if the project worktree is writable but the environment is selective
 
 What is usually safe:
 
 - editing normal project files in the sandbox worktree
-- running Git on the current `scoder/*` branch
+- running Git on the current `scoder/*` branch (or current branch in direct mode)
 - rerunning `scoder` from the same scoder worktree
 
 What is usually constrained:
@@ -104,14 +153,20 @@ What is usually constrained:
 - writes to protected infra files such as `.github/`, `.gitignore`, lockfiles,
   and `.agentreadonly` unless the repository's `.agentreadonly` configuration
   has explicitly relaxed protection
-- writing to `AGENTS.md` is not possible.
+- writing to `AGENTS.md` is not possible (read-only overlay with sandbox notice)
+- writing to `$HOME` persists only for the session (ephemeral tmpfs)
 
 When a task fails with a read-only error, first check whether the target is a
 protected path or a broken symlink rather than assuming the whole worktree is broken.
 Abandon an edit and confer with the user if you get a read only error.
-`.agentreadonly` is a gitignore like file specifying places that the user does not want you to change.
 
-### 4. Update from local changes in main branch explicitly
+`.agentreadonly` is a gitignore-like file specifying paths that the agent cannot
+modify. Lines starting with `$HOME/` bind host home directories read-only into
+the sandbox at the same relative path (e.g. `$HOME/Git/other-project` becomes
+`/home/scoder/Git/other-project`). An empty `.agentreadonly` removes all default
+protections. `.agentreadonly` itself is always read-only.
+
+### 5. Update from local changes in main branch explicitly
 
 Inside the sandbox, do not assume `git pull` will bring in the latest `main`.
 The scoder branch may not have an upstream configured for that purpose. The
@@ -139,7 +194,17 @@ those changes. **DO NOT** try and pull or merge from origin. You may have to man
 they are unable to update the sandbox copy (which will be read only). In this case the only
 real option is for the user to fix things outside the sandbox.
 
-### 5. Treat commits as the visibility boundary
+### 6. Network behavior
+
+- **Outbound internet** is available (DNS resolution, API calls)
+- **Host localhost** (127.0.0.1) is **blocked by default**
+- **LLM ports**: if the user specifies `--llm-port=PORT` or scoder auto-detects an open port, that one localhost port is reachable
+- DNS is configured via the host's resolv.conf snapshot
+
+If your tool needs to reach a localhost service, the user must pass
+`--llm-port=PORT` when launching scoder.
+
+### 7. Treat commits as the visibility boundary
 
 **In worktree mode:** Other checkouts do not see sandbox changes just because files were edited in
 the scoder sandbox. They see changes when commits move the `scoder/*` branch.
@@ -155,7 +220,7 @@ That means:
 No commit is required, but there is also no isolation - changes affect the
 actual working tree directly.
 
-### 6. Commit at meaningful checkpoints
+### 8. Commit at meaningful checkpoints
 
 Inside scoder, committing is not just for final cleanup. It is also how you:
 
@@ -172,6 +237,17 @@ Commit often:
 Avoid churning tiny commits within one round of changes for no reason, but do not hold critical progress
 only in uncommitted work if the task is long-running.
 
+### 9. Available tools and libraries
+
+The sandbox includes read-only access to these tools and libraries:
+
+- **R**: user library (`~/R`), `.Rprofile`
+- **Java/Maven**: `~/.m2` repository
+- **Rust**: `~/.rustup` and `~/.cargo/bin`
+- **mise**: `~/.local/share/mise`, `~/.config/mise`, `~/.local/share/mise/shims`
+
+The sandbox also has access to `/dev` (full device passthrough).
+
 ## Guidance
 
 - Think of the scoder branch as a disposable integration branch for the session,
@@ -186,12 +262,16 @@ only in uncommitted work if the task is long-running.
   explicitly rather than using `git pull` by habit.
 - If the user talks about what another session can or cannot see, distinguish
   carefully between uncommitted worktree state and committed branch state.
+- If you need to access a localhost service from inside the sandbox, the user
+  must launch scoder with `--llm-port=<port>`.
+- `$HOME` is ephemeral (tmpfs). Any files you create there disappear when the
+  sandbox exits.
 
 ## Validation
 
 Before relying on this skill's assumptions, check:
 
-- the branch really is `scoder/*`, or the user explicitly said this is a scoder session
+- `SCODER_SANDBOX` env var is `1`, or the branch really is `scoder/*`, or the user explicitly said this is a scoder session
 - the operation you want is against the sandbox worktree, not the user's source checkout
 - the path you want to modify is not one of scoder's protected read-only paths
 - the user expectation is clear about committed versus uncommitted visibility
@@ -201,7 +281,7 @@ Before relying on this skill's assumptions, check:
 ### A write failed with a read-only error
 
 Check whether the target is a protected path like `.github/`, `.gitignore`, a
-lockfile, or `.agentreadonly`, or `AGENTS.md`. That is different from the project worktree
+lockfile, `.agentreadonly`, or `AGENTS.md`. That is different from the project worktree
 being non-writable.
 
 ### The user can't see your changes
@@ -228,8 +308,14 @@ If the user mentions running with `--no-worktree`, or if you notice there's no
 - Changes are immediate (no commit needed)
 - No worktree is created
 - `.agentreadonly` protection still applies
-- `AGENTS.md` overlay is still created, but without worktree-specific messages
+- `AGENTS.md` overlay is still created (with sandbox notice, without worktree-specific messages)
 - You can edit files directly in the current directory
+- `AGENTS.md` is masked from git tracking (same as worktree mode)
+
+### You can't reach localhost services
+
+Host localhost is blocked by default. The user must pass `--llm-port=<port>` to
+allow access to a specific localhost port (e.g. for a local Ollama instance).
 
 ## References
 

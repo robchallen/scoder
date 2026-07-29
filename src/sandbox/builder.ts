@@ -190,6 +190,9 @@ export async function buildBwrapCommand(
 		"COPILOT_PROVIDER_BASE_URL",
 		"COPILOT_PROVIDER_API_KEY",
 		"COPILOT_MODEL",
+		"COPILOT_GITHUB_TOKEN",
+		"GH_TOKEN",
+		"GITHUB_TOKEN",
 		"OPENCODE_CONFIG",
 		"OPENCODE_CONFIG_CONTENT",
 		"AZURE_OPENAI_API_KEY",
@@ -225,6 +228,14 @@ export async function buildBwrapCommand(
 		"GOOGLE_APPLICATION_CREDENTIALS",
 		"PI_SKIP_VERSION_CHECK",
 		"PI_OFFLINE",
+		"BRAVE_SEARCH_API_KEY",
+		"TAVILY_API_KEY",
+		"SERPER_API_KEY",
+		"EXA_API_KEY",
+		"YOUCOM_API_KEY",
+		"JINA_API_KEY",
+		"FIRECRAWL_API_KEY",
+		"PERPLEXITY_API_KEY"
 	];
 
 	for (const envVar of passThrough) {
@@ -371,6 +382,15 @@ async function buildExtraBinds(
 			type: "ro-bind",
 			source: pypircPath,
 			dest: `${sandboxHome}/.pypirc`,
+		});
+	}
+
+	const ghDir = `${realHome}/.config/gh`;
+	if (await dirExists(ghDir)) {
+		binds.push({
+			type: "ro-bind",
+			 source: ghDir,
+			 dest: `${sandboxHome}/.config/gh`,
 		});
 	}
 

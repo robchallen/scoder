@@ -16,7 +16,7 @@ git worktree isolation. TypeScript, Bun runtime, modular pipeline architecture.
 bun install          # first time only
 bun run typecheck    # type check
 bun run build        # standalone binary
-em test              # run validation suite (also: bun run tests/validate.ts)
+em test              # run validation suite (also: bun run tests/scoder.test.ts)
 em design            # design consistency check
 ```
 
@@ -96,6 +96,7 @@ if (await dirExists(path)) {
 5. **Temp file cleanup**: Temp files (AGENTS.md overlay, resolv.conf, agents snapshot) are created in `/tmp`. Clean up on exit.
 6. **Async/await**: All file and process operations are async. Do not forget `await`.
 7. **Bun.serve cleanup**: Tests using `Bun.serve()` for localhost need `server.stop()` in finally blocks.
+8. **AGENTS.md overlay masking**: The workspace `AGENTS.md` is overlaid with a read-only sandbox notice inside the sandbox. Use `git update-index --skip-worktree AGENTS.md` to mask the overlay from git (so the agent can use git freely). Restore with `--no-skip-worktree` after the session.
 
 ## Adding a New Tool Preset
 
@@ -105,7 +106,7 @@ and `validate()` checking prerequisites. See existing presets for examples.
 
 ## Testing
 
-Tests in `tests/validate.ts` create isolated repos under `/tmp`, run scoder,
+Tests in `tests/scoder.test.ts` create isolated repos under `/tmp`, run scoder,
 assert output, and clean up. Use `runScoder(repoDir, args)` and
 `runScoderInDir(runDir, args)` helpers. Clean up worktrees and branches in
 finally blocks.

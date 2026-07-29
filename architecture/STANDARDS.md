@@ -58,7 +58,7 @@ From `src/utils/logger.ts`:
 ## Testing
 
 - Test files: `tests/` directory
-- Test framework: custom async test runner in `tests/validate.ts`
+- Test framework: custom async test runner in `tests/scoder.test.ts`
 - Test pattern: create isolated git repo in `/tmp`, run scoder, assert output
 - Cleanup: try/finally blocks for temp file removal
 - Coverage target: all sandbox mechanics tested (filesystem, network, protection, worktree lifecycle)

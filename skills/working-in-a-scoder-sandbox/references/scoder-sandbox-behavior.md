@@ -24,6 +24,16 @@ This note summarises the scoder-specific behavior that the
 10. **Direct mode (`--no-worktree`):** No branch is created. Changes happen
     directly in the current working directory. `.agentreadonly` protection still
     applies. `AGENTS.md` overlay is created but without worktree-specific messages.
+11. **Environment detection:** The `SCODER_SANDBOX=1` environment variable is set
+    inside the sandbox. `$HOME` is `/home/scoder` (ephemeral, tmpfs), `$USER`
+    and `$LOGNAME` are `scoder`.
+12. **AGENTS.md overlay masking:** `AGENTS.md` is overlaid with a sandbox notice.
+    It is marked as `--skip-worktree` via `git update-index` so git operations
+    (worktree add, stash, etc.) succeed inside the sandbox without seeing a
+    dirty working tree. The masking is removed after the session ends.
+13. **Network isolation:** Host localhost (127.0.0.1) is blocked by default.
+    The `--llm-port=<port>` flag or auto-detection enables access to a specific
+    localhost port for LLM services.
 
 ## Sources
 

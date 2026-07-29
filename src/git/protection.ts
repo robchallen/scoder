@@ -294,6 +294,29 @@ export function getAgentsMdOverlayBind(
 	};
 }
 
+// EM: ### addGitExclude
+// [IMPLEMENTS](/design/features/agents-md-overlay.md)
+// Mark AGENTS.md as skip-worktree so git ignores the overlay modification.
+// Uses git update-index which properly handles both worktrees and regular repos.
+export async function addGitExclude(repoDir: string, pattern: string): Promise<void> {
+	const proc = await Bun.spawn(
+		["git", "update-index", "--skip-worktree", pattern],
+		{ cwd: repoDir, stdout: "pipe", stderr: "pipe" },
+	);
+	await proc.exited;
+}
+
+// EM: ### removeGitExclude
+// [IMPLEMENTS](/design/features/agents-md-overlay.md)
+// Restore normal git tracking for the previously excluded file.
+export async function removeGitExclude(repoDir: string, pattern: string): Promise<void> {
+	const proc = await Bun.spawn(
+		["git", "update-index", "--no-skip-worktree", pattern],
+		{ cwd: repoDir, stdout: "pipe", stderr: "pipe" },
+	);
+	await proc.exited;
+}
+
 async function safeCopyDirRecursive(
 	src: string,
 	dest: string,

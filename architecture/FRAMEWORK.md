@@ -23,7 +23,7 @@ injection: plain async functions with explicit parameter passing.
 
 - **bwrap** — bubblewrap for unprivileged filesystem namespacing
 - **pasta** — userspace networking for outbound connectivity with loopback isolation
-- **git** — worktree creation and branch management
+- **git** — worktree creation, branch management, and index manipulation
 - **sudo** — one-time AppArmor profile installation only
 
 ## Module Map
@@ -37,7 +37,7 @@ src/
 │   └── apparmor.ts       # AppArmor profile generation and installation
 ├── git/
 │   ├── worktree.ts       # Git worktree lifecycle: create, reuse, prune, commit, diffstat
-│   └── protection.ts     # .agentreadonly parsing, AGENTS.md overlay, ~/.agents snapshot
+│   └── protection.ts     # .agentreadonly parsing, AGENTS.md overlay, skip-worktree masking, snapshots
 ├── tools/
 │   └── presets.ts        # Per-tool config binds and validation for opencode/claude/copilot/pi
 ├── sandbox/
@@ -47,7 +47,7 @@ src/
     └── checks.ts          # System checks: bwrap userns, command existence, port detection
 
 tests/
-└── validate.ts           # Integration test suite (20 tests as of v2.1.0)
+└── scoder.test.ts        # Integration test suite (29 tests as of v2.2.0)
 ```
 
 ## Execution Flow
@@ -64,7 +64,10 @@ tests/
    - Create AGENTS.md overlay with sandbox notice
    - Snapshot `~/.agents` to `/tmp` with symlink resolution
    - Snapshot non-loopback `/etc/resolv.conf`
-7. **Build bwrap command:**
+7. **Git masking:**
+   - Mark `AGENTS.md` as `--skip-worktree` via `git update-index`
+   - This prevents the overlay from appearing as a dirty tree inside the sandbox
+8. **Build bwrap command:**
    - System mounts (ro-bind: /usr, /bin, /lib, /etc, /sys, /run)
    - Device, proc, tmpfs mounts
    - HOME as ephemeral tmpfs with selective config/data binds
@@ -72,11 +75,12 @@ tests/
    - Protection overlays (ro-bind over rw bind)
    - Environment variables (clearenv + selective setenv)
    - pasta network layer
-8. **Execute** — `bwrap ... pasta ... <tool> <args>`
-9. **On exit:**
-   - Commit changes in worktree mode
-   - Print session summary (commits, diffstat, branch info)
-   - Cleanup temp files
+9. **Execute** — `bwrap ... pasta ... <tool> <args>`
+10. **On exit:**
+    - Commit changes in worktree mode
+    - Print session summary (commits, diffstat, branch info)
+    - Remove `--skip-worktree` from AGENTS.md
+    - Cleanup temp files
 
 ## Design Decisions
 

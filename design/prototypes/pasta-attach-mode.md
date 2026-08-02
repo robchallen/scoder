@@ -8,6 +8,12 @@ tags: [prototype, sandbox, network, pasta, uid]
 
 [IMPLEMENTED_BY](/design/prototypes/pasta-attach-mode.sh)
 
+> **A competing approach is under consideration.**
+> [accept-root-uid-in-sandbox](../implementation/plans/accept-root-uid-in-sandbox.md)
+> keeps uid 0 and corrects the NSS identity instead, which is far less invasive
+> than the rework prototyped here. The two are mutually exclusive; neither is
+> adopted yet.
+
 ## Purpose
 
 Establish whether resolution option 1 in

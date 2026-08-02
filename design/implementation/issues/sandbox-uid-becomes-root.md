@@ -106,12 +106,19 @@ Each is a structural change to how pasta and bwrap compose, not a flag tweak.
    persistent network namespace that bwrap joins. bwrap cannot join a netns by
    path on its own, so this needs `nsenter`, plus netns lifecycle management
    and cleanup.
-3. **Accept and document** — since ownership is unaffected, the practical harm
-   is limited to tools that branch on `id -u`. Cheapest option, but leaves the
-   sandbox identity self-contradictory.
+3. **Accept uid 0 and fix the identity instead** — make `getpwuid(0)` resolve to
+   `/home/scoder` so `~/.ssh` and similar land correctly, rather than trying to
+   avoid uid 0. Cheapest by a wide margin: a corrected `/etc/passwd` entry plus
+   a few binds. Written up as
+   [accept-root-uid-in-sandbox](../plans/accept-root-uid-in-sandbox.md), with
+   the core change verified. Leaves tools that branch on `id -u` misbehaving,
+   which is the open question there.
 
-Option 1 is the most faithful to the current design and is now backed by a
-working prototype; option 3 is what is in effect today, undocumented.
+Options 1 and 3 are the live candidates and are mutually exclusive. Option 1 is
+the most faithful to the current design and is backed by a working prototype;
+option 3 is far cheaper and accepts uid 0 rather than avoiding it. The deciding
+question is whether the tool presets tolerate running as root — if any does not,
+only option 1 helps.
 
 ## Testing
 

@@ -1,9 +1,9 @@
 import type { ProtectionConfig } from "../git/protection.ts";
 import { getGitCommonDir, isInGitRepo } from "../git/worktree.ts";
 import type { BindMount, GitWorktreeInfo, ScoderOptions } from "../types.ts";
-import path from "path";
-import os from "os";
-import fs from "fs";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 
 // EM: Implements sandbox-isolation, network-isolation, path-mirroring, and host-tool-binding features
 // EM: Constructs bwrap command with system mounts, binds, env vars, and pasta networking

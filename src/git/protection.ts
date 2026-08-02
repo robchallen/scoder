@@ -92,7 +92,6 @@ export async function setupProtection(
 	const dirs: string[] = [];
 	const agentreadonlyPath = `${sourceDir}/.agentreadonly`;
 	const agentreadonlyExists = await fileExists(agentreadonlyPath);
-	let agentsMdOverlay: string | undefined;
 
 	if (agentreadonlyExists) {
 		const content = await Bun.file(agentreadonlyPath).text();
@@ -144,7 +143,10 @@ export async function setupProtection(
 		});
 	}
 
-	agentsMdOverlay = await _setupAgentsMdOverlay(sourceDir, sandboxProjDir);
+	const agentsMdOverlay = await _setupAgentsMdOverlay(
+		sourceDir,
+		sandboxProjDir,
+	);
 
 	return { protectedPaths, safeBinds, agentsMdOverlay, dirs };
 }

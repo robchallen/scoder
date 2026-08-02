@@ -1,8 +1,8 @@
 import { createRequire } from "node:module";
+import { error, info } from "./logger.ts";
+
 const require = createRequire(import.meta.url);
 const net = require("node:net");
-
-import { error, info } from "./logger.ts";
 
 // EM: System checks for bwrap, pasta, AppArmor compatibility, and port detection
 // EM: Implements apparmor-compatibility feature for Ubuntu 24.04+ systems
@@ -104,8 +104,7 @@ async function fileExists(path: string): Promise<boolean> {
 }
 
 export async function detectDefaultLlmPort(): Promise<number | null> {
-	const port =
-		parseInt(process.env.SCODER_LLM_PORT || "", 10) || 11434;
+	const port = parseInt(process.env.SCODER_LLM_PORT || "", 10) || 11434;
 
 	try {
 		const socket = new net.Socket();
@@ -116,9 +115,7 @@ export async function detectDefaultLlmPort(): Promise<number | null> {
 		});
 		socket.destroy();
 
-		info(
-			`Auto-detected local OpenAI-compatible API on 127.0.0.1:${port}`,
-		);
+		info(`Auto-detected local OpenAI-compatible API on 127.0.0.1:${port}`);
 		return port;
 	} catch {
 		return null;

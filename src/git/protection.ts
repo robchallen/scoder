@@ -1,4 +1,10 @@
-import { realpath as fsRealpath, mkdir, readdir, readlink, stat } from "node:fs/promises";
+import {
+	realpath as fsRealpath,
+	mkdir,
+	readdir,
+	readlink,
+	stat,
+} from "node:fs/promises";
 import type { BindMount } from "../types.ts";
 import { error, info } from "../utils/logger.ts";
 import {
@@ -52,7 +58,7 @@ const RESERVED_SANDBOX_PATHS = [
 // why the entries are the precise bound paths rather than their parents.
 // Preset-specific destinations are dynamic and passed in separately.
 const SANDBOX_MOUNT_PREFIXES = [
-	"/tmp/scoder/",        // worktree
+	"/tmp/scoder/", // worktree
 	"/home/scoder/.local/bin",
 	"/home/scoder/.local/share/mise",
 	"/home/scoder/.config/mise",
@@ -323,7 +329,10 @@ export function getAgentsMdOverlayBind(
 // [IMPLEMENTS](/design/features/agents-md-overlay.md)
 // Mark AGENTS.md as skip-worktree so git ignores the overlay modification.
 // Uses git update-index which properly handles both worktrees and regular repos.
-export async function addGitExclude(repoDir: string, pattern: string): Promise<void> {
+export async function addGitExclude(
+	repoDir: string,
+	pattern: string,
+): Promise<void> {
 	const proc = await Bun.spawn(
 		["git", "update-index", "--skip-worktree", pattern],
 		{ cwd: repoDir, stdout: "pipe", stderr: "pipe" },
@@ -334,7 +343,10 @@ export async function addGitExclude(repoDir: string, pattern: string): Promise<v
 // EM: ### removeGitExclude
 // [IMPLEMENTS](/design/features/agents-md-overlay.md)
 // Restore normal git tracking for the previously excluded file.
-export async function removeGitExclude(repoDir: string, pattern: string): Promise<void> {
+export async function removeGitExclude(
+	repoDir: string,
+	pattern: string,
+): Promise<void> {
 	const proc = await Bun.spawn(
 		["git", "update-index", "--no-skip-worktree", pattern],
 		{ cwd: repoDir, stdout: "pipe", stderr: "pipe" },
@@ -399,10 +411,7 @@ export async function setupLocalBinSnapshot(
 	}
 
 	const snapshotDir = await createTempDir("scoder-local-bin");
-	const sandboxPrefixes = [
-		...SANDBOX_MOUNT_PREFIXES,
-		...extraSandboxPrefixes,
-	];
+	const sandboxPrefixes = [...SANDBOX_MOUNT_PREFIXES, ...extraSandboxPrefixes];
 	const homePrefixes = await resolveHomePrefixes();
 
 	try {
@@ -544,7 +553,6 @@ function isSandboxResolvable(
 
 	return isUnderAny(sandboxPath, sandboxPrefixes);
 }
-
 
 // [IMPLEMENTS](/design/features/agents-skills-snapshot.md)
 export async function setupAgentsSnapshot(): Promise<BindMount | null> {

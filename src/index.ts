@@ -7,14 +7,14 @@
 import { configureAppArmor } from "./cli/apparmor.ts";
 import { parseArgs, printUsage, printVersion } from "./cli/parse-args.ts";
 import {
+	addGitExclude,
 	getAgentsMdOverlayBind,
 	type ProtectionConfig,
+	removeGitExclude,
 	setupAgentsSnapshot,
 	setupLocalBinSnapshot,
 	setupProtection,
 	setupResolvConf,
-	addGitExclude,
-	removeGitExclude,
 } from "./git/protection.ts";
 import {
 	commitAllChanges,
@@ -94,10 +94,7 @@ async function main(): Promise<void> {
 	}
 
 	// EM: Allow --no-worktree mode when inside nested scoder sandbox
-	if (
-		process.env.SCODER_SANDBOX === "1" &&
-		options.worktree
-	) {
+	if (process.env.SCODER_SANDBOX === "1" && options.worktree) {
 		error("scoder cannot run inside an existing scoder sandbox");
 		error("Use --no-worktree to run directly in the current directory");
 		process.exit(1);
@@ -305,7 +302,9 @@ async function main(): Promise<void> {
 		report(
 			"The sandbox uses an ephemeral home, and that directory is not bound into it",
 		);
-		report(`Fix: install ${toolName} system-wide, or bind its directory by adding`);
+		report(
+			`Fix: install ${toolName} system-wide, or bind its directory by adding`,
+		);
 		report(`     ${hostToolDir.replace(realHome, "$HOME")}/ to .agentreadonly`);
 		if (!options.dryRun) {
 			process.exit(1);
@@ -334,9 +333,8 @@ async function main(): Promise<void> {
 
 	// EM: Mask AGENTS.md overlay from git so the agent can use git freely inside the sandbox
 	// EM: Implements AGENTS.md overlay exclusion via .git/info/exclude
-	const repoRoot = options.worktree && worktreeInfo
-		? worktreeInfo.worktreeDir
-		: process.cwd();
+	const repoRoot =
+		options.worktree && worktreeInfo ? worktreeInfo.worktreeDir : process.cwd();
 	await addGitExclude(repoRoot, "AGENTS.md");
 
 	let exitCode = 0;

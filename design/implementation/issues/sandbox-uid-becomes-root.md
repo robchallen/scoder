@@ -89,9 +89,19 @@ Each is a structural change to how pasta and bwrap compose, not a flag tweak.
 
 1. **pasta attach mode** — `pasta [OPTION]... PID`. Have bwrap create the
    namespaces (`--unshare-net --unshare-user --uid <host uid>`) and attach
-   pasta from outside by PID. Keeps bwrap's uid mapping authoritative. Cost: a
-   two-process startup dance, with a race between the sandbox starting and
-   pasta attaching, and a networking gap until it does.
+   pasta from outside by PID. Keeps bwrap's uid mapping authoritative.
+
+   **Prototyped and working** — see
+   [pasta-attach-mode](../../prototypes/pasta-attach-mode.md). The uid comes out
+   as the host uid with `uid_map` of `1001 1001 1`, and both raw TCP and DNS
+   work. The startup race is closed with bwrap's `--info-fd` (which publishes
+   the child PID) and `--block-fd` (which holds the exec until pasta has
+   attached), so there is no window without networking.
+
+   Remaining unknowns before adopting: pasta teardown now that it lives outside
+   the sandbox and `--die-with-parent` no longer covers it; whether `Bun.spawn`
+   can pass the two extra file descriptors this needs; and `--llm-port`
+   forwarding, which the prototype does not exercise.
 2. **pasta netns mode** — `pasta --netns <path>`, servicing a pre-created
    persistent network namespace that bwrap joins. bwrap cannot join a netns by
    path on its own, so this needs `nsenter`, plus netns lifecycle management
@@ -100,8 +110,8 @@ Each is a structural change to how pasta and bwrap compose, not a flag tweak.
    is limited to tools that branch on `id -u`. Cheapest option, but leaves the
    sandbox identity self-contradictory.
 
-Option 1 is the most faithful to the current design; option 3 is what is in
-effect today, undocumented.
+Option 1 is the most faithful to the current design and is now backed by a
+working prototype; option 3 is what is in effect today, undocumented.
 
 ## Testing
 

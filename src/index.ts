@@ -21,9 +21,10 @@ import {
 	getCommitCount,
 	getDiffStat,
 	getProjDir,
+	hasUncommittedChanges,
 	setupGitWorktree,
 } from "./git/worktree.ts";
-import { buildBwrapCommand } from "./sandbox/builder.ts";
+import { buildBwrapCommand, collectBindDests } from "./sandbox/builder.ts";
 import { TOOL_PRESETS } from "./tools/presets.ts";
 import type { BindMount, GitWorktreeInfo } from "./types.ts";
 import {
@@ -31,6 +32,12 @@ import {
 	commandExists,
 	detectDefaultLlmPort,
 } from "./utils/checks.ts";
+import {
+	getRealHome,
+	isUnderAny,
+	resolveHomePrefixes,
+	toSandboxPath,
+} from "./utils/paths.ts";
 
 // EM: Nested sandbox detection - check if already in a worktree or running in scoder
 const GIT_DIR = ".git";
@@ -70,11 +77,15 @@ async function main(): Promise<void> {
 	} catch {
 		// File doesn't exist or can't be read
 	}
-	if (gitDirStat?.isFile()) {
+	// EM: Only worktree mode is affected — direct mode creates no worktree, so
+	// EM: there is nothing to nest and the suggested remedy would be a no-op.
+	if (gitDirStat?.isFile() && options.worktree) {
 		const gitContent = await Bun.file(gitDir).text();
 		if (gitContent.startsWith("gitdir:")) {
-			error("scoder is already running inside a git worktree");
-			error("This creates a nested sandbox which bubblewrap cannot handle");
+			error("scoder cannot create a worktree from inside a git worktree");
+			error(
+				"The nested worktree's git directory would be unreachable in the sandbox",
+			);
 			error(
 				"Use --no-worktree to run scoder directly in the current directory",
 			);
@@ -144,11 +155,12 @@ async function main(): Promise<void> {
 		process.exit(1);
 	}
 
-	let toolBin: string | null = null;
 	let toolDescription = toolName;
 	let toolBinds: BindMount[] = [];
 	let toolDirs: string[] = [];
 
+	// EM: realHome is needed for both preset binds and tool path translation
+	const realHome = getRealHome();
 	const preset = TOOL_PRESETS[toolName];
 
 	if (preset) {
@@ -159,19 +171,23 @@ async function main(): Promise<void> {
 			process.exit(1);
 		}
 
-		const realHome = process.env.HOME || "/home/user";
-		const sandboxHome = SCODER_HOME;
-
-		const bindSpec = await preset.configBinds(realHome, sandboxHome);
+		const bindSpec = await preset.configBinds(realHome, SCODER_HOME);
 		toolBinds = bindSpec.binds;
 		toolDirs = bindSpec.dirs;
 	}
 
-	toolBin = await which(toolName);
-	if (!toolBin) {
+	// EM: Resolve the tool on the host, where it actually exists...
+	const hostToolBin = await which(toolName);
+	if (!hostToolBin) {
 		error(`${toolName} not found in PATH`);
 		process.exit(1);
 	}
+
+	// EM: ...then translate it into the sandbox namespace before it becomes the
+	// EM: exec target. The sandbox replaces /home with a tmpfs holding only
+	// EM: /home/scoder, so a host path under $HOME does not exist inside it.
+	const homePrefixes = await resolveHomePrefixes();
+	const toolBin = toSandboxPath(hostToolBin, homePrefixes);
 
 	let worktreeInfo: GitWorktreeInfo | null = null;
 	let protectionConfig: ProtectionConfig | undefined;
@@ -179,10 +195,25 @@ async function main(): Promise<void> {
 
 	if (options.worktree) {
 		worktreeInfo = await setupGitWorktree(true);
+		if (!worktreeInfo) {
+			error("failed to set up git worktree");
+			process.exit(1);
+		}
 
-		sandboxProjDir = `${SCODER_HOME}/${worktreeInfo!.projDir}`;
+		// EM: The worktree is checked out from a commit, so uncommitted work in
+		// EM: the user's checkout is invisible to the agent. Warn rather than
+		// EM: refuse — the user may not need those changes in the session.
+		if (await hasUncommittedChanges(worktreeInfo.sourceRepoRoot)) {
+			warning("Your checkout has uncommitted changes the agent will not see");
+			warning(
+				`The session starts from ${worktreeInfo.sourceRefLabel} in ${worktreeInfo.worktreeDir}`,
+			);
+			warning("Commit or stash them first if the agent needs them");
+		}
+
+		sandboxProjDir = `${SCODER_HOME}/${worktreeInfo.projDir}`;
 		protectionConfig = await setupProtection(
-			worktreeInfo!.worktreeDir,
+			worktreeInfo.worktreeDir,
 			sandboxProjDir,
 		);
 
@@ -191,7 +222,9 @@ async function main(): Promise<void> {
 			protectionConfig.safeBinds.push(agentsSnapshotBind);
 		}
 
-		const localBinBind = await setupLocalBinSnapshot();
+		const localBinBind = await setupLocalBinSnapshot(
+			toolBinds.map((bind) => bind.dest),
+		);
 		if (localBinBind && protectionConfig) {
 			protectionConfig.safeBinds.push(localBinBind);
 		}
@@ -221,7 +254,9 @@ async function main(): Promise<void> {
 			protectionConfig.safeBinds.push(agentsSnapshotBind);
 		}
 
-		const localBinBind = await setupLocalBinSnapshot();
+		const localBinBind = await setupLocalBinSnapshot(
+			toolBinds.map((bind) => bind.dest),
+		);
 		if (localBinBind && protectionConfig) {
 			protectionConfig.safeBinds.push(localBinBind);
 		}
@@ -255,6 +290,28 @@ async function main(): Promise<void> {
 
 	const bwrapCmd = await buildBwrapCommand(config);
 
+	// EM: Pre-flight the exec target. A tool installed under $HOME only works if
+	// EM: its directory is bound into the sandbox; without this check the failure
+	// EM: surfaces as a bare "execvp: No such file or directory" from pasta.
+	if (
+		toolBin !== hostToolBin &&
+		!isUnderAny(toolBin, collectBindDests(bwrapCmd))
+	) {
+		const report = options.dryRun ? warning : error;
+		const hostToolDir = hostToolBin.slice(0, hostToolBin.lastIndexOf("/"));
+		report(
+			`${toolName} is installed at ${hostToolBin}, under your home directory`,
+		);
+		report(
+			"The sandbox uses an ephemeral home, and that directory is not bound into it",
+		);
+		report(`Fix: install ${toolName} system-wide, or bind its directory by adding`);
+		report(`     ${hostToolDir.replace(realHome, "$HOME")}/ to .agentreadonly`);
+		if (!options.dryRun) {
+			process.exit(1);
+		}
+	}
+
 	if (options.worktree && worktreeInfo) {
 		info(`Agent working files can be found at:   ${worktreeInfo.worktreeDir}`);
 		info(
@@ -282,6 +339,8 @@ async function main(): Promise<void> {
 		: process.cwd();
 	await addGitExclude(repoRoot, "AGENTS.md");
 
+	let exitCode = 0;
+
 	try {
 		info(`Launching ${toolDescription} in sandbox...`);
 
@@ -291,7 +350,7 @@ async function main(): Promise<void> {
 			stdin: "inherit",
 		});
 
-		const exitCode = await proc.exited;
+		exitCode = await proc.exited;
 
 		if (options.worktree && worktreeInfo && protectionConfig) {
 			// EM: Commit changes and print session summary for worktree mode
@@ -304,12 +363,14 @@ async function main(): Promise<void> {
 			}
 			info("Direct mode session complete (no git worktree changes to commit)");
 		}
-
-		process.exit(exitCode);
 	} finally {
-		// EM: Restore normal git tracking for AGENTS.md after session
+		// EM: Restore normal git tracking for AGENTS.md after session.
+		// EM: process.exit() must stay OUTSIDE this try — it terminates the
+		// EM: process synchronously and pending finally blocks do not run.
 		await removeGitExclude(repoRoot, "AGENTS.md");
 	}
+
+	process.exit(exitCode);
 }
 
 async function printSessionSummary(
@@ -322,7 +383,10 @@ async function printSessionSummary(
 			await Bun.write(agentsMdOverlay, "");
 		}
 
-		await commitAllChanges("Committing session by scoder.");
+		await commitAllChanges(
+			worktreeInfo.worktreeDir,
+			"Committing session by scoder.",
+		);
 
 		console.log("");
 		infoBlue("====== Session Summary ======");

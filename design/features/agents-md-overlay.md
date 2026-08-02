@@ -1,5 +1,5 @@
 ---
-target-version: 2.1.0
+target-version: 2.2.0
 status: draft
 tags: [feature, sandbox, documentation]
 ---
@@ -36,6 +36,17 @@ as a modification. Since the overlay is read-only, the agent cannot fix it. To
 prevent git operations from failing, scoder marks `AGENTS.md` as
 `--skip-worktree` via `git update-index` before launching the sandbox and
 restores normal tracking afterwards.
+
+The restore runs in a `finally` block, and `process.exit()` is deliberately
+called **outside** the corresponding `try`. `process.exit()` terminates the
+process synchronously and does not run pending `finally` blocks, so exiting from
+inside the `try` would skip the restore entirely and leave `AGENTS.md`
+permanently flagged `S` — after which git silently ignores edits to that file.
+Signal-terminated sessions still bypass the restore; see the
+`no-explicit-signal-trap` debt record.
+
+Masking applies in direct mode too, where the repository root is the current
+directory rather than the worktree.
 
 [IMPLEMENTED_BY](/src/git/protection.ts#addGitExclude)
 [IMPLEMENTED_BY](/src/git/protection.ts#removeGitExclude)

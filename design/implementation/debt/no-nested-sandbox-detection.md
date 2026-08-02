@@ -1,10 +1,17 @@
 ---
 target-version: 2.1.0
-status: draft
+resolved-in: 2.2.0
+status: resolved
 tags: [debt, sandbox, security]
 ---
 
 # No Nested Sandbox Detection
+
+> **Resolved in 2.2.0.** Both nesting checks described below are implemented in
+> `src/index.ts` and documented as
+> [nested-sandbox-detection](/design/features/nested-sandbox-detection.md).
+> One gap remains, tracked separately as
+> [worktree-check-ignores-no-worktree](/design/implementation/issues/worktree-check-ignores-no-worktree.md).
 
 ## Summary
 

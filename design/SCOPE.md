@@ -1,5 +1,5 @@
 ---
-target-version: 2.1.0
+target-version: 2.2.0
 status: draft
 tags: [scope, overview]
 ---
@@ -43,12 +43,12 @@ localhost services by default.
 
 [HAS_FEATURE](./features/local-bin-resolution.md) - Startup-time snapshot of ~/.local/bin with broken symlinks replaced by forwarding shims.
 
-From [ROADMAP.md](/ROADMAP.md), not yet in development:
+[HAS_FEATURE](./features/nested-sandbox-detection.md) - Refuses to start when it would nest a sandbox or create a worktree from a worktree (`SCODER_SANDBOX=1`, `.git` file detection).
+
+From [ROADMAP.md](./legacy/ROADMAP.md), not yet in development:
 
 - **Additional AI tool presets** — as new coding assistants emerge, add presets following the existing convention.
 - **Restricted `/dev`** — bind only essential devices (`/dev/null`, `/dev/zero`, `/dev/random`, `/dev/urandom`, `/dev/tty`, `/dev/pts`, `/dev/fd`).
-- **Local bin symlink resolution** — resolve `~/.local/bin` symlinks pointing outside the sandbox with forwarding shims (in progress).
-- **Nested sandbox detection** — detect when scoder runs inside an existing scoder session (`SCODER_SANDBOX=1`) and refuse or adjust behaviour.
 - **Auto-cleanup on no changes** — optionally remove the worktree and branch if the session made no commits.
 - **R environment variables** — pass through `R_LIBS`, `R_LIBS_USER`, `R_HOME` and bind `~/.Renviron`.
 - **Configurable env var passthrough** — make the set of passed-through environment variables user-configurable.

@@ -1,5 +1,5 @@
 ---
-target-version: 2.1.0
+target-version: 2.2.0
 status: draft
 tags: [standards, coding]
 ---

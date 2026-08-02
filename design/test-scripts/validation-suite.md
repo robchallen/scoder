@@ -13,6 +13,9 @@ tags: [test-script, validation]
 [HAS_FEATURE](../features/agents-md-overlay.md)
 [HAS_FEATURE](../features/agents-skills-snapshot.md)
 [HAS_FEATURE](../features/local-bin-resolution.md)
+[HAS_FEATURE](../features/path-mirroring.md)
+[HAS_FEATURE](../features/nested-sandbox-detection.md)
+[HAS_FEATURE](../features/tool-presets.md)
 [HAS_FEATURE](../features/dry-run-mode.md)
 [HAS_FEATURE](../features/apparmor-compatibility.md)
 [HAS_FEATURE](../features/direct-mode.md)
@@ -21,8 +24,18 @@ tags: [test-script, validation]
 
 `tests/scoder.test.ts` is a self-contained integration test suite that creates
 temporary git repositories under `/tmp`, runs `scoder` against them using
-`/bin/bash` as the sandboxed command, and asserts expected behaviour. 29
+`/bin/bash` as the sandboxed command, and asserts expected behaviour. 43
 tests cover all sandbox mechanics.
+
+Cleanup runs in an `afterAll` hook. It removes the temp repos, their worktrees
+under `/tmp/scoder/tmp/scoder-test-repos`, and the artifacts the `~/.local/bin`
+cases create in the real home directory. The paths are enumerated explicitly
+rather than globbed, because `/tmp/scoder` also holds the developer's genuine
+session worktrees.
+
+Two exceptions use the real `claude` preset (cases 40-41). They run under
+`--dry-run`, so they inspect the built command without launching a sandbox or
+touching the host's config, and self-skip when `claude` is not installed.
 
 ## How to Run
 
@@ -168,6 +181,12 @@ permissions intact and work inside the sandbox.
 
 Forwarding shim passes all arguments through to the underlying tool.
 
+**Known coupling:** this case does not create its own fixture. It reuses the
+`~/.local/bin/scoder-test-tool` symlink created by case 21
+(`local-bin-symlink-resolved`), so it depends on execution order and on that
+symlink surviving. Running it in isolation only passes if a previous full run
+left the artifact behind. It should create its own fixture.
+
 ### 24. llm-port-auto-detect
 [TESTED_BY](/tests/scoder.test.ts#testLlmPortAutoDetect)
 
@@ -204,6 +223,113 @@ git tracking. The exclude is cleaned up after the session.
 
 scoder runs successfully in worktree mode with AGENTS.md excluded from the
 worktree git index. The exclude is cleaned up after the session.
+
+### 30. home-installed-tool-exec-path-mapped
+[TESTED_BY](/tests/scoder.test.ts#testHomeInstalledToolExecPathMapped)
+
+A tool installed under `$HOME` (a `~/.local/bin` entry symlinked at a versioned
+binary under `~/.local/share/<tool>/versions/`, the layout native installers
+produce) has its exec target rewritten to `/home/scoder/.local/bin/<tool>`.
+Asserts the dry-run command never carries the host `$HOME` path.
+
+Regression test for `scoder claude` failing with `execvp: No such file or
+directory`: `which` resolves on the host, but the sandbox replaces `/home` with
+a tmpfs containing only `/home/scoder`.
+
+### 31. home-installed-tool-runs
+[TESTED_BY](/tests/scoder.test.ts#testHomeInstalledToolRuns)
+
+The same layout, launched for real rather than dry-run: the tool executes inside
+the sandbox and produces its output. Asserts `execvp` never appears on stderr.
+
+### 32. local-bin-symlink-target-mapped
+[TESTED_BY](/tests/scoder.test.ts#testLocalBinSymlinkTargetMapped)
+
+Scans the whole `~/.local/bin` snapshot and asserts that no entry is a symlink
+pointing at a host `$HOME` path. Such an entry resolves on the host and dangles
+inside the sandbox. Branch-agnostic: it holds whether an entry was kept as a
+symlink or copied in whole.
+
+### 33. unbound-home-tool-diagnosed
+[TESTED_BY](/tests/scoder.test.ts#testUnboundHomeToolDiagnosed)
+
+A tool in a `$HOME` directory that is not bound into the sandbox cannot work.
+scoder exits 1 with an actionable diagnostic naming the directory, rather than
+launching and letting pasta emit a bare `execvp` error.
+
+### 34. session-commit-lands-in-worktree
+[TESTED_BY](/tests/scoder.test.ts#testSessionCommitLandsInWorktree)
+
+A worktree-mode session leaves the *launching* repository's `git status` and
+commit log byte-identical, while the sandbox's own change is committed on the
+`scoder/*` branch. Regression test for `commitAllChanges` spawning git without a
+`cwd`, which committed the user's main checkout.
+
+### 35. clean-worktree-session-commits-nothing
+[TESTED_BY](/tests/scoder.test.ts#testCleanWorktreeSessionCommitsNothing)
+
+A session that changes nothing succeeds rather than failing on `git commit`
+returning non-zero for an empty commit.
+
+### 36. skip-worktree-cleared-after-session
+[TESTED_BY](/tests/scoder.test.ts#testSkipWorktreeClearedAfterSession)
+
+`git ls-files -v AGENTS.md` reports `H`, not `S`, after a completed session.
+Regression test for `process.exit()` inside the `try` whose `finally` clears the
+flag — `process.exit()` does not run pending `finally` blocks. The existing
+`addGitExclude`/`removeGitExclude` tests call those functions directly and so
+cannot catch this.
+
+### 37. direct-mode-works-in-linked-worktree
+[TESTED_BY](/tests/scoder.test.ts#testDirectModeWorksInLinkedWorktree)
+
+`scoder --no-worktree` succeeds when run from inside a linked git worktree
+(`.git` is a file). Regression test for the nesting check exiting regardless of
+mode while advising the flag the user had already passed.
+
+### 38. worktree-mode-refused-in-linked-worktree
+[TESTED_BY](/tests/scoder.test.ts#testWorktreeModeRefusedInLinkedWorktree)
+
+The other half of the same check: `scoder -w` from inside a linked worktree still
+exits 1, since that nesting genuinely cannot work.
+
+### 39. uncommitted-host-changes-warned
+[TESTED_BY](/tests/scoder.test.ts#testUncommittedHostChangesWarned)
+
+Worktree mode warns when the launching checkout has uncommitted changes, which
+the agent cannot see. Regression test for `hasUncommittedChanges` being dead
+code.
+
+### 40. claude-preset-home-config-writable
+[TESTED_BY](/tests/scoder.test.ts#testClaudePresetHomeConfigWritable)
+
+`~/.claude` is bound `--bind` (read-write), not `--ro-bind`. Claude Code writes
+there throughout a session and fails rather than degrades under a read-only
+bind. Guards a deliberate trade-off that no other test covered — see
+[rw-config-mounts-limited-escape](../implementation/debt/rw-config-mounts-limited-escape.md).
+
+### 41. workspace-claude-dir-still-protected
+[TESTED_BY](/tests/scoder.test.ts#testWorkspaceClaudeDirStillProtected)
+
+The *workspace* `.claude/` directory stays read-only even though `~/.claude` is
+writable. The two are separate binds and must not be conflated.
+
+### 42. sandbox-uid-preserved
+[TESTED_BY](/tests/scoder.test.ts#testSandboxUidPreserved)
+
+**Known failure**, marked `test.failing`. Asserts the uid inside the sandbox is
+the host uid rather than 0. It currently is 0, because pasta's spawn mode
+creates a nested user namespace that overrides bwrap's `--uid`. Because it is
+`test.failing`, it passes while the bug exists and starts failing the moment the
+composition is fixed — at which point the marker should be removed. See
+[sandbox-uid-becomes-root](../implementation/issues/sandbox-uid-becomes-root.md).
+
+### 43. sandbox-uid-maps-to-host-user
+[TESTED_BY](/tests/scoder.test.ts#testSandboxUidMapsToHostUser)
+
+The property that makes case 42 survivable: whatever uid the sandbox reports,
+files it creates are owned by the real host user, because pasta maps inside-0
+back to the caller. This must keep holding through any fix.
 
 ## Current Network Coverage
 

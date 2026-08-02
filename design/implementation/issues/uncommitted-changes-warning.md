@@ -1,10 +1,17 @@
 ---
 target-version: 2.1.0
-status: draft
+resolved-in: 2.2.0
+status: resolved
 tags: [issue, worktree, user-experience]
 ---
 
 # Missing Warning for Uncommitted Host Changes
+
+> **Fixed in 2.2.0.** `hasUncommittedChanges` is now called against
+> `worktreeInfo.sourceRepoRoot` in worktree mode and warns that the agent will
+> not see uncommitted work. A warning rather than a refusal — the user may not
+> need those changes in the session. Covered by
+> `uncommitted-host-changes-warned`.
 
 ## Summary
 

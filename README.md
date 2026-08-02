@@ -3,8 +3,9 @@
 Sandboxed runner for coding tools using bubblewrap (bwrap) and pasta.
 
 Runs AI coding assistants and developer tools inside a constrained
-environment so they cannot modify your host unexpectedly. Changes happen
-on an isolated git branch via worktrees (or directly in the repo with `--no-worktree`).
+environment so they cannot modify your host unexpectedly. By default changes
+happen directly in your working directory; with `--worktree` they are isolated
+on a separate git branch via a worktree.
 
 ## Supported tools
 
@@ -18,26 +19,26 @@ on an isolated git branch via worktrees (or directly in the repo with `--no-work
 
 ## How it works
 
-### Default mode (git worktree isolation)
+### Default mode (direct)
 
-1. **Must be in a git repo.** `scoder` refuses to run outside one.
+1. Runs the tool in a sandbox **directly in your current working directory**.
+   Paths inside the sandbox mirror real absolute paths.
+2. No git branch creation, no worktree isolation.
+3. `.agentreadonly` protection still applies.
+4. Starts the tool through `pasta`, which keeps outbound networking available
+   while blocking host localhost services such as `127.0.0.1`.
+5. No commit on exit — changes are immediate.
+
+### Worktree mode (`-w` / `--worktree`)
+
+1. **Must be in a git repo.** `scoder -w` refuses to run outside one.
 2. Creates a new branch (`scoder/<git-repo-name>`) and a git worktree
    in `/tmp/scoder/<git-repo-path>`. If you launch `scoder` from that
    existing scoder worktree, it reuses it instead of trying to create a new
    one. Your original checkout is untouched.
-3. Launches the tool inside a bubblewrap sandbox operating on the worktree.
-   Paths inside the sandbox mirror real absolute paths.
-4. Starts the tool through `pasta`, which keeps outbound networking available
-   while blocking host localhost services such as `127.0.0.1`.
-   `--llm-port=<port>` forwards that one localhost TCP port into the sandbox.
-5. On exit, commits changes, prints a summary and how to merge or discard.
-
-### Direct mode (`--no-worktree`)
-
-1. Runs the tool in a sandbox but **directly in your current working directory**
-2. No git branch creation, no worktree isolation
-3. `.agentreadonly` protection still applies
-4. No commit on exit - changes are immediate
+3. Launches the tool inside a bubblewrap sandbox operating on the worktree,
+   with the same path mirroring and `pasta` networking as direct mode.
+4. On exit, commits changes, prints a summary and how to merge or discard.
 
 ### Sandbox properties
 
@@ -67,10 +68,12 @@ on an isolated git branch via worktrees (or directly in the repo with `--no-work
 - **Full device access** — `/dev` is passed through from the host (full device
   passthrough via `--dev-bind /dev /dev`; `/dev/shm` is a fresh tmpfs).
 - **Host localhost blocked** — tools run behind `pasta` with host localhost
-  forwarding disabled by default, so host-local TCP services are not reachable
+  forwarding disabled, so host-local TCP services are not reachable
   from the sandbox while outbound networking stays available.
-- **Optional localhost LLM exemption** — `--llm-port=<port>` allows TCP access
-  to that one localhost port for cases such as a host-local Ollama instance.
+- **Localhost LLM exemption** — if a local OpenAI-compatible API is listening on
+  port `11434` (the Ollama default) it is auto-detected at startup and that one
+  port is forwarded into the sandbox. Override the probed port with
+  `SCODER_LLM_PORT`, or name ports explicitly with `--llm-port=<ports>`.
 
 ## Usage
 
@@ -81,13 +84,13 @@ scoder [options] <tool> [tool-args...]
 ### Examples
 
 ```bash
-scoder opencode                   # sandbox opencode in current repo (worktree mode)
+scoder opencode                   # sandbox opencode in current directory (direct mode)
 scoder claude                     # sandbox claude code
 scoder copilot                    # sandbox GitHub Copilot CLI
-scoder --no-worktree opencode     # run directly in current directory (no worktree)
-scoder --llm-port=11434 claude    # allow access to local Ollama
+scoder -w opencode                # isolate changes on a scoder/<repo> branch
+scoder --llm-port=8080 claude     # allow access to a local LLM on port 8080
 scoder --dry-run opencode         # show bwrap command without running
-bun run tests/validate.ts         # run the validation script directly
+bun test                          # run the validation suite
 ```
 
 ### Options
@@ -96,9 +99,11 @@ bun run tests/validate.ts         # run the validation script directly
 -h, --help              Show help
 -V, --version           Show version
 -q, --quiet             Suppress informational output
--w, --worktree          Enable git worktree isolation (default)
-    --no-worktree       Run directly in current directory (no worktree)
-    --llm-port PORTS    Allow localhost TCP access to comma-separated ports
+-w, --worktree          Enable git worktree isolation
+    --no-worktree       Run directly in current directory (no worktree) (default)
+    --llm-port PORTS    Allow localhost TCP access to these comma-separated ports
+                         instead of the auto-detected default on 11434
+                         (override the probed port with SCODER_LLM_PORT)
     --dry-run           Print bwrap command without executing
 ```
 
@@ -117,7 +122,13 @@ under `/home/scoder/`. For example, `$HOME/Git/other-project` becomes
 
 ## After a session
 
-### Worktree mode (default)
+### Direct mode (default)
+
+Changes are made directly to your working directory. No branch is created,
+no cleanup is needed. The `.agentreadonly` protection still applies during
+the session.
+
+### Worktree mode (`-w` / `--worktree`)
 
 Changes are committed to the `scoder/<repo-name>` branch. The worktree is at
 `/tmp/scoder/<git-repo-path>`.
@@ -150,12 +161,6 @@ scoder: To rebase:  git rebase scoder/<git-repo-name>
 scoder: View diff:  git diff scoder/<git-repo-name>
 scoder: To discard: git worktree remove /tmp/scoder/<git-repo-path> && git branch -D scoder/<git-repo-name>
 ```
-
-### Direct mode (`--no-worktree`)
-
-Changes are made directly to your working directory. No branch is created,
-no cleanup is needed. The `.agentreadonly` protection still applies during
-the session.
 
 ## Requirements
 

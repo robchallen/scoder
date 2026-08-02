@@ -1,9 +1,16 @@
 ---
-status: draft
+target-version: 2.2.0
+completed-in: 2.2.0
+status: complete
 tags: [test-script, validation]
 ---
 
 # Scoder Test Reimplementation Plan
+
+> **Completed in 2.2.0.** Implemented as `tests/scoder.test.ts` (29 tests) —
+> not `tests/validate.test.ts` as drafted below. `tests/validate.ts` and
+> `tests/validate.test.ts` were both removed. See
+> [validation-suite](/design/test-scripts/validation-suite.md).
 
 ## Goal
 Create a clean reimplementation of the scoder validation test suite using the Bun test framework (`bun test`) instead of a standalone script.

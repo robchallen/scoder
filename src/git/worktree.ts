@@ -143,8 +143,21 @@ export async function createWorktree(
 	}
 }
 
-export async function commitAllChanges(message: string): Promise<void> {
+// ### commitAllChanges
+// [IMPLEMENTS](/design/features/git-worktree-isolation.md)
+// EM: repoDir is mandatory: without an explicit cwd, Bun.spawn inherits
+// EM: scoder's own working directory, which commits the user's main checkout
+// EM: instead of the worktree.
+export async function commitAllChanges(
+	repoDir: string,
+	message: string,
+): Promise<void> {
+	if (!(await hasUncommittedChanges(repoDir))) {
+		return;
+	}
+
 	const addProc = await Bun.spawn(["git", "add", "-A"], {
+		cwd: repoDir,
 		stdout: "pipe",
 		stderr: "pipe",
 	});
@@ -156,6 +169,7 @@ export async function commitAllChanges(message: string): Promise<void> {
 	}
 
 	const commitProc = await Bun.spawn(["git", "commit", "-m", message], {
+		cwd: repoDir,
 		stdout: "pipe",
 		stderr: "pipe",
 	});

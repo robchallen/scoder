@@ -5,7 +5,7 @@
 // EM: Implements tests for all sandbox mechanics described in design/test-scripts/validation-suite.md
 
 // Import test utilities from bun:test
-import { test, expect } from "bun:test";
+import { afterAll, expect, test } from "bun:test";
 import { addGitExclude, removeGitExclude } from "../src/git/protection.ts";
 
 // ### Constants
@@ -38,7 +38,11 @@ async function dirExists(path: string): Promise<boolean> {
 // Get absolute path to scoder executable
 const SCODER_PATH = `${__dirname}/../scoder`;
 
-async function runScoder(repoDir: string, args: string[], env?: Record<string, string>): Promise<string> {
+async function runScoder(
+	repoDir: string,
+	args: string[],
+	env?: Record<string, string>,
+): Promise<string> {
 	const proc = await Bun.spawn([SCODER_PATH, ...args], {
 		cwd: repoDir,
 		env: { ...process.env, ...env },
@@ -77,40 +81,52 @@ async function runScoderInDir(runDir: string, args: string[]): Promise<string> {
 
 async function createTempRepo(): Promise<string> {
 	const repoDir = `${TEST_BASE}/repo-${Date.now()}-${Math.random().toString(36).slice(2, 11)}`;
-	
+
 	// Create directory structure
 	await Bun.spawn(["mkdir", "-p", `${repoDir}/.github`]).exited;
-	
+
 	// Initialize git repo
 	const initProc = await Bun.spawn(["git", "init"], { cwd: repoDir });
 	await initProc.exited;
 	if (initProc.exitCode !== 0) {
 		throw new Error("Failed to init git repo");
 	}
-	
+
 	// Configure git
-	await Bun.spawn(["git", "config", "user.email", "test@example.com"], { cwd: repoDir }).exited;
-	await Bun.spawn(["git", "config", "user.name", "Test User"], { cwd: repoDir }).exited;
-	
+	await Bun.spawn(["git", "config", "user.email", "test@example.com"], {
+		cwd: repoDir,
+	}).exited;
+	await Bun.spawn(["git", "config", "user.name", "Test User"], { cwd: repoDir })
+		.exited;
+
 	// Create starter files
 	await Bun.write(`${repoDir}/README.md`, "# Test Project\n");
-	await Bun.write(`${repoDir}/.github/ci.yml`, `name: CI\non: [push]\njobs:\n  test:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@v4\n`);
+	await Bun.write(
+		`${repoDir}/.github/ci.yml`,
+		`name: CI\non: [push]\njobs:\n  test:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@v4\n`,
+	);
 	await Bun.write(`${repoDir}/.gitignore`, `node_modules/\n.DS_Store\n`);
-	await Bun.write(`${repoDir}/package-lock.json`, `{ "name": "test", "version": "1.0.0" }\n`);
-	
+	await Bun.write(
+		`${repoDir}/package-lock.json`,
+		`{ "name": "test", "version": "1.0.0" }\n`,
+	);
+
 	// Add and commit
 	const addProc = await Bun.spawn(["git", "add", "."], { cwd: repoDir });
 	await addProc.exited;
 	if (addProc.exitCode !== 0) {
 		throw new Error("Failed to add files");
 	}
-	
-	const commitProc = await Bun.spawn(["git", "commit", "-m", "initial commit"], { cwd: repoDir });
+
+	const commitProc = await Bun.spawn(
+		["git", "commit", "-m", "initial commit"],
+		{ cwd: repoDir },
+	);
 	await commitProc.exited;
 	if (commitProc.exitCode !== 0) {
 		throw new Error("Failed to commit");
 	}
-	
+
 	return repoDir;
 }
 
@@ -119,21 +135,21 @@ async function cleanupRepo(repoDir: string): Promise<void> {
 	try {
 		const worktreeListProc = await Bun.spawn(
 			["git", "worktree", "list", "--porcelain"],
-			{ cwd: repoDir, stdout: "pipe", stderr: "pipe" }
+			{ cwd: repoDir, stdout: "pipe", stderr: "pipe" },
 		);
 		await worktreeListProc.exited;
-		
+
 		if (worktreeListProc.exitCode === 0) {
 			const output = await new Response(worktreeListProc.stdout).text();
 			const lines = output.split("\n");
-			
+
 			for (const line of lines) {
 				if (line.startsWith("worktree ")) {
 					const worktreePath = line.slice("worktree ".length).trim();
 					if (worktreePath.includes("scoder")) {
 						const removeProc = await Bun.spawn(
 							["git", "worktree", "remove", worktreePath, "--force"],
-							{ cwd: repoDir }
+							{ cwd: repoDir },
 						);
 						await removeProc.exited;
 					}
@@ -143,23 +159,26 @@ async function cleanupRepo(repoDir: string): Promise<void> {
 	} catch {
 		// Ignore errors during cleanup
 	}
-	
+
 	// Remove any scoder branches
 	try {
 		const branchListProc = await Bun.spawn(
 			["git", "branch", "--list", "scoder/*"],
-			{ cwd: repoDir, stdout: "pipe", stderr: "pipe" }
+			{ cwd: repoDir, stdout: "pipe", stderr: "pipe" },
 		);
 		await branchListProc.exited;
-		
+
 		if (branchListProc.exitCode === 0) {
 			const output = await new Response(branchListProc.stdout).text();
-			const branches = output.trim().split("\n").filter(b => b.trim());
-			
+			const branches = output
+				.trim()
+				.split("\n")
+				.filter((b) => b.trim());
+
 			for (const branch of branches) {
 				const deleteProc = await Bun.spawn(
 					["git", "branch", "-D", branch.trim()],
-					{ cwd: repoDir }
+					{ cwd: repoDir },
 				);
 				await deleteProc.exited;
 			}
@@ -167,54 +186,141 @@ async function cleanupRepo(repoDir: string): Promise<void> {
 	} catch {
 		// Ignore errors during cleanup
 	}
-	
+
 	// Remove the temp directory
 	await Bun.spawn(["rm", "-rf", repoDir]).exited;
 }
 
 // ### Cleanup on exit
-function setupGlobalCleanup(): void {
-	const cleanup = async () => {
-		// Stop test servers
-		for (const server of testServers) {
-			try {
-				server.stop();
-			} catch {
-				// Ignore errors
-			}
-		}
-		
-		// Remove temp repos
-		for (const repo of tempRepos) {
-			try {
-				await cleanupRepo(repo);
-			} catch {
-				// Ignore errors
-			}
-		}
-		
-		// Remove test base directory
+// Worktrees for temp repos land here: projDir for /tmp/scoder-test-repos/repo-X
+// is "tmp/scoder-test-repos/repo-X". Scoped deliberately — /tmp/scoder also
+// holds the developer's real worktrees and must never be removed wholesale.
+const TEST_WORKTREE_BASE = "/tmp/scoder/tmp/scoder-test-repos";
+
+// Artifacts the ~/.local/bin tests create in the *real* home directory. Left
+// behind, they show up in every subsequent real scoder session.
+const HOME_TEST_ARTIFACTS = [
+	`${process.env.HOME}/.local/bin/scoder-test-tool`,
+	`${process.env.HOME}/.local/bin/scoder-test-script`,
+	`${process.env.HOME}/bin/scoder-test-bin`,
+];
+
+const CLEANUP_PATHS = [TEST_BASE, TEST_WORKTREE_BASE, ...HOME_TEST_ARTIFACTS];
+
+// afterAll is the mechanism that actually runs. The previous implementation
+// registered an async callback on process.on("exit") and was never called at
+// all — so temp repos and the ~/.local/bin artifacts accumulated on the
+// developer's machine. Even wired up, that approach fails twice over: the
+// "exit" event does not fire reliably under the test runner, and it cannot
+// await, so async cleanup would never settle.
+afterAll(async () => {
+	for (const server of testServers) {
 		try {
-			await Bun.spawn(["rm", "-rf", TEST_BASE]).exited;
+			server.stop();
 		} catch {
 			// Ignore errors
 		}
+	}
+
+	for (const path of CLEANUP_PATHS) {
+		try {
+			await Bun.spawn(["rm", "-rf", path]).exited;
+		} catch {
+			// Ignore errors
+		}
+	}
+});
+
+// An interrupted run never reaches afterAll, so signals need their own path.
+// This one must be synchronous — the process is on its way out.
+function setupSignalCleanup(): void {
+	const cleanup = (): void => {
+		for (const path of CLEANUP_PATHS) {
+			try {
+				Bun.spawnSync(["rm", "-rf", path]);
+			} catch {
+				// Ignore errors
+			}
+		}
 	};
-	
-	// Set up cleanup on exit
-	process.on("exit", cleanup);
-	process.on("SIGINT", () => { cleanup(); process.exit(0); });
-	process.on("SIGTERM", () => { cleanup(); process.exit(0); });
+
+	process.on("SIGINT", () => {
+		cleanup();
+		process.exit(0);
+	});
+	process.on("SIGTERM", () => {
+		cleanup();
+		process.exit(0);
+	});
 }
+
+setupSignalCleanup();
 
 // ### Test: home-isolation
 test("home-isolation: $HOME inside sandbox is /home/scoder", async () => {
 	const repoDir = await createTempRepo();
 	tempRepos.push(repoDir);
-	
+
 	try {
-		const output = await runScoder(repoDir, ["-q", "/bin/bash", "-c", "echo $HOME"]);
+		const output = await runScoder(repoDir, [
+			"-q",
+			"/bin/bash",
+			"-c",
+			"echo $HOME",
+		]);
 		expect(output.trim()).toBe(SCODER_HOME);
+	} finally {
+		await cleanupRepo(repoDir);
+	}
+});
+
+// ### Test: sandbox-uid-preserved
+// KNOWN FAILURE — see design/implementation/issues/sandbox-uid-becomes-root.md
+//
+// scoder passes `--uid <host uid>` to bwrap, and bwrap applies it correctly.
+// But pasta runs *inside* the bwrap sandbox and its spawn mode unconditionally
+// creates a second, nested user namespace mapping inside-uid 0 to the caller,
+// so the tool ends up as root. `--runas` does not affect the spawned command.
+//
+// Marked `test.failing`: it passes while the bug exists and starts failing the
+// moment the composition is fixed — at which point drop the `.failing`.
+test.failing("sandbox-uid-preserved: uid inside the sandbox is the host uid, not root", async () => {
+	const repoDir = await createTempRepo();
+	tempRepos.push(repoDir);
+
+	try {
+		const output = await runScoder(repoDir, ["-q", "/bin/bash", "-c", "id -u"]);
+		expect(output.trim()).toBe(String(process.getuid?.()));
+	} finally {
+		await cleanupRepo(repoDir);
+	}
+});
+
+// ### Test: sandbox-uid-maps-to-host-user
+// The counterpart that must keep holding: whatever uid the sandbox reports,
+// files it creates are owned by the real host user, because pasta's namespace
+// maps inside-0 back to the caller. This is why the uid bug is a compatibility
+// problem rather than a permissions or ownership one.
+test("sandbox-uid-maps-to-host-user: files created in the sandbox are owned by the host user", async () => {
+	const repoDir = await createTempRepo();
+	tempRepos.push(repoDir);
+
+	try {
+		await runScoder(repoDir, [
+			"-q",
+			"/bin/bash",
+			"-c",
+			"touch owned-by-host.txt",
+		]);
+
+		const proc = await Bun.spawn(
+			["stat", "-c", "%u", `${repoDir}/owned-by-host.txt`],
+			{ stdout: "pipe", stderr: "pipe" },
+		);
+		await proc.exited;
+		const owner = (await new Response(proc.stdout).text()).trim();
+
+		expect(owner).toBe(String(process.getuid?.()));
 	} finally {
 		await cleanupRepo(repoDir);
 	}
@@ -224,14 +330,14 @@ test("home-isolation: $HOME inside sandbox is /home/scoder", async () => {
 test("system-read-only: Cannot create file under /usr/bin", async () => {
 	const repoDir = await createTempRepo();
 	tempRepos.push(repoDir);
-	
+
 	try {
 		const proc = await Bun.spawn(
 			["scoder", "-q", "/bin/bash", "-c", "touch /usr/bin/test-file"],
-			{ cwd: repoDir, stdout: "pipe", stderr: "pipe" }
+			{ cwd: repoDir, stdout: "pipe", stderr: "pipe" },
 		);
 		await proc.exited;
-		
+
 		// Should fail with non-zero exit code
 		expect(proc.exitCode).not.toBe(0);
 	} finally {
@@ -243,21 +349,21 @@ test("system-read-only: Cannot create file under /usr/bin", async () => {
 test("worktree-writable: Can create file in project working tree", async () => {
 	const repoDir = await createTempRepo();
 	tempRepos.push(repoDir);
-	
+
 	try {
 		// Run scoder in worktree mode to create the worktree
 		await runScoder(repoDir, ["-w", "-q", "/bin/bash", "-c", "echo setup"]);
-		
+
 		// Parse worktree directory from git worktree list
 		const worktreeListProc = await Bun.spawn(
 			["git", "worktree", "list", "--porcelain"],
-			{ cwd: repoDir, stdout: "pipe", stderr: "pipe" }
+			{ cwd: repoDir, stdout: "pipe", stderr: "pipe" },
 		);
 		await worktreeListProc.exited;
-		
+
 		const worktreeList = await new Response(worktreeListProc.stdout).text();
 		const lines = worktreeList.split("\n");
-		
+
 		// Find the worktree that has a scoder branch (skip the repo itself which is listed as main worktree)
 		let worktreeDir: string | null = null;
 		for (let i = 0; i < lines.length; i++) {
@@ -271,30 +377,45 @@ test("worktree-writable: Can create file in project working tree", async () => {
 				break;
 			}
 		}
-		
+
 		if (!worktreeDir) {
 			// If no worktree found, skip worktree-specific check and test direct mode
 			const testFilePath = `${repoDir}/test-file.txt`;
 			expect(await fileExists(testFilePath)).toBe(false);
-			
-			const output = await runScoder(repoDir, ["-q", "/bin/bash", "-c", `touch ${testFilePath}`]);
-			
+
+			await runScoder(repoDir, [
+				"-q",
+				"/bin/bash",
+				"-c",
+				`touch ${testFilePath}`,
+			]);
+
 			// File should exist now
 			expect(await fileExists(testFilePath)).toBe(true);
-			
+
 			// Clean up
-			await Bun.spawn(["git", "rm", "-f", "test-file.txt"], { cwd: repoDir }).exited;
+			await Bun.spawn(["git", "rm", "-f", "test-file.txt"], { cwd: repoDir })
+				.exited;
 			return;
 		}
-		
+
 		// File should NOT exist in the worktree yet
 		const testFilePath = `${worktreeDir}/test-file.txt`;
 		expect(await fileExists(testFilePath)).toBe(false);
-		
+
 		// Use sandbox path inside shell command (worktree is mounted at /home/scoder/<projDir> in sandbox)
-		const sandboxWorktreePath = worktreeDir.replace("/tmp/scoder/", "/home/scoder/");
-		const output = await runScoder(repoDir, ["-w", "-q", "/bin/bash", "-c", `touch ${sandboxWorktreePath}/test-file.txt`]);
-		
+		const sandboxWorktreePath = worktreeDir.replace(
+			"/tmp/scoder/",
+			"/home/scoder/",
+		);
+		await runScoder(repoDir, [
+			"-w",
+			"-q",
+			"/bin/bash",
+			"-c",
+			`touch ${sandboxWorktreePath}/test-file.txt`,
+		]);
+
 		// File should exist now on the host worktree
 		expect(await fileExists(testFilePath)).toBe(true);
 	} finally {
@@ -306,14 +427,14 @@ test("worktree-writable: Can create file in project working tree", async () => {
 test("github-protected: Cannot create file inside .github/", async () => {
 	const repoDir = await createTempRepo();
 	tempRepos.push(repoDir);
-	
+
 	try {
 		const proc = await Bun.spawn(
 			["scoder", "-q", "/bin/bash", "-c", "touch .github/test-file"],
-			{ cwd: repoDir, stdout: "pipe", stderr: "pipe" }
+			{ cwd: repoDir, stdout: "pipe", stderr: "pipe" },
 		);
 		await proc.exited;
-		
+
 		// Should fail because .github/ is protected by default
 		expect(proc.exitCode).not.toBe(0);
 	} finally {
@@ -325,14 +446,14 @@ test("github-protected: Cannot create file inside .github/", async () => {
 test("gitignore-protected: Cannot modify .gitignore", async () => {
 	const repoDir = await createTempRepo();
 	tempRepos.push(repoDir);
-	
+
 	try {
 		const proc = await Bun.spawn(
 			["scoder", "-q", "/bin/bash", "-c", "echo '# test' >> .gitignore"],
-			{ cwd: repoDir, stdout: "pipe", stderr: "pipe" }
+			{ cwd: repoDir, stdout: "pipe", stderr: "pipe" },
 		);
 		await proc.exited;
-		
+
 		// Should fail because .gitignore is protected by default
 		expect(proc.exitCode).not.toBe(0);
 	} finally {
@@ -344,17 +465,17 @@ test("gitignore-protected: Cannot modify .gitignore", async () => {
 test("empty-agentreadonly-allows-writes: Empty .agentreadonly removes default protection", async () => {
 	const repoDir = await createTempRepo();
 	tempRepos.push(repoDir);
-	
+
 	try {
 		// Create empty .agentreadonly
 		await Bun.write(`${repoDir}/.agentreadonly`, "");
-		
+
 		const proc = await Bun.spawn(
 			["scoder", "-q", "/bin/bash", "-c", "touch .github/test-file"],
-			{ cwd: repoDir, stdout: "pipe", stderr: "pipe" }
+			{ cwd: repoDir, stdout: "pipe", stderr: "pipe" },
 		);
 		await proc.exited;
-		
+
 		// Should succeed because .agentreadonly is empty (no default protection)
 		expect(proc.exitCode).toBe(0);
 	} finally {
@@ -366,18 +487,24 @@ test("empty-agentreadonly-allows-writes: Empty .agentreadonly removes default pr
 test("agentreadonly-protected: .agentreadonly is always mounted read-only", async () => {
 	const repoDir = await createTempRepo();
 	tempRepos.push(repoDir);
-	
+
 	try {
 		// Create .agentreadonly with some content
 		await Bun.write(`${repoDir}/.agentreadonly`, "# test");
-		
+
 		// Try to modify .agentreadonly inside the sandbox
 		const proc = await Bun.spawn(
-			["scoder", "-q", "/bin/bash", "-c", "echo '# modified' >> .agentreadonly"],
-			{ cwd: repoDir, stdout: "pipe", stderr: "pipe" }
+			[
+				"scoder",
+				"-q",
+				"/bin/bash",
+				"-c",
+				"echo '# modified' >> .agentreadonly",
+			],
+			{ cwd: repoDir, stdout: "pipe", stderr: "pipe" },
 		);
 		await proc.exited;
-		
+
 		// Should fail because .agentreadonly is bind-mounted read-only
 		expect(proc.exitCode).not.toBe(0);
 	} finally {
@@ -390,38 +517,53 @@ test("agentreadonly-home-directory-readonly: .agentreadonly HOME bind is read-on
 	// Create a test directory in home
 	const testHomeDir = `${process.env.HOME}/.scoder-test-home-bind`;
 	await Bun.spawn(["mkdir", "-p", testHomeDir]).exited;
-	
+
 	// Create a test file in the directory first
 	await Bun.write(`${testHomeDir}/test-read-file.txt`, "readable content");
-	
+
 	const repoDir = await createTempRepo();
 	tempRepos.push(repoDir);
-	
+
 	try {
 		// Create .agentreadonly with HOME bind
-		await Bun.write(`${repoDir}/.agentreadonly`, `$HOME/.scoder-test-home-bind/`);
-		
+		await Bun.write(
+			`${repoDir}/.agentreadonly`,
+			`$HOME/.scoder-test-home-bind/`,
+		);
+
 		// Try to write to the bind-mounted directory (use sandbox path, not host path)
 		const testHomeSandbox = `${SCODER_HOME}/.scoder-test-home-bind`;
 		const proc = await Bun.spawn(
-			["scoder", "-q", "/bin/bash", "-c", `touch ${testHomeSandbox}/test-write-file`],
-			{ cwd: repoDir, stdout: "pipe", stderr: "pipe" }
+			[
+				"scoder",
+				"-q",
+				"/bin/bash",
+				"-c",
+				`touch ${testHomeSandbox}/test-write-file`,
+			],
+			{ cwd: repoDir, stdout: "pipe", stderr: "pipe" },
 		);
 		await proc.exited;
-		
+
 		// Should fail because the bind is read-only
 		expect(proc.exitCode).not.toBe(0);
-		
+
 		// Should still be able to read (use sandbox path)
 		const readProc = await Bun.spawn(
-			["scoder", "-q", "/bin/bash", "-c", `cat ${testHomeSandbox}/test-read-file.txt 2>&1`],
-			{ cwd: repoDir, stdout: "pipe", stderr: "pipe" }
+			[
+				"scoder",
+				"-q",
+				"/bin/bash",
+				"-c",
+				`cat ${testHomeSandbox}/test-read-file.txt 2>&1`,
+			],
+			{ cwd: repoDir, stdout: "pipe", stderr: "pipe" },
 		);
 		await readProc.exited;
-		
+
 		// Read should succeed (exit code 0 means success, non-zero means failure)
 		expect(readProc.exitCode).toBe(0);
-		
+
 		const readOutput = await new Response(readProc.stdout).text();
 		// Verify the content matches
 		expect(readOutput.trim()).toBe("readable content");
@@ -435,21 +577,21 @@ test("agentreadonly-home-directory-readonly: .agentreadonly HOME bind is read-on
 test("agentreadonly-home-directory-must-exist: Non-existent HOME bind path fails with error", async () => {
 	const repoDir = await createTempRepo();
 	tempRepos.push(repoDir);
-	
+
 	try {
 		// Create .agentreadonly with non-existent path
 		await Bun.write(`${repoDir}/.agentreadonly`, `$HOME/.non-existent-path/`);
-		
+
 		// Should fail with error message
 		const proc = await Bun.spawn(
 			["scoder", "-q", "/bin/bash", "-c", "echo test"],
-			{ cwd: repoDir, stdout: "pipe", stderr: "pipe" }
+			{ cwd: repoDir, stdout: "pipe", stderr: "pipe" },
 		);
 		await proc.exited;
-		
+
 		// Should fail because the referenced directory doesn't exist
 		expect(proc.exitCode).not.toBe(0);
-		
+
 		const stderr = await new Response(proc.stderr).text();
 		expect(stderr).toMatch(/must reference an existing directory/);
 	} finally {
@@ -461,29 +603,28 @@ test("agentreadonly-home-directory-must-exist: Non-existent HOME bind path fails
 test("worktree-branch-created: Running scoder creates scoder/<repo-name> branch", async () => {
 	const repoDir = await createTempRepo();
 	tempRepos.push(repoDir);
-	
+
 	try {
 		// Get initial branch
 		const initialBranchProc = await Bun.spawn(
 			["git", "branch", "--show-current"],
-			{ cwd: repoDir, stdout: "pipe", stderr: "pipe" }
+			{ cwd: repoDir, stdout: "pipe", stderr: "pipe" },
 		);
 		await initialBranchProc.exited;
-		const initialBranch = await new Response(initialBranchProc.stdout).text().then(t => t.trim());
-		
+
 		// Run scoder with worktree mode
 		await runScoder(repoDir, ["-w", "-q", "/bin/bash", "-c", "echo test"]);
-		
+
 		// Check that scoder/<repo-name> branch was created
 		const repoName = repoDir.split("/").pop() || "unknown";
 		const branchName = `scoder/${repoName}`;
-		
+
 		const branchListProc = await Bun.spawn(
 			["git", "branch", "--list", branchName],
-			{ cwd: repoDir, stdout: "pipe", stderr: "pipe" }
+			{ cwd: repoDir, stdout: "pipe", stderr: "pipe" },
 		);
 		await branchListProc.exited;
-		
+
 		const output = await new Response(branchListProc.stdout).text();
 		expect(output).toContain(branchName);
 	} finally {
@@ -495,21 +636,21 @@ test("worktree-branch-created: Running scoder creates scoder/<repo-name> branch"
 test("existing-scoder-worktree-reused: Rerunning from existing worktree reuses checkout", async () => {
 	const repoDir = await createTempRepo();
 	tempRepos.push(repoDir);
-	
+
 	try {
 		// Run scoder once to create worktree
-		const output1 = await runScoder(repoDir, ["-w", "-q", "/bin/bash", "-c", "echo first"]);
-		
+		await runScoder(repoDir, ["-w", "-q", "/bin/bash", "-c", "echo first"]);
+
 		// Parse worktree directory from git worktree list
 		const worktreeListProc = await Bun.spawn(
 			["git", "worktree", "list", "--porcelain"],
-			{ cwd: repoDir, stdout: "pipe", stderr: "pipe" }
+			{ cwd: repoDir, stdout: "pipe", stderr: "pipe" },
 		);
 		await worktreeListProc.exited;
-		
+
 		const worktreeList = await new Response(worktreeListProc.stdout).text();
 		const lines = worktreeList.split("\n");
-		
+
 		let worktreeDir: string | null = null;
 		for (let i = 0; i < lines.length; i++) {
 			if (lines[i].startsWith("worktree ")) {
@@ -517,14 +658,21 @@ test("existing-scoder-worktree-reused: Rerunning from existing worktree reuses c
 				break;
 			}
 		}
-		
+
 		expect(worktreeDir).not.toBeNull();
-		
+
 		// Run scoder from the worktree directory
-		const output2 = await runScoderInDir(worktreeDir, ["-q", "/bin/bash", "-c", "echo second"]);
-		
+		const output2 = await runScoderInDir(worktreeDir, [
+			"-q",
+			"/bin/bash",
+			"-c",
+			"echo second",
+		]);
+
 		// Should reuse the existing worktree (no error about nested worktree)
-		expect(output2).not.toContain("scoder is already running inside a git worktree");
+		expect(output2).not.toContain(
+			"scoder is already running inside a git worktree",
+		);
 	} finally {
 		await cleanupRepo(repoDir);
 	}
@@ -534,21 +682,21 @@ test("existing-scoder-worktree-reused: Rerunning from existing worktree reuses c
 test("worktree-recreated-if-missing: Deleting worktree and rerunning recreates it", async () => {
 	const repoDir = await createTempRepo();
 	tempRepos.push(repoDir);
-	
+
 	try {
 		// Run scoder once to create worktree
 		await runScoder(repoDir, ["-w", "-q", "/bin/bash", "-c", "echo first"]);
-		
+
 		// Get worktree directory - find the worktree with a scoder branch (skip the repo main worktree)
 		const worktreeListProc = await Bun.spawn(
 			["git", "worktree", "list", "--porcelain"],
-			{ cwd: repoDir, stdout: "pipe", stderr: "pipe" }
+			{ cwd: repoDir, stdout: "pipe", stderr: "pipe" },
 		);
 		await worktreeListProc.exited;
-		
+
 		const worktreeList = await new Response(worktreeListProc.stdout).text();
 		const lines = worktreeList.split("\n");
-		
+
 		let worktreeDir: string | null = null;
 		for (let i = 0; i < lines.length; i++) {
 			if (lines[i].startsWith("branch refs/heads/scoder/")) {
@@ -561,22 +709,28 @@ test("worktree-recreated-if-missing: Deleting worktree and rerunning recreates i
 				break;
 			}
 		}
-		
+
 		expect(worktreeDir).not.toBeNull();
-		
+
 		// Delete the worktree directory (simulating reboot)
 		await Bun.spawn(["rm", "-rf", worktreeDir]).exited;
-		
+
 		// Verify worktree is gone
 		expect(await dirExists(worktreeDir)).toBe(false);
-		
+
 		// Run scoder again - should recreate worktree
 		// We need to run from repoDir, not worktreeDir, since worktree was deleted
-		const output = await runScoder(repoDir, ["-w", "-q", "/bin/bash", "-c", "echo second"]);
-		
+		const output = await runScoder(repoDir, [
+			"-w",
+			"-q",
+			"/bin/bash",
+			"-c",
+			"echo second",
+		]);
+
 		// Should succeed and recreate worktree
 		expect(output).not.toContain("Failed");
-		
+
 		// Verify worktree was recreated
 		expect(await dirExists(worktreeDir)).toBe(true);
 	} finally {
@@ -588,7 +742,7 @@ test("worktree-recreated-if-missing: Deleting worktree and rerunning recreates i
 test("symlinked-agents-skills-available: Symlinked agent skills are available in sandbox", async () => {
 	const repoDir = await createTempRepo();
 	tempRepos.push(repoDir);
-	
+
 	try {
 		// Check if ~/.agents exists and has skills
 		const agentsDir = `${process.env.HOME}/.agents`;
@@ -596,17 +750,17 @@ test("symlinked-agents-skills-available: Symlinked agent skills are available in
 			// Skip test if no skills directory
 			return;
 		}
-		
+
 		// Run scoder and check if skills are available
 		const proc = await Bun.spawn(
 			["scoder", "-q", "/bin/bash", "-c", "ls /home/scoder/.agents 2>&1"],
-			{ cwd: repoDir, stdout: "pipe", stderr: "pipe" }
+			{ cwd: repoDir, stdout: "pipe", stderr: "pipe" },
 		);
 		await proc.exited;
-		
+
 		// Skills should be available (or at least the directory exists)
 		expect(proc.exitCode).toBe(0);
-		
+
 		const output = await new Response(proc.stdout).text();
 		// The output should include some skills or be empty (directory exists but no skills)
 		// We just verify the directory is accessible
@@ -620,20 +774,20 @@ test("symlinked-agents-skills-available: Symlinked agent skills are available in
 test("sandbox-agents-md-overlay-visible: AGENTS.md overlay is visible in sandbox", async () => {
 	const repoDir = await createTempRepo();
 	tempRepos.push(repoDir);
-	
+
 	try {
 		// Run scoder and check if overlay content is present
 		const proc = await Bun.spawn(
 			["scoder", "-q", "/bin/bash", "-c", "grep -c 'scoder sandbox' AGENTS.md"],
-			{ cwd: repoDir, stdout: "pipe", stderr: "pipe" }
+			{ cwd: repoDir, stdout: "pipe", stderr: "pipe" },
 		);
 		await proc.exited;
-		
+
 		// Should find the overlay content
 		expect(proc.exitCode).toBe(0);
-		
+
 		const output = await new Response(proc.stdout).text();
-		expect(parseInt(output.trim())).toBeGreaterThan(0);
+		expect(parseInt(output.trim(), 10)).toBeGreaterThan(0);
 	} finally {
 		await cleanupRepo(repoDir);
 	}
@@ -643,15 +797,22 @@ test("sandbox-agents-md-overlay-visible: AGENTS.md overlay is visible in sandbox
 test("agents-md-overlay-in-direct-mode: AGENTS.md overlay in direct mode lacks worktree messages", async () => {
 	const repoDir = await createTempRepo();
 	tempRepos.push(repoDir);
-	
+
 	try {
 		// Run scoder in direct mode (no worktree)
 		const proc = await Bun.spawn(
-			["scoder", "--no-worktree", "-q", "/bin/bash", "-c", "grep 'git worktree' AGENTS.md"],
-			{ cwd: repoDir, stdout: "pipe", stderr: "pipe" }
+			[
+				"scoder",
+				"--no-worktree",
+				"-q",
+				"/bin/bash",
+				"-c",
+				"grep 'git worktree' AGENTS.md",
+			],
+			{ cwd: repoDir, stdout: "pipe", stderr: "pipe" },
 		);
 		await proc.exited;
-		
+
 		// Should NOT find worktree-specific messages in direct mode
 		// The grep will fail (exitCode != 0) if no match found, which is what we want
 		expect(proc.exitCode).not.toBe(0);
@@ -664,25 +825,31 @@ test("agents-md-overlay-in-direct-mode: AGENTS.md overlay in direct mode lacks w
 test("host-loopback-blocked: Host localhost HTTP server is unreachable", async () => {
 	const repoDir = await createTempRepo();
 	tempRepos.push(repoDir);
-	
+
 	// Start a local HTTP server
 	const server = Bun.serve({
 		port: 19999,
-		fetch(req) {
+		fetch() {
 			return new Response("OK");
 		},
 	});
 	testServers.push(server);
-	
+
 	try {
 		// Try to reach the host localhost from inside the sandbox
 		// This should fail due to pasta's default loopback blocking
 		const proc = await Bun.spawn(
-			["scoder", "-q", "/bin/bash", "-c", "curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:19999"],
-			{ cwd: repoDir, stdout: "pipe", stderr: "pipe" }
+			[
+				"scoder",
+				"-q",
+				"/bin/bash",
+				"-c",
+				"curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:19999",
+			],
+			{ cwd: repoDir, stdout: "pipe", stderr: "pipe" },
 		);
 		await proc.exited;
-		
+
 		// Should fail (curl will return 000 or error)
 		expect(proc.exitCode).not.toBe(0);
 	} finally {
@@ -696,29 +863,40 @@ let autoDetectServer: Bun.Server | null = null;
 
 test("llm-port-auto-detect: Auto-detected port is reachable without --llm-port", async () => {
 	const testPort = parseInt(process.env.SCODER_LLM_PORT || "", 10) || 19997;
-	
+
 	const repoDir = await createTempRepo();
 	tempRepos.push(repoDir);
-	
+
 	// Start a local HTTP server (must await - Bun.serve() is async)
 	autoDetectServer = await Bun.serve({
 		port: testPort,
-		fetch(req) {
+		fetch() {
 			return new Response("auto-detected-ok");
 		},
 	});
-	
+
 	try {
 		// Run scoder WITHOUT --llm-port but with SCODER_LLM_PORT set
 		const proc = await Bun.spawn(
-			[SCODER_PATH, "-q", "/bin/bash", "-c", `curl -s http://127.0.0.1:${testPort}`],
-			{ cwd: repoDir, stdout: "pipe", stderr: "pipe", env: { SCODER_LLM_PORT: testPort.toString() } }
+			[
+				SCODER_PATH,
+				"-q",
+				"/bin/bash",
+				"-c",
+				`curl -s http://127.0.0.1:${testPort}`,
+			],
+			{
+				cwd: repoDir,
+				stdout: "pipe",
+				stderr: "pipe",
+				env: { SCODER_LLM_PORT: testPort.toString() },
+			},
 		);
 		await proc.exited;
-		
+
 		// Should succeed because scoder auto-detected the port
 		expect(proc.exitCode).toBe(0);
-		
+
 		const output = await new Response(proc.stdout).text();
 		expect(output.trim()).toBe("auto-detected-ok");
 	} finally {
@@ -734,27 +912,35 @@ test("llm-port-auto-detect: Auto-detected port is reachable without --llm-port",
 test("llm-port-allows-host-loopback: --llm-port allows reaching specific localhost port", async () => {
 	const repoDir = await createTempRepo();
 	tempRepos.push(repoDir);
-	
+
 	// Start a local HTTP server
 	const server = Bun.serve({
 		port: 19998,
-		fetch(req) {
+		fetch() {
 			return new Response("OK");
 		},
 	});
 	testServers.push(server);
-	
+
 	try {
 		// Try to reach the host localhost with --llm-port
 		const proc = await Bun.spawn(
-			["scoder", "--llm-port", "19998", "-q", "/bin/bash", "-c", "curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:19998"],
-			{ cwd: repoDir, stdout: "pipe", stderr: "pipe" }
+			[
+				"scoder",
+				"--llm-port",
+				"19998",
+				"-q",
+				"/bin/bash",
+				"-c",
+				"curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:19998",
+			],
+			{ cwd: repoDir, stdout: "pipe", stderr: "pipe" },
 		);
 		await proc.exited;
-		
+
 		// Should succeed now that we've enabled the port
 		expect(proc.exitCode).toBe(0);
-		
+
 		const output = await new Response(proc.stdout).text();
 		expect(output.trim()).toBe("200");
 	} finally {
@@ -767,18 +953,18 @@ test("llm-port-allows-host-loopback: --llm-port allows reaching specific localho
 test("outbound-dns-works: DNS resolution works inside sandbox", async () => {
 	const repoDir = await createTempRepo();
 	tempRepos.push(repoDir);
-	
+
 	try {
 		// Try to resolve a known DNS name
 		const proc = await Bun.spawn(
 			["scoder", "-q", "/bin/bash", "-c", "getent hosts google.com"],
-			{ cwd: repoDir, stdout: "pipe", stderr: "pipe" }
+			{ cwd: repoDir, stdout: "pipe", stderr: "pipe" },
 		);
 		await proc.exited;
-		
+
 		// Should succeed
 		expect(proc.exitCode).toBe(0);
-		
+
 		const output = await new Response(proc.stdout).text();
 		// Should have at least one IP address
 		expect(output.length).toBeGreaterThan(0);
@@ -791,10 +977,16 @@ test("outbound-dns-works: DNS resolution works inside sandbox", async () => {
 test("dry-run-uses-pasta: Dry-run output includes pasta in command", async () => {
 	const repoDir = await createTempRepo();
 	tempRepos.push(repoDir);
-	
+
 	try {
-		const output = await runScoder(repoDir, ["--dry-run", "-q", "/bin/bash", "-c", "echo test"]);
-		
+		const output = await runScoder(repoDir, [
+			"--dry-run",
+			"-q",
+			"/bin/bash",
+			"-c",
+			"echo test",
+		]);
+
 		// Should include pasta in the command
 		expect(output).toMatch(/pasta/);
 	} finally {
@@ -806,23 +998,29 @@ test("dry-run-uses-pasta: Dry-run output includes pasta in command", async () =>
 test("no-worktree-mode: --no-worktree bypasses worktree creation", async () => {
 	const repoDir = await createTempRepo();
 	tempRepos.push(repoDir);
-	
+
 	try {
-		const output = await runScoder(repoDir, ["--no-worktree", "-q", "/bin/bash", "-c", "echo test"]);
-		
+		const output = await runScoder(repoDir, [
+			"--no-worktree",
+			"-q",
+			"/bin/bash",
+			"-c",
+			"echo test",
+		]);
+
 		// Should NOT create a scoder branch (this is the main test)
 		const repoName = repoDir.split("/").pop() || "unknown";
 		const branchName = `scoder/${repoName}`;
-		
+
 		const branchListProc = await Bun.spawn(
 			["git", "branch", "--list", branchName],
-			{ cwd: repoDir, stdout: "pipe", stderr: "pipe" }
+			{ cwd: repoDir, stdout: "pipe", stderr: "pipe" },
 		);
 		await branchListProc.exited;
-		
+
 		const branchOutput = await new Response(branchListProc.stdout).text();
 		expect(branchOutput).not.toContain(branchName);
-		
+
 		// Verify the command ran successfully
 		expect(output).toBe("test\n");
 	} finally {
@@ -835,32 +1033,32 @@ test("local-bin-symlink-resolved: Symlink in ~/.local/bin pointing outside sandb
 	// Set up test artifacts
 	const testBinDir = `${process.env.HOME}/bin/scoder-test-bin`;
 	await Bun.spawn(["mkdir", "-p", testBinDir]).exited;
-	
+
 	const toolScript = `#!/bin/sh\necho "scoder-test-ok"\n`;
 	const realTool = `${testBinDir}/scoder-test-tool`;
 	await Bun.write(realTool, toolScript);
 	await Bun.spawn(["chmod", "+x", realTool]).exited;
-	
+
 	const symlink = `${process.env.HOME}/.local/bin/scoder-test-tool`;
 	try {
 		await Bun.spawn(["ln", "-sf", realTool, symlink]).exited;
 	} catch {
 		// Symlink may already exist
 	}
-	
+
 	const repoDir = await createTempRepo();
 	tempRepos.push(repoDir);
-	
+
 	try {
 		const proc = await Bun.spawn(
 			["scoder", "-q", "/bin/bash", "-c", "scoder-test-tool"],
-			{ cwd: repoDir, stdout: "pipe", stderr: "pipe" }
+			{ cwd: repoDir, stdout: "pipe", stderr: "pipe" },
 		);
 		await proc.exited;
-		
+
 		// The forwarding shim should resolve the symlink and execute successfully
 		expect(proc.exitCode).toBe(0);
-		
+
 		const output = await new Response(proc.stdout).text();
 		expect(output.trim()).toBe("scoder-test-ok");
 	} finally {
@@ -874,20 +1072,20 @@ test("local-bin-regular-file: Regular executable in ~/.local/bin is copied with 
 	const scriptPath = `${process.env.HOME}/.local/bin/scoder-test-script`;
 	await Bun.write(scriptPath, `#!/bin/sh\necho "regular-script-ok"\n`);
 	await Bun.spawn(["chmod", "+x", scriptPath]).exited;
-	
+
 	const repoDir = await createTempRepo();
 	tempRepos.push(repoDir);
-	
+
 	try {
 		const proc = await Bun.spawn(
 			["scoder", "-q", "/bin/bash", "-c", "scoder-test-script"],
-			{ cwd: repoDir, stdout: "pipe", stderr: "pipe" }
+			{ cwd: repoDir, stdout: "pipe", stderr: "pipe" },
 		);
 		await proc.exited;
-		
+
 		// The script should execute successfully (permissions preserved)
 		expect(proc.exitCode).toBe(0);
-		
+
 		const output = await new Response(proc.stdout).text();
 		expect(output.trim()).toBe("regular-script-ok");
 	} finally {
@@ -897,23 +1095,21 @@ test("local-bin-regular-file: Regular executable in ~/.local/bin is copied with 
 
 // ### Test: local-bin-symlink-arg-passthrough
 test("local-bin-symlink-arg-passthrough: Forwarding shim passes all arguments through", async () => {
-	// Reuse the symlink from local-bin-symlink-resolved test
-	const testBinDir = `${process.env.HOME}/bin/scoder-test-bin`;
-	const realTool = `${testBinDir}/scoder-test-tool`;
-	
+	// Reuse the symlink created by local-bin-symlink-resolved. This couples the
+	// two tests by execution order — see the note in validation-suite.md.
 	const repoDir = await createTempRepo();
 	tempRepos.push(repoDir);
-	
+
 	try {
 		const proc = await Bun.spawn(
 			["scoder", "-q", "/bin/bash", "-c", `scoder-test-tool arg1 arg2 arg3`],
-			{ cwd: repoDir, stdout: "pipe", stderr: "pipe" }
+			{ cwd: repoDir, stdout: "pipe", stderr: "pipe" },
 		);
 		await proc.exited;
-		
+
 		// Should succeed - arguments passed through the shim
 		expect(proc.exitCode).toBe(0);
-		
+
 		const output = await new Response(proc.stdout).text();
 		expect(output.trim()).toBe("scoder-test-ok");
 	} finally {
@@ -921,32 +1117,488 @@ test("local-bin-symlink-arg-passthrough: Forwarding shim passes all arguments th
 	}
 });
 
+// EM: ### Tests for tool preset bind modes
+// EM: The only tests that exercise a real preset. Skipped when the tool is not
+// EM: installed, so the suite still passes on a machine without it.
 
+async function commandAvailable(cmd: string): Promise<boolean> {
+	const proc = await Bun.spawn(["which", cmd], {
+		stdout: "pipe",
+		stderr: "pipe",
+	});
+	await proc.exited;
+	return proc.exitCode === 0;
+}
 
+const claudePresetTestable =
+	(await commandAvailable("claude")) &&
+	(await dirExists(`${process.env.HOME}/.claude`));
+
+// ### Test: claude-preset-home-config-writable
+// Claude Code writes to ~/.claude throughout a session (todos, history, shell
+// snapshots). A read-only bind makes it fail rather than degrade, so this bind
+// must stay read-write. Uses --dry-run: it inspects the command without
+// launching a sandbox, so it never writes to the real config.
+test.skipIf(!claudePresetTestable)(
+	"claude-preset-home-config-writable: ~/.claude is bound read-write",
+	async () => {
+		const repoDir = await createTempRepo();
+		tempRepos.push(repoDir);
+
+		try {
+			const output = await runScoder(repoDir, ["--dry-run", "claude"]);
+			const bind = `${process.env.HOME}/.claude ${SCODER_HOME}/.claude`;
+
+			expect(output).toContain(`--bind ${bind}`);
+			expect(output).not.toContain(`--ro-bind ${bind}`);
+		} finally {
+			await cleanupRepo(repoDir);
+		}
+	},
+);
+
+// ### Test: workspace-claude-dir-still-protected
+// ~/.claude being writable must not affect the *workspace* .claude/ directory,
+// which is protected infrastructure and stays read-only.
+test.skipIf(!claudePresetTestable)(
+	"workspace-claude-dir-still-protected: project .claude/ remains read-only",
+	async () => {
+		const repoDir = await createTempRepo();
+		tempRepos.push(repoDir);
+
+		try {
+			await Bun.spawn(["mkdir", "-p", `${repoDir}/.claude`]).exited;
+			await Bun.write(`${repoDir}/.claude/settings.json`, "{}\n");
+
+			const output = await runScoder(repoDir, ["--dry-run", "claude"]);
+
+			// The workspace copy is a separate, still-read-only bind
+			expect(output).toContain(`--ro-bind ${repoDir}/.claude`);
+		} finally {
+			await cleanupRepo(repoDir);
+		}
+	},
+);
+
+// EM: ### Tests for session commit and cleanup correctness
+// EM: Covers the four issues in design/implementation/issues/
+
+// Returns `git status --porcelain` for a repo
+async function gitStatus(repoDir: string): Promise<string> {
+	const proc = await Bun.spawn(["git", "status", "--porcelain"], {
+		cwd: repoDir,
+		stdout: "pipe",
+		stderr: "pipe",
+	});
+	await proc.exited;
+	return (await new Response(proc.stdout).text()).trim();
+}
+
+async function gitLogSubjects(repoDir: string, ref: string): Promise<string[]> {
+	const proc = await Bun.spawn(["git", "log", "--format=%s", ref], {
+		cwd: repoDir,
+		stdout: "pipe",
+		stderr: "pipe",
+	});
+	await proc.exited;
+	if (proc.exitCode !== 0) {
+		return [];
+	}
+	return (await new Response(proc.stdout).text())
+		.split("\n")
+		.filter((line) => line.length > 0);
+}
+
+// ### Test: session-commit-lands-in-worktree
+// Regression test for commitAllChanges spawning git without a cwd, which
+// committed the user's main checkout instead of the worktree.
+test("session-commit-lands-in-worktree: worktree session leaves the launching repo untouched", async () => {
+	const repoDir = await createTempRepo();
+	tempRepos.push(repoDir);
+
+	try {
+		// Uncommitted work in the launching checkout, as a user would have
+		await Bun.write(`${repoDir}/host-only.txt`, "work in progress\n");
+		const statusBefore = await gitStatus(repoDir);
+		expect(statusBefore).toContain("host-only.txt");
+
+		const headBefore = await gitLogSubjects(repoDir, "HEAD");
+
+		// Run a worktree session that makes a change inside the sandbox
+		await runScoder(repoDir, [
+			"-q",
+			"-w",
+			"/bin/bash",
+			"-c",
+			"echo sandbox-work > from-sandbox.txt",
+		]);
+
+		// The launching checkout must be exactly as it was
+		expect(await gitStatus(repoDir)).toBe(statusBefore);
+		expect(await gitLogSubjects(repoDir, "HEAD")).toEqual(headBefore);
+
+		// ...and the sandbox's work must be committed on the scoder branch
+		const projName = repoDir.split("/").pop();
+		const branchLog = await gitLogSubjects(repoDir, `scoder/${projName}`);
+		expect(branchLog[0]).toBe("Committing session by scoder.");
+	} finally {
+		await cleanupRepo(repoDir);
+	}
+});
+
+// ### Test: skip-worktree-cleared-after-session
+// Regression test for process.exit() inside the try whose finally clears the
+// AGENTS.md skip-worktree flag — process.exit skips pending finally blocks.
+test("skip-worktree-cleared-after-session: AGENTS.md is not left flagged skip-worktree", async () => {
+	const repoDir = await createTempRepo();
+	tempRepos.push(repoDir);
+
+	try {
+		await Bun.write(`${repoDir}/AGENTS.md`, "# Agents\n");
+		await Bun.spawn(["git", "add", "AGENTS.md"], { cwd: repoDir }).exited;
+		await Bun.spawn(["git", "commit", "-m", "add agents"], { cwd: repoDir })
+			.exited;
+
+		expect(await hasSkipWorktree(repoDir, "AGENTS.md")).toBe(false);
+
+		await runScoder(repoDir, ["-q", "/bin/bash", "-c", "true"]);
+
+		// The flag must be cleared, or git silently ignores edits to AGENTS.md
+		expect(await hasSkipWorktree(repoDir, "AGENTS.md")).toBe(false);
+	} finally {
+		await cleanupRepo(repoDir);
+	}
+});
+
+// ### Test: direct-mode-works-in-linked-worktree
+// Regression test for the nesting check exiting whenever .git is a file,
+// regardless of mode, while advising the flag the user already passed.
+test("direct-mode-works-in-linked-worktree: --no-worktree runs inside a linked git worktree", async () => {
+	const repoDir = await createTempRepo();
+	tempRepos.push(repoDir);
+
+	const linkedWorktree = `${repoDir}-linked`;
+
+	try {
+		await Bun.spawn(
+			["git", "worktree", "add", "-b", "feature", linkedWorktree],
+			{ cwd: repoDir, stdout: "pipe", stderr: "pipe" },
+		).exited;
+
+		// A linked worktree has .git as a file, not a directory
+		const gitFile = Bun.file(`${linkedWorktree}/.git`);
+		expect((await gitFile.stat()).isFile()).toBe(true);
+
+		// Direct mode creates no worktree, so there is nothing to nest
+		const proc = await Bun.spawn(
+			[
+				SCODER_PATH,
+				"-q",
+				"--no-worktree",
+				"/bin/bash",
+				"-c",
+				"echo in-worktree",
+			],
+			{ cwd: linkedWorktree, stdout: "pipe", stderr: "pipe" },
+		);
+		await proc.exited;
+
+		const stdout = await new Response(proc.stdout).text();
+		expect(proc.exitCode).toBe(0);
+		expect(stdout.trim()).toBe("in-worktree");
+	} finally {
+		await Bun.spawn(["git", "worktree", "remove", linkedWorktree, "--force"], {
+			cwd: repoDir,
+			stdout: "pipe",
+			stderr: "pipe",
+		}).exited;
+		await cleanupRepo(repoDir);
+	}
+});
+
+// ### Test: worktree-mode-refused-in-linked-worktree
+// The other half: worktree mode genuinely cannot nest, so it must still refuse.
+test("worktree-mode-refused-in-linked-worktree: -w inside a linked worktree still fails", async () => {
+	const repoDir = await createTempRepo();
+	tempRepos.push(repoDir);
+
+	const linkedWorktree = `${repoDir}-linked-w`;
+
+	try {
+		await Bun.spawn(
+			["git", "worktree", "add", "-b", "feature-w", linkedWorktree],
+			{ cwd: repoDir, stdout: "pipe", stderr: "pipe" },
+		).exited;
+
+		const proc = await Bun.spawn(
+			[SCODER_PATH, "-w", "/bin/bash", "-c", "true"],
+			{
+				cwd: linkedWorktree,
+				stdout: "pipe",
+				stderr: "pipe",
+			},
+		);
+		await proc.exited;
+
+		const stderr = await new Response(proc.stderr).text();
+		expect(proc.exitCode).toBe(1);
+		expect(stderr).toContain("from inside a git worktree");
+	} finally {
+		await Bun.spawn(["git", "worktree", "remove", linkedWorktree, "--force"], {
+			cwd: repoDir,
+			stdout: "pipe",
+			stderr: "pipe",
+		}).exited;
+		await cleanupRepo(repoDir);
+	}
+});
+
+// ### Test: uncommitted-host-changes-warned
+// Regression test for hasUncommittedChanges being dead code: the agent cannot
+// see uncommitted work in the launching checkout, so the user must be told.
+test("uncommitted-host-changes-warned: worktree mode warns about uncommitted host changes", async () => {
+	const repoDir = await createTempRepo();
+	tempRepos.push(repoDir);
+
+	try {
+		await Bun.write(`${repoDir}/unstaged.txt`, "not committed\n");
+
+		const proc = await Bun.spawn(
+			[SCODER_PATH, "-w", "/bin/bash", "-c", "true"],
+			{ cwd: repoDir, stdout: "pipe", stderr: "pipe" },
+		);
+		await proc.exited;
+
+		const stderr = await new Response(proc.stderr).text();
+		expect(proc.exitCode).toBe(0);
+		expect(stderr).toContain("uncommitted changes the agent will not see");
+	} finally {
+		await cleanupRepo(repoDir);
+	}
+});
+
+// ### Test: clean-worktree-session-commits-nothing
+// commitAllChanges skips the commit when the worktree is clean, so an empty
+// session does not fail on git commit returning non-zero.
+test("clean-worktree-session-commits-nothing: empty session succeeds and adds no commit", async () => {
+	const repoDir = await createTempRepo();
+	tempRepos.push(repoDir);
+
+	try {
+		const output = await runScoder(repoDir, ["-w", "/bin/bash", "-c", "true"]);
+		expect(output).not.toContain("Failed to commit");
+	} finally {
+		await cleanupRepo(repoDir);
+	}
+});
+
+// EM: ### Tests for $HOME-installed tool resolution
+// EM: Implements tests for home-remapped exec paths (see design/features/path-mirroring.md)
+
+// Mirrors the layout a native installer produces: an entry in ~/.local/bin
+// symlinked at a versioned binary under ~/.local/share/<tool>/versions/.
+async function createHomeInstalledTool(name: string): Promise<{
+	symlink: string;
+	versionDir: string;
+	shareDir: string;
+}> {
+	const shareDir = `${process.env.HOME}/.local/share/${name}`;
+	const versionDir = `${shareDir}/versions`;
+	await Bun.spawn(["mkdir", "-p", versionDir]).exited;
+
+	const binary = `${versionDir}/9.9.9`;
+	await Bun.write(binary, `#!/bin/sh\necho "${name}-ok"\n`);
+	await Bun.spawn(["chmod", "+x", binary]).exited;
+
+	const symlink = `${process.env.HOME}/.local/bin/${name}`;
+	await Bun.spawn(["ln", "-sf", binary, symlink]).exited;
+
+	return { symlink, versionDir, shareDir };
+}
+
+// ### Test: home-installed-tool-exec-path-mapped
+// Regression test for `scoder claude` failing with "execvp: No such file or
+// directory": `which` returns a host path under $HOME, but the sandbox replaces
+// /home with a tmpfs containing only /home/scoder, so the host path is absent.
+test("home-installed-tool-exec-path-mapped: exec target for a $HOME-installed tool is rewritten to /home/scoder", async () => {
+	const name = "scoder-test-homedtool";
+	const tool = await createHomeInstalledTool(name);
+
+	const repoDir = await createTempRepo();
+	tempRepos.push(repoDir);
+
+	try {
+		const output = await runScoder(repoDir, ["--dry-run", name]);
+
+		// The exec target must be the sandbox path, never the host path
+		expect(output).toContain(`-- ${SCODER_HOME}/.local/bin/${name}`);
+		expect(output).not.toContain(`-- ${process.env.HOME}/.local/bin/${name}`);
+	} finally {
+		await cleanupRepo(repoDir);
+		await Bun.spawn(["rm", "-rf", tool.shareDir]).exited;
+		await Bun.spawn(["rm", "-f", tool.symlink]).exited;
+	}
+});
+
+// ### Test: home-installed-tool-runs
+// The end-to-end shape of the reported failure: a $HOME-installed tool
+// launched as the sandboxed tool must actually execute.
+test("home-installed-tool-runs: a tool symlinked from ~/.local/bin into ~/.local/share executes in the sandbox", async () => {
+	const name = "scoder-test-homedrun";
+	const tool = await createHomeInstalledTool(name);
+
+	const repoDir = await createTempRepo();
+	tempRepos.push(repoDir);
+
+	try {
+		const proc = await Bun.spawn([SCODER_PATH, "-q", name], {
+			cwd: repoDir,
+			stdout: "pipe",
+			stderr: "pipe",
+		});
+		await proc.exited;
+
+		const stdout = await new Response(proc.stdout).text();
+		const stderr = await new Response(proc.stderr).text();
+
+		// The original bug surfaced here, from pasta rather than scoder
+		expect(stderr).not.toContain("execvp");
+		expect(proc.exitCode).toBe(0);
+		expect(stdout.trim()).toBe(`${name}-ok`);
+	} finally {
+		await cleanupRepo(repoDir);
+		await Bun.spawn(["rm", "-rf", tool.shareDir]).exited;
+		await Bun.spawn(["rm", "-f", tool.symlink]).exited;
+	}
+});
+
+// ### Test: local-bin-symlink-target-mapped
+// The snapshot must rewrite absolute symlink targets into the sandbox
+// namespace. Keeping the host spelling leaves the entry dangling inside the
+// sandbox even though the resolvability check passed.
+test("local-bin-symlink-target-mapped: snapshot symlink targets are rewritten into the sandbox namespace", async () => {
+	const name = "scoder-test-maptarget";
+	const tool = await createHomeInstalledTool(name);
+
+	const repoDir = await createTempRepo();
+	tempRepos.push(repoDir);
+
+	try {
+		const output = await runScoder(repoDir, ["--dry-run", name]);
+
+		const match = output.match(/\/tmp\/scoder-local-bin\.[A-Za-z0-9]+/);
+		if (!match) {
+			throw new Error("scoder did not report a ~/.local/bin snapshot dir");
+		}
+		const snapshotDir = match[0];
+
+		// Whichever branch each entry took — kept as a symlink, or copied in —
+		// no entry may be a symlink to a host $HOME path. Those resolve on the
+		// host but dangle inside the sandbox, which is the original bug.
+		const findProc = await Bun.spawn(["find", snapshotDir, "-type", "l"], {
+			stdout: "pipe",
+			stderr: "pipe",
+		});
+		await findProc.exited;
+		const links = (await new Response(findProc.stdout).text())
+			.split("\n")
+			.filter((line) => line.length > 0);
+
+		const hostTargets: string[] = [];
+		for (const link of links) {
+			const linkProc = await Bun.spawn(["readlink", link], {
+				stdout: "pipe",
+				stderr: "pipe",
+			});
+			await linkProc.exited;
+			const target = (await new Response(linkProc.stdout).text()).trim();
+			if (target.startsWith(`${process.env.HOME}/`)) {
+				hostTargets.push(`${link} -> ${target}`);
+			}
+		}
+
+		expect(hostTargets).toEqual([]);
+
+		// The tool under test is small and unbound, so it is copied in whole
+		const copied = await fileExists(`${snapshotDir}/${name}`);
+		expect(copied).toBe(true);
+	} finally {
+		await cleanupRepo(repoDir);
+		await Bun.spawn(["rm", "-rf", tool.shareDir]).exited;
+		await Bun.spawn(["rm", "-f", tool.symlink]).exited;
+	}
+});
+
+// ### Test: unbound-home-tool-diagnosed
+// A $HOME-installed tool whose directory is not bound cannot work. scoder
+// should say so instead of leaving pasta to emit a bare execvp error.
+test("unbound-home-tool-diagnosed: tool in an unbound $HOME directory fails with a scoder diagnostic", async () => {
+	const toolDir = `${process.env.HOME}/scoder-test-unbound-bin`;
+	await Bun.spawn(["mkdir", "-p", toolDir]).exited;
+
+	const tool = `${toolDir}/scoder-test-unbound`;
+	await Bun.write(tool, `#!/bin/sh\necho "unbound-ok"\n`);
+	await Bun.spawn(["chmod", "+x", tool]).exited;
+
+	const repoDir = await createTempRepo();
+	tempRepos.push(repoDir);
+
+	try {
+		const proc = await Bun.spawn([SCODER_PATH, tool], {
+			cwd: repoDir,
+			stdout: "pipe",
+			stderr: "pipe",
+		});
+		await proc.exited;
+
+		const stderr = await new Response(proc.stderr).text();
+
+		expect(proc.exitCode).toBe(1);
+		expect(stderr).toContain("under your home directory");
+		expect(stderr).not.toContain("execvp");
+	} finally {
+		await cleanupRepo(repoDir);
+		await Bun.spawn(["rm", "-rf", toolDir]).exited;
+	}
+});
 
 // EM: ### Tests for AGENTS.md overlay masking from git
 // EM: Implements AGENTS.md overlay exclusion via git update-index --skip-worktree
 
 async function createTempRepoSimple(): Promise<string> {
-	const tmpProc = await Bun.spawn(["mktemp", "-d"], { stdout: "pipe", stderr: "pipe" });
+	const tmpProc = await Bun.spawn(["mktemp", "-d"], {
+		stdout: "pipe",
+		stderr: "pipe",
+	});
 	await tmpProc.exited;
 	const tmpDir = (await new Response(tmpProc.stdout).text()).trim();
 
 	// Create a git repo
-	await Bun.spawn(["git", "init"], { cwd: tmpDir, stdout: "pipe", stderr: "pipe" }).exited;
-	await Bun.spawn(["git", "config", "user.email", "test@test.com"], { cwd: tmpDir }).exited;
-	await Bun.spawn(["git", "config", "user.name", "Test"], { cwd: tmpDir }).exited;
+	await Bun.spawn(["git", "init"], {
+		cwd: tmpDir,
+		stdout: "pipe",
+		stderr: "pipe",
+	}).exited;
+	await Bun.spawn(["git", "config", "user.email", "test@test.com"], {
+		cwd: tmpDir,
+	}).exited;
+	await Bun.spawn(["git", "config", "user.name", "Test"], { cwd: tmpDir })
+		.exited;
 
 	return tmpDir;
 }
 
 // Helper: check if a file has skip-worktree set in the index
 // git ls-files -v shows 'S' for skip-worktree, 'H' for normal staged
-async function hasSkipWorktree(repoDir: string, path: string): Promise<boolean> {
-	const proc = await Bun.spawn(
-		["git", "ls-files", "-v", path],
-		{ cwd: repoDir, stdout: "pipe", stderr: "pipe" },
-	);
+async function hasSkipWorktree(
+	repoDir: string,
+	path: string,
+): Promise<boolean> {
+	const proc = await Bun.spawn(["git", "ls-files", "-v", path], {
+		cwd: repoDir,
+		stdout: "pipe",
+		stderr: "pipe",
+	});
 	await proc.exited;
 	const output = await new Response(proc.stdout).text();
 	// First character is 'S' (uppercase) for skip-worktree files
@@ -1016,7 +1668,16 @@ test("scoder should succeed in direct mode with AGENTS.md excluded", async () =>
 	await Bun.write(`${repoDir}/AGENTS.md`, "# Test repo\n");
 	await Bun.spawn(["git", "add", "AGENTS.md"], { cwd: repoDir }).exited;
 	await Bun.spawn(
-		["git", "-c", "user.email=test@test.com", "-c", "user.name=Test", "commit", "-m", "initial"],
+		[
+			"git",
+			"-c",
+			"user.email=test@test.com",
+			"-c",
+			"user.name=Test",
+			"commit",
+			"-m",
+			"initial",
+		],
 		{ cwd: repoDir, stdout: "pipe", stderr: "pipe" },
 	).exited;
 
@@ -1042,7 +1703,16 @@ test("scoder should succeed in worktree mode with AGENTS.md excluded from worktr
 	await Bun.write(`${repoDir}/AGENTS.md`, "# Test repo\n");
 	await Bun.spawn(["git", "add", "AGENTS.md"], { cwd: repoDir }).exited;
 	await Bun.spawn(
-		["git", "-c", "user.email=test@test.com", "-c", "user.name=Test", "commit", "-m", "initial"],
+		[
+			"git",
+			"-c",
+			"user.email=test@test.com",
+			"-c",
+			"user.name=Test",
+			"commit",
+			"-m",
+			"initial",
+		],
 		{ cwd: repoDir, stdout: "pipe", stderr: "pipe" },
 	).exited;
 

@@ -1,6 +1,11 @@
 import { realpath as fsRealpath, mkdir, readdir, readlink, stat } from "node:fs/promises";
 import type { BindMount } from "../types.ts";
 import { error, info } from "../utils/logger.ts";
+import {
+	isUnderAny,
+	resolveHomePrefixes,
+	toSandboxPath,
+} from "../utils/paths.ts";
 
 // EM: Infrastructure protection via .agentreadonly and AGENTS.md overlay
 // EM: Implements infrastructure-protection, agents-md-overlay, and agents-skills-snapshot features
@@ -36,20 +41,38 @@ const RESERVED_SANDBOX_PATHS = [
 	"/home/scoder/R",
 ];
 
-// Paths that will be bind-mounted inside the sandbox, used to resolve symlinks
-// in ~/.local/bin during snapshot time. If a symlink target falls under one of
-// these paths, it is considered "sandbox-resolvable" and the symlink is copied
-// as-is. Otherwise a forwarding shim is generated.
+// Sandbox destinations that are always bind-mounted, used to resolve symlinks
+// in ~/.local/bin at snapshot time. If a symlink target maps under one of these
+// it is sandbox-resolvable and the symlink is kept (with its target rewritten
+// into the sandbox namespace); otherwise the target binary is copied in.
+//
+// This list must mirror buildExtraBinds in src/sandbox/builder.ts exactly. A
+// prefix that is NOT actually bound makes the check claim resolvability it
+// cannot deliver, producing a dangling symlink inside the sandbox — which is
+// why the entries are the precise bound paths rather than their parents.
+// Preset-specific destinations are dynamic and passed in separately.
 const SANDBOX_MOUNT_PREFIXES = [
 	"/tmp/scoder/",        // worktree
-	"/home/scoder/.local",
-	"/home/scoder/.cargo",
-	"/home/scoder/.rustup",
-	"/home/scoder/.config/mise",
+	"/home/scoder/.local/bin",
 	"/home/scoder/.local/share/mise",
+	"/home/scoder/.config/mise",
+	"/home/scoder/.config/gh",
+	"/home/scoder/.cargo/bin",
+	"/home/scoder/.rustup",
 	"/home/scoder/R",
+	"/home/scoder/.Rprofile",
 	"/home/scoder/.m2",
+	"/home/scoder/.npmrc",
+	"/home/scoder/.pypirc",
+	"/home/scoder/.gitconfig",
 ];
+
+// Ceiling on copying an unresolvable symlink target into the snapshot. Some
+// tools ship hundreds of megabytes in a single binary (Claude Code's native
+// installer is ~275 MB), and copying that on every launch of an unrelated tool
+// is not worth it. Oversized targets keep a sandbox-mapped symlink instead,
+// which resolves only if something binds the target directory.
+const MAX_LOCAL_BIN_COPY_BYTES = 64 * 1024 * 1024;
 
 export interface ProtectionConfig {
 	protectedPaths: string[];
@@ -364,7 +387,9 @@ async function safeCopyDirRecursive(
 
 // ### setupLocalBinSnapshot
 // [IMPLEMENTS](/design/features/local-bin-resolution.md)
-export async function setupLocalBinSnapshot(): Promise<BindMount | null> {
+export async function setupLocalBinSnapshot(
+	extraSandboxPrefixes: string[] = [],
+): Promise<BindMount | null> {
 	const localBinSrc = `${process.env.HOME}/.local/bin`;
 
 	if (!(await fileOrDirExists(localBinSrc))) {
@@ -372,9 +397,19 @@ export async function setupLocalBinSnapshot(): Promise<BindMount | null> {
 	}
 
 	const snapshotDir = await createTempDir("scoder-local-bin");
+	const sandboxPrefixes = [
+		...SANDBOX_MOUNT_PREFIXES,
+		...extraSandboxPrefixes,
+	];
+	const homePrefixes = await resolveHomePrefixes();
 
 	try {
-		await resolveLocalBinEntries(localBinSrc, snapshotDir);
+		await resolveLocalBinEntries(
+			localBinSrc,
+			snapshotDir,
+			sandboxPrefixes,
+			homePrefixes,
+		);
 	} catch (err) {
 		error(`Failed to snapshot ~/.local/bin: ${err}`);
 		error(
@@ -393,102 +428,119 @@ export async function setupLocalBinSnapshot(): Promise<BindMount | null> {
 }
 
 // ### resolveLocalBinEntries
-// Walk ~/.local/bin and copy entries into snapshotDir. Regular files
-// get their exec bits preserved. Symlinks are either copied as-is
-// (if the resolved target sits under a sandbox mount prefix) or
-// replaced with a tiny forwarding shim.
+// Walk ~/.local/bin and copy entries into snapshotDir. Regular files get their
+// exec bits preserved. A symlink is kept as a symlink when its target maps to
+// something actually bound into the sandbox; otherwise the target binary is
+// copied in, unless it exceeds MAX_LOCAL_BIN_COPY_BYTES.
 async function resolveLocalBinEntries(
 	srcDir: string,
 	destDir: string,
+	sandboxPrefixes: string[],
+	homePrefixes: string[],
 ): Promise<void> {
 	const entries = await readdir(srcDir, { withFileTypes: true });
+
 	for (const entry of entries) {
 		const src = `${srcDir}/${entry.name}`;
 		const dest = `${destDir}/${entry.name}`;
 
 		try {
 			if (entry.isSymbolicLink()) {
-			const target = await readlink(src);
-			const targetReal = await realpath(target);
-
-			if (isSandboxResolvable(targetReal)) {
-				// Target already accessible inside sandbox — copy symlink as-is
-				const lastSlash = dest.lastIndexOf("/");
-				if (lastSlash !== -1) {
-					const parentDir = dest.slice(0, lastSlash);
-					await mkdir(parentDir, { recursive: true });
-				}
-				await Bun.spawn(["ln", "-sf", target, dest]).exited;
-				info(`Symlink OK: ${entry.name} → ${targetReal}`);
-			} else {
-				// Target not accessible — copy the binary so it is
-				// available read-only in the sandbox snapshot.
-				const data = await Bun.file(targetReal).arrayBuffer();
-				const lastSlash = dest.lastIndexOf("/");
-				if (lastSlash !== -1) {
-					const parentDir = dest.slice(0, lastSlash);
-					await mkdir(parentDir, { recursive: true });
-				}
-				await Bun.write(dest, data);
-				const st = await stat(targetReal);
-				if (st.mode & 0o111) {
-					const proc = await Bun.spawn(["chmod", "+x", dest]);
-					await proc.exited;
-				}
-				info(`Copied target: ${entry.name} → ${targetReal}`);
+				await copySymlinkEntry(
+					entry.name,
+					src,
+					dest,
+					sandboxPrefixes,
+					homePrefixes,
+				);
+			} else if (entry.isFile()) {
+				await copyExecutable(src, dest);
 			}
-		} else if (entry.isFile()) {
-			// Regular file — copy and preserve exec bit
-			const data = await Bun.file(src).arrayBuffer();
-			const lastSlash = dest.lastIndexOf("/");
-			if (lastSlash !== -1) {
-				const parentDir = dest.slice(0, lastSlash);
-				await mkdir(parentDir, { recursive: true });
-			}
-			await Bun.write(dest, data);
-
-			// Preserve executable permission
-			const st = await stat(src);
-			if (st.mode & 0o111) {
-				const proc = await Bun.spawn(["chmod", "+x", dest]);
-				await proc.exited;
-			}
-		}
-		// Directories inside ~/.local/bin are silently skipped
-	} catch {
+			// Directories inside ~/.local/bin are silently skipped
+		} catch {
 			// Broken symlink or unreadable file — skip silently
 		}
-}
+	}
 }
 
+// ### copySymlinkEntry
+// Reproduce one ~/.local/bin symlink inside the snapshot.
+async function copySymlinkEntry(
+	name: string,
+	src: string,
+	dest: string,
+	sandboxPrefixes: string[],
+	homePrefixes: string[],
+): Promise<void> {
+	const target = await readlink(src);
+	const targetReal = await realpath(target);
+	const sandboxTarget = toSandboxPath(targetReal, homePrefixes);
+
+	await ensureParentDir(dest);
+
+	if (isSandboxResolvable(sandboxTarget, sandboxPrefixes)) {
+		// Target is bound into the sandbox. Keep the symlink, but point it at the
+		// sandbox path — the host spelling does not exist inside the sandbox.
+		// Relative targets already resolve within the snapshot, so leave them be.
+		const linkTarget = target.startsWith("/") ? sandboxTarget : target;
+		await Bun.spawn(["ln", "-sf", linkTarget, dest]).exited;
+		info(`Symlink OK: ${name} → ${linkTarget}`);
+		return;
+	}
+
+	const st = await stat(targetReal);
+
+	if (st.size > MAX_LOCAL_BIN_COPY_BYTES) {
+		// Too big to copy on every launch. Keep a mapped symlink so the entry
+		// still works if the target directory happens to be bound.
+		await Bun.spawn(["ln", "-sf", sandboxTarget, dest]).exited;
+		info(
+			`Symlink unresolved: ${name} → ${targetReal} (${Math.round(st.size / 1024 / 1024)} MB, not copied)`,
+		);
+		return;
+	}
+
+	// Target is not reachable inside the sandbox — copy it in.
+	const data = await Bun.file(targetReal).arrayBuffer();
+	await Bun.write(dest, data);
+	if (st.mode & 0o111) {
+		await Bun.spawn(["chmod", "+x", dest]).exited;
+	}
+	info(`Copied target: ${name} → ${targetReal}`);
+}
+
+// ### copyExecutable
+// Copy a regular file into the snapshot, preserving its executable bit.
+async function copyExecutable(src: string, dest: string): Promise<void> {
+	const data = await Bun.file(src).arrayBuffer();
+	await ensureParentDir(dest);
+	await Bun.write(dest, data);
+
+	const st = await stat(src);
+	if (st.mode & 0o111) {
+		await Bun.spawn(["chmod", "+x", dest]).exited;
+	}
+}
+
+async function ensureParentDir(path: string): Promise<void> {
+	const lastSlash = path.lastIndexOf("/");
+	if (lastSlash !== -1) {
+		await mkdir(path.slice(0, lastSlash), { recursive: true });
+	}
+}
 
 // ### isSandboxResolvable
-// Check if a symlink target (host realpath) would be accessible inside
-// the sandbox. We map the host path into the sandbox namespace by
-// replacing the real home prefix with /home/scoder, then check against
-// known sandbox mount prefixes.
-function isSandboxResolvable(hostPath: string): boolean {
-	// If the path starts with /tmp/scoder/ it's a worktree mount
-	if (hostPath.startsWith("/tmp/scoder/")) {
-		return true;
-	}
-
-	// Map host home → sandbox home
-	const realHome = process.env.HOME || "/home/user";
-	const sandboxPath = hostPath.startsWith(`${realHome}/`)
-		? `/home/scoder${hostPath.slice(realHome.length)}`
-		: hostPath;
-
-	// Check against sandbox mount prefixes
+// Check whether an already-sandbox-mapped path will be populated inside the
+// sandbox, by testing it against the set of destinations that get bound.
+function isSandboxResolvable(
+	sandboxPath: string,
+	sandboxPrefixes: string[],
+): boolean {
 	if (sandboxPath.startsWith("/tmp/scoder/")) {
-		return true; // worktree
+		return true; // worktree mount, mirrored at its real path
 	}
-	for (const prefix of SANDBOX_MOUNT_PREFIXES) {
-		if (sandboxPath === prefix || sandboxPath.startsWith(`${prefix}/`)) {
-			return true;
-		}
-	}
-	return false;
+
+	return isUnderAny(sandboxPath, sandboxPrefixes);
 }
 
 

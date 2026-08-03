@@ -23,7 +23,8 @@ show_help() {
     echo "  setup   Installs prerequisites, checks runtime versions, and resolves dependencies"
     echo "  run     Builds and executes the project (logs to $RUN_LOG)"
     echo "  test    Builds and runs all automated tests with coverage (outputs to terminal and $TEST_LOG)"
-    echo "  doc     Runs documentation tools (logs warnings/errors to $DOC_LOG)"
+    echo "  doc     Checks design docs: broken links, test-case and feature counts"
+    echo "          (fails on any mismatch; full report in $DOC_LOG)"
     echo "  check   Runs linters and code quality checks (logs report to $CHECK_LOG)"
     echo "  design  Runs design consistency checks (logs report to $EM_DIR/design-output)"
     echo "  bump    Updates the version number of the project"
@@ -90,23 +91,93 @@ cmd_test() {
     return $exit_code
 }
 
+# Emit "file -> link" for every relative link target that does not exist.
+# Covers .md, .ts and .sh targets; http(s) links are skipped, as are the
+# anchor fragments after '#'. Repo-absolute links (/src/...) resolve from the
+# repo root, matching the IMPLEMENTED_BY convention.
+find_broken_links() {
+    find design architecture -name "*.md" -type f 2>/dev/null | sort | while IFS= read -r file; do
+        dir=$(dirname "$file")
+        grep -oE '\]\([^) ]+\.(md|ts|sh)(#[^)]*)?\)' "$file" 2>/dev/null |
+            sed -E 's/^\]\(//; s/\)$//; s/#.*$//' |
+            while IFS= read -r link; do
+                case "$link" in
+                    http://*|https://*) continue ;;
+                    /*) resolved=".$link" ;;
+                    *) resolved="$dir/$link" ;;
+                esac
+                [ -e "$resolved" ] || echo "$file -> $link"
+            done
+    done
+}
+
+# Test cases documented in the validation suite vs tests actually defined.
+# Counts top-level test declarations, including test.failing and test.skipIf.
+count_documented_tests() {
+    grep -cE '^### [0-9]+\.' design/test-scripts/validation-suite.md 2>/dev/null || echo 0
+}
+
+count_implemented_tests() {
+    grep -cE '^test' tests/scoder.test.ts 2>/dev/null || echo 0
+}
+
 cmd_doc() {
     echo "Starting 'doc' command..."
     ensure_em_dir
 
-    echo "Checking TypeScript documentation..." > "$DOC_LOG"
+    local broken broken_count documented implemented features scoped status=0
+
+    broken=$(find_broken_links)
+    broken_count=$(printf '%s' "$broken" | grep -c . || true)
+    documented=$(count_documented_tests)
+    implemented=$(count_implemented_tests)
+    features=$(find design/features -name "*.md" -type f 2>/dev/null | wc -l)
+    scoped=$(grep -cE '^\[HAS_FEATURE\]' design/SCOPE.md 2>/dev/null || echo 0)
+
     {
         echo "Documentation Report - $(date)"
         echo "-----------------------------------"
         echo ""
+        echo "Broken links: $broken_count"
+        if [ "$broken_count" -gt 0 ]; then
+            printf '%s\n' "$broken" | sed 's/^/  BROKEN /'
+        fi
+        echo ""
+        echo "Test cases documented: $documented"
+        echo "Tests implemented:     $implemented"
+        if [ "$documented" -ne "$implemented" ]; then
+            echo "  MISMATCH: validation-suite.md and tests/scoder.test.ts disagree"
+        fi
+        echo ""
+        echo "Feature docs:            $features"
+        echo "HAS_FEATURE in SCOPE.md: $scoped"
+        if [ "$features" -ne "$scoped" ]; then
+            echo "  MISMATCH: a feature doc is missing from SCOPE.md, or vice versa"
+        fi
+        echo ""
+        echo "Frontmatter status values:"
+        grep -rh "^status:" design architecture 2>/dev/null | sort | uniq -c | sed 's/^/  /'
+        echo ""
         echo "Design documents:"
-        find design -name "*.md" -type f | sort
+        find design -name "*.md" -type f | sort | sed 's/^/  /'
         echo ""
         echo "Architecture documents:"
-        find architecture -name "*.md" -type f | sort
-    } >> "$DOC_LOG"
+        find architecture -name "*.md" -type f | sort | sed 's/^/  /'
+    } > "$DOC_LOG"
 
-    echo "Documentation generation complete. Output logged to $DOC_LOG"
+    # Summary to the terminal, detail to the log
+    echo "  broken links: $broken_count"
+    if [ "$broken_count" -gt 0 ]; then
+        printf '%s\n' "$broken" | sed 's/^/    BROKEN /'
+        status=1
+    fi
+    echo "  test cases: $documented documented, $implemented implemented"
+    [ "$documented" -ne "$implemented" ] && echo "    MISMATCH" && status=1
+    echo "  features: $features docs, $scoped in SCOPE.md"
+    [ "$features" -ne "$scoped" ] && echo "    MISMATCH" && status=1
+
+    echo "Documentation check complete. Full report in $DOC_LOG"
+    return $status
 }
 
 cmd_check() {

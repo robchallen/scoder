@@ -4,6 +4,7 @@
 // EM: Implements dry-run-mode, sandbox-isolation, and git-worktree-isolation features
 // EM: Coordinates CLI parsing, tool preset selection, sandbox construction, and session management
 
+import { rm } from "node:fs/promises";
 import { configureAppArmor } from "./cli/apparmor.ts";
 import { parseArgs, printUsage, printVersion } from "./cli/parse-args.ts";
 import {
@@ -25,6 +26,12 @@ import {
 	setupGitWorktree,
 } from "./git/worktree.ts";
 import { buildBwrapCommand, collectBindDests } from "./sandbox/builder.ts";
+import {
+	getSandboxGid,
+	getSandboxUid,
+	type SandboxIdentity,
+	setupSandboxIdentity,
+} from "./sandbox/identity.ts";
 import { describeLaunch, launchSandbox } from "./sandbox/launch.ts";
 import { TOOL_PRESETS } from "./tools/presets.ts";
 import type { BindMount, GitWorktreeInfo } from "./types.ts";
@@ -190,6 +197,10 @@ async function main(): Promise<void> {
 	let worktreeInfo: GitWorktreeInfo | null = null;
 	let protectionConfig: ProtectionConfig | undefined;
 	let sandboxProjDir = "";
+	let identity: SandboxIdentity | undefined;
+
+	const uid = getSandboxUid();
+	const gid = getSandboxGid();
 
 	if (options.worktree) {
 		worktreeInfo = await setupGitWorktree(true);
@@ -232,6 +243,13 @@ async function main(): Promise<void> {
 			protectionConfig.safeBinds.push(resolvConfBind);
 		}
 
+		// EM: passwd/group describing only the sandbox user. Pushed here so the
+		// EM: binds are applied after the read-only /etc bind.
+		identity = await setupSandboxIdentity(uid, gid);
+		if (protectionConfig) {
+			protectionConfig.safeBinds.push(...identity.binds);
+		}
+
 		if (protectionConfig?.agentsMdOverlay && protectionConfig) {
 			const agentsMdBind = getAgentsMdOverlayBind(
 				protectionConfig.agentsMdOverlay,
@@ -262,6 +280,13 @@ async function main(): Promise<void> {
 		const resolvConfBind = await setupResolvConf();
 		if (resolvConfBind && protectionConfig) {
 			protectionConfig.safeBinds.push(resolvConfBind);
+		}
+
+		// EM: passwd/group describing only the sandbox user. Pushed here so the
+		// EM: binds are applied after the read-only /etc bind.
+		identity = await setupSandboxIdentity(uid, gid);
+		if (protectionConfig) {
+			protectionConfig.safeBinds.push(...identity.binds);
 		}
 
 		if (protectionConfig?.agentsMdOverlay && protectionConfig) {
@@ -370,6 +395,11 @@ async function main(): Promise<void> {
 		// EM: process.exit() must stay OUTSIDE this try — it terminates the
 		// EM: process synchronously and pending finally blocks do not run.
 		await removeGitExclude(repoRoot, "AGENTS.md");
+
+		// EM: Remove the passwd/group overlay files
+		if (identity) {
+			await rm(identity.dir, { recursive: true, force: true });
+		}
 	}
 
 	process.exit(exitCode);

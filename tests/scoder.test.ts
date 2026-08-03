@@ -291,6 +291,59 @@ test("sandbox-uid-preserved: uid inside the sandbox is the host uid, not root", 
 	}
 });
 
+// ### Test: sandbox-identity-consistent
+// $HOME alone is not enough: anything resolving the user through getpwuid or
+// getgrgid reads /etc/passwd and /etc/group, and OpenSSH locates ~/.ssh that
+// way. Bound from the host those name the developer's own account, so the gid
+// used to resolve to the host username.
+test("sandbox-identity-consistent: passwd and group describe only the sandbox user", async () => {
+	const repoDir = await createTempRepo();
+	tempRepos.push(repoDir);
+
+	try {
+		const output = await runScoder(repoDir, [
+			"-q",
+			"/bin/bash",
+			"-c",
+			'id -un; id -gn; python3 -c "import os,pwd;print(pwd.getpwuid(os.getuid()).pw_dir)"',
+		]);
+		const [user, group, home] = output.trim().split("\n");
+
+		expect(user).toBe("scoder");
+		expect(group).toBe("scoder");
+		// The path OpenSSH would use to find ~/.ssh
+		expect(home).toBe(SCODER_HOME);
+	} finally {
+		await cleanupRepo(repoDir);
+	}
+});
+
+// ### Test: sandbox-identity-files-cleaned
+// The overlay files live in a per-session temp directory. The implementation
+// they replaced used a fixed /tmp/bwrap_passwd_<uid> that was never removed and
+// collided between concurrent sessions.
+test("sandbox-identity-files-cleaned: no identity temp directory survives a session", async () => {
+	const repoDir = await createTempRepo();
+	tempRepos.push(repoDir);
+
+	const countIdentityDirs = async (): Promise<number> => {
+		const proc = Bun.spawn(
+			["bash", "-c", "ls -d /tmp/scoder-identity-* 2>/dev/null | wc -l"],
+			{ stdout: "pipe", stderr: "pipe" },
+		);
+		await proc.exited;
+		return Number.parseInt((await new Response(proc.stdout).text()).trim(), 10);
+	};
+
+	try {
+		const before = await countIdentityDirs();
+		await runScoder(repoDir, ["-q", "/bin/bash", "-c", "true"]);
+		expect(await countIdentityDirs()).toBe(before);
+	} finally {
+		await cleanupRepo(repoDir);
+	}
+});
+
 // ### Test: pasta-sidecar-reaped
 // pasta now runs outside the sandbox, so bwrap's --die-with-parent no longer
 // reaps it and scoder must do so explicitly. Without that, every session leaks

@@ -110,6 +110,22 @@ asking NSS lands correctly instead of hitting ENOENT. Cheap insurance.
 
 ### 4. Decide how ssh gets its material
 
+> **Decided: out of scope.** ssh failing inside the sandbox is the intended
+> behaviour — the sandbox should not carry credentials for reaching other
+> systems. Users opt in explicitly with a `$HOME/.ssh` line in `.agentreadonly`,
+> which already binds host directories read-only at the mirrored path.
+>
+> Of the options below, only agent forwarding would be reconsidered, and it needs
+> more than an env var to work. `SSH_AUTH_SOCK` points at a socket under
+> `/run/user/<uid>/`, and the sandbox replaces neither `/run` (bound read-only)
+> nor the socket's reachability: the path would have to be bound in, the env var
+> added to the `--clearenv` allowlist, and the socket is a unix socket whose
+> permissions are checked against the *host* uid — which now matches, since the
+> sandbox runs as the host uid rather than root. It would grant the agent use of
+> every key the agent holds, for as long as the session lasts, without ever
+> exposing the key files. That is a smaller exposure than binding `~/.ssh`, but
+> it is still delegated authority to reach other machines, so it stays unplanned.
+
 **This is the item that determines whether the original ssh complaint is
 actually fixed.** Correcting resolution only makes ssh look in the right place;
 `~/.ssh` is not bound at all, so there is nothing there. `buildExtraBinds`

@@ -1,9 +1,7 @@
-import fs from "node:fs";
-import os from "node:os";
-import path from "node:path";
 import type { ProtectionConfig } from "../git/protection.ts";
 import { getGitCommonDir, isInGitRepo } from "../git/worktree.ts";
 import type { BindMount, GitWorktreeInfo, ScoderOptions } from "../types.ts";
+import { getSandboxGid, getSandboxUid } from "./identity.ts";
 
 // EM: Implements sandbox-isolation, network-isolation, path-mirroring, and host-tool-binding features
 // EM: Constructs bwrap command with system mounts, binds, env vars, and pasta networking
@@ -43,18 +41,12 @@ export async function buildBwrapCommand(
 	} = config;
 
 	const realHome = process.env.HOME || "/home/user";
-	const uid = process.env.SUDO_UID || process.getuid?.().toString() || "1000";
-	const gid = process.env.SUDO_GID || process.getgid?.().toString() || "1000";
+	const uid = getSandboxUid();
+	const gid = getSandboxGid();
 
-	const newUsername = "scoder";
-
-	// 2. Generate a custom /etc/passwd content
-	// Format: username:password:UID:GID:GECOS:home_dir:shell
-	const customPasswdContent = `${newUsername}:x:${uid}:${gid}:Sandbox User:/home/${newUsername}:/bin/bash\n`;
-
-	// 3. Write it to a temporary location on the host
-	const tmpPasswdFile = path.join(os.tmpdir(), `bwrap_passwd_${uid}`);
-	fs.writeFileSync(tmpPasswdFile, customPasswdContent);
+	// EM: /etc/passwd and /etc/group are overlaid by setupSandboxIdentity, whose
+	// EM: binds arrive via protectionConfig.safeBinds so they land after the
+	// EM: read-only /etc bind below. See src/sandbox/identity.ts.
 
 	// EM: Build system mounts - read-only bind host directories
 	const cmd: string[] = [
@@ -71,9 +63,6 @@ export async function buildBwrapCommand(
 		"--ro-bind",
 		"/etc",
 		"/etc",
-		"--ro-bind",
-		tmpPasswdFile,
-		"/etc/passwd",
 		"--unshare-user",
 		"--uid",
 		uid.toString(),

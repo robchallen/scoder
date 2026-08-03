@@ -24,7 +24,7 @@ tags: [test-script, validation]
 
 `tests/scoder.test.ts` is a self-contained integration test suite that creates
 temporary git repositories under `/tmp`, runs `scoder` against them using
-`/bin/bash` as the sandboxed command, and asserts expected behaviour. 44
+`/bin/bash` as the sandboxed command, and asserts expected behaviour. 46
 tests cover all sandbox mechanics.
 
 Cleanup runs in an `afterAll` hook. It removes the temp repos, their worktrees
@@ -338,6 +338,22 @@ attach mode introduces: pasta runs outside the sandbox, so bwrap's
 `--die-with-parent` no longer reaps it and scoder must do so itself. Counts
 sidecars before and after rather than asserting zero, because the developer may
 legitimately have other scoder sessions running.
+
+### 45. sandbox-identity-consistent
+[TESTED_BY](/tests/scoder.test.ts#testSandboxIdentityConsistent)
+
+`id -un`, `id -gn` and `getpwuid()` all report the sandbox user: `scoder`,
+`scoder`, `/home/scoder`. Setting `$HOME` is not sufficient, because anything
+resolving the user through NSS reads `/etc/passwd` and `/etc/group` instead —
+OpenSSH locates `~/.ssh` that way. Bound from the host those files name the
+developer's own account, and the gid used to resolve to the host username.
+
+### 46. sandbox-identity-files-cleaned
+[TESTED_BY](/tests/scoder.test.ts#testSandboxIdentityFilesCleaned)
+
+No `scoder-identity-*` temp directory survives a session. The implementation
+these replaced wrote a fixed `/tmp/bwrap_passwd_<uid>` that was never removed and
+collided between concurrent sessions.
 
 ## Current Network Coverage
 

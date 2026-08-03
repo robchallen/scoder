@@ -113,28 +113,46 @@ already been observed outliving their command by ~an hour.
 - Signal-terminated sessions still leak; that is the existing
   `no-explicit-signal-trap` debt, now with one more reason to fix it.
 
-### 5. Complete the identity
+### 5. Complete the identity — done
 
-Attach mode fixes the uid but not NSS resolution. The passwd entry
-`buildBwrapCommand` already writes is correct for the host uid, so only the
-gaps remain:
+Moved to `src/sandbox/identity.ts`, which writes single-entry passwd and group
+files and returns them as binds:
 
-- Write `/etc/group` for the host gid, which currently has no handling.
-- Build both from a copy of the host file rather than emitting a single line —
-  the current one-line passwd discards `nobody` and everything else.
-- Replace the fixed `bwrap_passwd_${uid}` temp path: predictable, in shared
-  `/tmp`, never cleaned up, and it collides between concurrent sessions.
+```
+uid=1001(scoder) gid=1001(scoder)
+scoder:x:1001:1001:Sandbox User:/home/scoder:/bin/bash
+scoder:x:1001:
+```
 
-Carried over from the rejected
-[accept-root-uid-in-sandbox](./accept-root-uid-in-sandbox.md), which retains the
-fuller analysis.
+`/etc/group` had no handling at all, so the gid resolved through the host's
+group file and the sandbox reported the *developer's* group name — the host
+username leaking in through an unexpected door.
 
-### 6. `~/.ssh` is still not bound
+**Single-entry, not a copy of the host file.** An earlier draft of this plan
+proposed copying `/etc/passwd` and rewriting one line, to preserve `nobody` and
+the `systemd-*` accounts. Rejected: the sandbox should describe itself and
+nothing else. Other ids are backfilled by `nss-systemd` in practice — `nogroup`
+still resolves for 65534 — and the fewer host account names inside the sandbox
+the better.
 
-Out of scope here but the reason the defect was noticed: correct resolution only
-makes ssh look in the right place. Bind nothing, and there is nothing to find.
-Forwarding `SSH_AUTH_SOCK` is preferred over exposing private keys; the options
-are analysed in the rejected plan. Track separately.
+The fixed `bwrap_passwd_${uid}` path is replaced by a per-session `mkdtemp`
+directory removed in the same `finally` that restores the `AGENTS.md` flag.
+`getSandboxUid`/`getSandboxGid` are the single source of truth, since the bwrap
+`--uid` flag and the passwd entry must agree or `getpwuid()` finds no match.
+
+### 6. `~/.ssh` — deliberately out of scope
+
+Not an omission. ssh failing inside the sandbox is the intended behaviour: the
+sandbox should not hold credentials for reaching other systems, and binding
+`~/.ssh` would put private keys inside an environment an agent controls.
+
+A user who wants it opts in explicitly with a `$HOME/.ssh` line in
+`.agentreadonly`, which already binds host directories read-only at the mirrored
+path. That is the whole mechanism — no scoder change required.
+
+`SSH_AUTH_SOCK` forwarding is a possible future alternative that avoids exposing
+key material, but it is not planned and would need more than an env var: see the
+note in [accept-root-uid-in-sandbox](./accept-root-uid-in-sandbox.md).
 
 ## Test Plan
 

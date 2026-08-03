@@ -25,7 +25,8 @@ show_help() {
     echo "  test    Builds and runs all automated tests with coverage (outputs to terminal and $TEST_LOG)"
     echo "  doc     Checks design docs: broken links, test-case and feature counts"
     echo "          (fails on any mismatch; full report in $DOC_LOG)"
-    echo "  check   Runs linters and code quality checks (logs report to $CHECK_LOG)"
+    echo "  check   Runs typecheck and lint (fails on either; duplication is advisory)"
+    echo "          (full report in $CHECK_LOG)"
     echo "  design  Runs design consistency checks (logs report to $EM_DIR/design-output)"
     echo "  bump    Updates the version number of the project"
     echo "  help    Show this help message"
@@ -73,22 +74,28 @@ cmd_test() {
     ensure_em_dir
 
     echo "Running tests..." | tee "$TEST_LOG"
-    
+
     # Run tests and capture output
     # Note: Integration tests run scoder via Bun.spawn(), which executes in a separate
     # process. Coverage only tracks code in the same process, so source files aren't
     # covered when using process isolation. For true coverage, tests would import
     # and call scoder functions directly.
-    if bun test 2>&1 | tee -a "$TEST_LOG"; then
-        exit_code=0
-    else
-        exit_code=1
-    fi
+    #
+    # PIPESTATUS[0], not the pipeline's own status: a pipeline reports the exit
+    # code of its LAST command, so `bun test | tee` always looked successful and
+    # this command could never report a test failure.
+    local exit_code
+    bun test 2>&1 | tee -a "$TEST_LOG"
+    exit_code=${PIPESTATUS[0]}
 
     echo ""
-    echo "Test suite complete. Output saved to $TEST_LOG"
-    
-    return $exit_code
+    if [ "$exit_code" -ne 0 ]; then
+        echo "Test suite FAILED (exit $exit_code). Output saved to $TEST_LOG"
+    else
+        echo "Test suite passed. Output saved to $TEST_LOG"
+    fi
+
+    return "$exit_code"
 }
 
 # Emit "file -> link" for every relative link target that does not exist.
@@ -180,32 +187,93 @@ cmd_doc() {
     return $status
 }
 
+# run_check <label> <gate|info> <command...>
+#
+# Runs a check, appends its full output to the log, and prints a one-line
+# verdict. A 'gate' check returning non-zero fails the run; an 'info' check
+# only reports. A missing tool is reported as SKIPPED rather than silently
+# passing — the previous implementation conflated "tool absent" with "no
+# issues found", which meant biome finding problems was reported as success.
+run_check() {
+    local label="$1" mode="$2"
+    shift 2
+    local out status=0
+
+    if ! command -v "$1" > /dev/null 2>&1; then
+        echo "  $label: SKIPPED ($1 not found)"
+        {
+            echo ""
+            echo "=== $label ==="
+            echo "SKIPPED: $1 not found"
+        } >> "$CHECK_LOG"
+        return 0
+    fi
+
+    out=$("$@" 2>&1) || status=$?
+
+    {
+        echo ""
+        echo "=== $label (exit $status) ==="
+        printf '%s\n' "$out"
+    } >> "$CHECK_LOG"
+
+    if [ "$status" -eq 0 ]; then
+        echo "  $label: ok"
+        return 0
+    fi
+
+    # Surface the lines that actually say what went wrong
+    local summary
+    summary=$(printf '%s\n' "$out" | grep -E '^Found |error TS|^error' | head -5 || true)
+
+    if [ "$mode" = "gate" ]; then
+        echo "  $label: FAILED (exit $status)"
+    else
+        echo "  $label: issues found (informational)"
+    fi
+
+    if [ -n "$summary" ]; then
+        printf '%s\n' "$summary" | sed 's/^/    /'
+    fi
+
+    [ "$mode" = "gate" ] && return 1
+    return 0
+}
+
 cmd_check() {
     echo "Starting 'check' command..."
     ensure_em_dir
 
-    echo "Running code quality checks..." > "$CHECK_LOG"
+    local status=0
+
     {
         echo "Code Quality Report - $(date)"
         echo "-----------------------------------"
+    } > "$CHECK_LOG"
+
+    run_check "typecheck  " gate bun run typecheck || status=1
+    run_check "lint/format" gate bunx biome check src tests || status=1
+
+    # Duplication is advisory: jscpd exits 0 regardless unless a --threshold is
+    # configured, so it cannot gate as things stand.
+    run_check "duplication" info bunx jscpd src tests || true
+
+    {
         echo ""
-        echo "TypeScript type check:"
-        bun run typecheck 2>&1 || true
-        echo ""
-        echo "Source files:"
+        echo "=== Source files ==="
         find src -name "*.ts" -type f | sort
         echo ""
-        echo "Test files:"
+        echo "=== Test files ==="
         find tests -name "*.ts" -type f | sort
-        echo ""
-        echo "Code duplication analysis:"
-        bunx jscpd src tests 2>&1 || echo "No duplication found or jscpd not available"
-        echo ""
-        echo "Code formatting and linting (Biome):"
-        bunx biome check src tests 2>&1 || echo "Biome not available or no issues found"
     } >> "$CHECK_LOG"
 
-    echo "Code quality check complete. Report written to $CHECK_LOG"
+    if [ "$status" -ne 0 ]; then
+        echo "Code quality checks FAILED. Full report in $CHECK_LOG"
+    else
+        echo "Code quality checks passed. Full report in $CHECK_LOG"
+    fi
+
+    return $status
 }
 
 cmd_design() {

@@ -89,13 +89,18 @@ from the rejected plan, which retains the option analysis.
   is the shape the prototype already uses, so the prototype is close to the
   implementation.
 - **pasta teardown becomes scoder's problem.** pasta now runs on the host, so
-  bwrap's `--die-with-parent` no longer covers it. Use `pasta -P/--pid FILE` and
-  terminate it explicitly on session exit. An orphaned pasta per session would
-  be a bad regression.
+  bwrap's `--die-with-parent` no longer covers it. `pasta -P/--pid FILE` writes
+  a usable pid; verified that killing it mid-session leaves the sandbox running,
+  because the netns belongs to bwrap. An orphaned pasta per session would be a
+  bad regression, so this must be wired into session exit.
 - **Failure path.** If pasta never attaches, the sandbox blocks on `--block-fd`
-  indefinitely. Needs a timeout and a clear error.
-- `--llm-port` forwarding is not exercised by the prototype and should be
-  confirmed.
+  indefinitely — observed directly. Needs a bounded wait and a clear error.
+- **`--llm-port` carries over.** Verified: `--tcp-ns <port>` is reachable from
+  inside while other host loopback ports stay blocked.
+
+All of these are settled and planned in
+[pasta-attach-mode-implementation](../../design/implementation/plans/pasta-attach-mode-implementation.md),
+which is ready to build.
 
 ### On the port-reconfiguration possibility
 

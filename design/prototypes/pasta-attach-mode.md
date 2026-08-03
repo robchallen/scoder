@@ -15,7 +15,10 @@ tags: [prototype, sandbox, network, pasta, uid]
 > forwarded ports without restarting a session. The cheaper alternative of
 > accepting uid 0 is rejected but retained.
 >
-> Not yet implemented — this remains a prototype.
+> The implementation plan is
+> [pasta-attach-mode-implementation](../implementation/plans/pasta-attach-mode-implementation.md),
+> which is ready to build. This script rehearses the production shape and every
+> design question it needed to answer is now closed.
 
 ## Purpose
 
@@ -57,66 +60,103 @@ bwrap fds remove the window entirely:
 Ordering becomes: namespaces exist → pasta attaches → tool starts. Both flags
 are present in bubblewrap 0.9.0.
 
+### Marshalling the file descriptors
+
+`Bun.spawn` cannot pass fd 3 or above — its `stdio` is a fixed 3-tuple, and a
+fourth entry fails with `Bad file descriptor`. bwrap is therefore launched
+through a shell shim:
+
+```bash
+bash -c 'exec 3>"$1"; exec 9<>"$2"; shift 2; exec "$@"' _ <info> <fifo> bwrap …
+```
+
+`exec` with only redirections applies them to the shim rather than replacing it;
+`exec "$@"` then runs bwrap with argv passed as **real arguments**, so nothing is
+interpolated into a shell string and paths containing spaces survive. stdio
+0/1/2 stay inherited, which the interactive tool needs.
+
+The shim owns fd 9, so releasing the sandbox is a plain write to the fifo — what
+the TypeScript side would do.
+
 ## Result
 
-Verified working:
+Every check passes:
 
 ```
-host uid=1001 gid=1001
-bwrap child-pid: 404007
-  uid inside : 1001
-  uid_map    :       1001       1001          1
-  interfaces : lo enp0s31f6
-  TCP to 1.1.1.1:443 : ok
-  DNS        : resolves
-RESULT: uid preserved and networking works
+host uid=1001 gid=1001, llm port=19731
+bwrap child-pid: 227299
+pasta pid: 227311
+  uid           : 1001
+  whoami        : scoder
+  getpwuid home : /home/scoder
+  spaced argv   : spaced-path-ok
+  uid_map       :       1001       1001          1
+  outbound TCP  : ok
+  DNS           : resolves
+  llm port      : reachable
+  other loopback: blocked
+killed pasta mid-session
+  survived pasta teardown: yes
+RESULT: all checks passed
 ```
 
-The `uid_map` is the whole point: `1001 1001 1` rather than the `0 1001 1` that
-the production composition produces. Connectivity is checked by raw TCP to an IP
-*and* by DNS, so a DNS-only failure cannot be mistaken for a dead network.
+Reading the significant lines:
 
-## Incidental Finding
+- **`uid_map` of `1001 1001 1`** rather than the `0 1001 1` the production
+  composition produces. This is the whole point.
+- **`getpwuid home`** is `/home/scoder`, which attach mode does *not* achieve on
+  its own — see the identity note below.
+- **`outbound TCP` and `DNS` separately**, so a DNS-only failure cannot be
+  mistaken for a dead network. That mistake was made on the first attempt.
+- **`llm port` reachable while `other loopback` is blocked**, so `--llm-port`
+  carries over to attach mode without weakening host isolation.
+- **`survived pasta teardown`** — pasta was killed mid-session and the sandbox
+  continued, because the netns belongs to bwrap. In spawn mode this would have
+  destroyed the session. This is the property that would make changing forwarded
+  ports without a restart possible later.
 
-The prototype must bind `/run` before overlaying `/etc/resolv.conf`, because
+## Incidental Findings
+
+**`/run` must be bound before overlaying `/etc/resolv.conf`**, because
 `/etc/resolv.conf` is commonly a symlink into `/run/systemd/resolve/` and bwrap
 resolves the bind destination through it. Production scoder binds `/run` for
 unrelated reasons and so never encounters this. Noted because anyone trimming
 the mount set could reintroduce it.
 
-## What This Does Not Prove
+**The spaced-path bind must come after `--tmpfs /tmp`**, or the tmpfs masks it.
+The first version of this prototype reported a bogus argv failure for exactly
+that reason — the AGENTS.md pitfall about overlay ordering, in a new place.
 
-The prototype validates the mechanism, not a production implementation. Open
-before adopting:
+## Identity Is Not Fixed by Attach Mode Alone
 
-1. **pasta lifetime and teardown.** pasta now runs on the host, outside the
-   sandbox, so bwrap's `--die-with-parent` no longer covers it. The prototype's
-   pasta did exit along with the netns, but that is a single observation, not a
-   guarantee — an orphaned pasta per session would be a bad regression. pasta
-   offers `-P, --pid FILE`; production should write a PID file and terminate it
-   explicitly on session exit.
-2. **Port forwarding.** `--tcp-ns` / `--udp-ns` are documented independently of
-   invocation mode, so the `--llm-port` feature should carry over, but the
-   prototype does not exercise it. Worth a direct test before relying on it.
-3. ~~**Orchestration from Bun.**~~ **Resolved.** `Bun.spawn`'s `stdio` is a fixed
-   3-tuple and cannot pass fd 3 or above — a fourth entry fails with
-   `Bad file descriptor`. This does not block the approach: a `bash -c` shim can
-   open the descriptors itself while stdio 0/1/2 stay inherited for the
-   interactive tool, which is verified working and is exactly what this
-   prototype already does. So the shell script here is close to the shape the
-   implementation needs, rather than a throwaway harness.
-4. **Failure paths.** What happens if pasta fails to attach: the sandbox is
-   currently left blocked on `--block-fd` forever. Production needs a timeout
-   and a clear error.
+Worth stating plainly, because it is easy to assume otherwise: correcting the
+uid does not correct `getpwuid()`. With the *host* `/etc/passwd`, uid 1001
+resolves to the host home (`/home/vp22681`), which does not exist inside the
+sandbox — so `~/.ssh`, the reason this was investigated, would still be wrong.
 
-5. **Identity, not just uid.** The prototype binds the host `/etc/passwd`, so
-   `getpwuid(1001)` resolves to the *host* home (`/home/vp22681`), which does not
-   exist inside the sandbox. Attach mode fixes the uid; it does not by itself fix
-   `~/.ssh`. The custom `/etc/passwd` that `buildBwrapCommand` already writes
-   supplies the other half and is already correct for uid 1001 — verified giving
-   `whoami: scoder` and `getpwuid home: /home/scoder`. `/etc/group` still needs
-   equivalent treatment, and `~/.ssh` itself is not bound at all. See
-   [ADR 0001](../../architecture/decision-records/0001-sandbox-uid-and-networking-composition.md).
+The custom `/etc/passwd` that `buildBwrapCommand` already writes supplies the
+other half, and is already correct for the host uid. `/etc/group` still needs the
+same treatment, and `~/.ssh` is not bound at all.
+
+## What This Still Does Not Cover
+
+The prototype answers every design question the implementation depends on. What
+remains is production concern rather than open design, and is planned in
+[pasta-attach-mode-implementation](../implementation/plans/pasta-attach-mode-implementation.md):
+
+- **Teardown must be wired into scoder.** The prototype kills pasta explicitly.
+  Production needs the same in the `finally` that already restores the
+  `AGENTS.md` flag, since bwrap's `--die-with-parent` no longer reaps a pasta
+  living on the host. Signal-terminated sessions still leak, which is the
+  existing `no-explicit-signal-trap` debt.
+- **The failure path needs a bound.** The prototype limits the child-pid wait to
+  5s; an earlier version without that bound hung indefinitely on `--block-fd`
+  with no diagnostic, which is exactly what production must avoid.
+- **`~/.ssh` is not bound at all**, so ssh still has nothing to read even with
+  resolution correct. Tracked separately; forwarding `SSH_AUTH_SOCK` is preferred
+  over exposing private keys.
+- **`--dry-run` will need to print both stages** or it stops describing what
+  actually runs.
 
 ## Running It
 
@@ -124,8 +164,10 @@ before adopting:
 ./design/prototypes/pasta-attach-mode.sh
 ```
 
-Exits 0 only if the uid is preserved *and* outbound TCP and DNS both work. Self
--contained; creates nothing outside `mktemp` files.
+Exits 0 only if every check passes. Self-contained: it starts its own throwaway
+listener on port 19731 for the `--llm-port` check, and cleans up its temp files,
+its pasta and that listener on exit. Takes about 10s, most of it the deliberate
+pause that proves the session survives pasta being killed.
 
 [HAS_FEATURE](../features/network-isolation.md)
 [HAS_FEATURE](../features/sandbox-isolation.md)

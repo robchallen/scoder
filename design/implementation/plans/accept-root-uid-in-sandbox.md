@@ -1,15 +1,34 @@
 ---
 target-version: 2.3.0
-status: under-consideration
+status: rejected
 tags: [plan, sandbox, uid, nss, ssh]
 ---
 
 # Accept root uid in the Sandbox
 
-> **Under consideration — not scheduled.** Recorded so the analysis is not lost.
-> This is an alternative to the attach-mode rework prototyped in
-> [pasta-attach-mode](../../prototypes/pasta-attach-mode.md), and the two are
-> mutually exclusive. Nothing here is implemented.
+> **Rejected** in favour of
+> [pasta-attach-mode](../../prototypes/pasta-attach-mode.md). See
+> [ADR 0001](../../../architecture/decision-records/0001-sandbox-uid-and-networking-composition.md)
+> for the reasoning: the sandbox should resemble an ordinary home directory
+> rather than a root shell, and attach mode leaves room to change forwarded
+> ports without restarting a session. Neither consideration is about diff size,
+> which is where this option wins.
+>
+> **Retained because parts of it still apply.** Work items 1 (as uid 1001, not
+> uid 0), 4 and 6 are carried into the chosen approach:
+>
+> - **Item 1, adapted** — the passwd entry must exist and must not be a
+>   one-line file that discards `nobody` and friends. Under attach mode it stays
+>   uid **1001**, which is what the current code already writes, so only the
+>   whole-file and `/etc/group` parts remain outstanding.
+> - **Item 4, unchanged** — `~/.ssh` is not bound at all, so ssh has nowhere to
+>   read from regardless of which option is taken. The option analysis below is
+>   the live version.
+> - **Item 6, unchanged** — the predictable, uncleaned passwd temp file is a bug
+>   either way.
+>
+> Items 2, 3 and 5 fall away: identity is settled as the unprivileged `scoder`
+> user, `/root` needs no symlink, and preset tolerance of root stops mattering.
 
 ## Goal
 

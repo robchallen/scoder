@@ -114,11 +114,17 @@ Each is a structural change to how pasta and bwrap compose, not a flag tweak.
    the core change verified. Leaves tools that branch on `id -u` misbehaving,
    which is the open question there.
 
-Options 1 and 3 are the live candidates and are mutually exclusive. Option 1 is
-the most faithful to the current design and is backed by a working prototype;
-option 3 is far cheaper and accepts uid 0 rather than avoiding it. The deciding
-question is whether the tool presets tolerate running as root — if any does not,
-only option 1 helps.
+**Option 1 is chosen** — see
+[ADR 0001](/architecture/decision-records/0001-sandbox-uid-and-networking-composition.md).
+The deciding arguments were not diff size, which favours option 3, but that the
+sandbox should present an ordinary home directory rather than a root shell, and
+that attach mode leaves room to change forwarded ports without restarting a
+session. Option 3 is rejected and retained, since its `/etc/group`, ssh-material
+and temp-file items apply to option 1 as well.
+
+Note that option 1 fixes the uid but not the *identity*: `getpwuid` still needs a
+passwd entry pointing at `/home/scoder`, or `~/.ssh` remains wrong. The entry
+scoder already writes is correct for uid 1001.
 
 ## Testing
 

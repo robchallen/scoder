@@ -8,11 +8,14 @@ tags: [prototype, sandbox, network, pasta, uid]
 
 [IMPLEMENTED_BY](/design/prototypes/pasta-attach-mode.sh)
 
-> **A competing approach is under consideration.**
-> [accept-root-uid-in-sandbox](../implementation/plans/accept-root-uid-in-sandbox.md)
-> keeps uid 0 and corrects the NSS identity instead, which is far less invasive
-> than the rework prototyped here. The two are mutually exclusive; neither is
-> adopted yet.
+> **This approach was chosen.** See
+> [ADR 0001](../../architecture/decision-records/0001-sandbox-uid-and-networking-composition.md)
+> for the decision and its rationale: the sandbox should resemble an ordinary
+> home directory rather than a root shell, and attach mode leaves room to change
+> forwarded ports without restarting a session. The cheaper alternative of
+> accepting uid 0 is rejected but retained.
+>
+> Not yet implemented — this remains a prototype.
 
 ## Purpose
 
@@ -95,14 +98,25 @@ before adopting:
 2. **Port forwarding.** `--tcp-ns` / `--udp-ns` are documented independently of
    invocation mode, so the `--llm-port` feature should carry over, but the
    prototype does not exercise it. Worth a direct test before relying on it.
-3. **Orchestration from Bun.** This needs bwrap to inherit two extra file
-   descriptors beyond stdio. Whether `Bun.spawn` can pass arbitrary fds needs
-   checking; if it cannot, the sequencing has to be arranged another way. This
-   is the main implementation risk and should be settled first — it is cheap to
-   test and would invalidate the approach.
+3. ~~**Orchestration from Bun.**~~ **Resolved.** `Bun.spawn`'s `stdio` is a fixed
+   3-tuple and cannot pass fd 3 or above — a fourth entry fails with
+   `Bad file descriptor`. This does not block the approach: a `bash -c` shim can
+   open the descriptors itself while stdio 0/1/2 stay inherited for the
+   interactive tool, which is verified working and is exactly what this
+   prototype already does. So the shell script here is close to the shape the
+   implementation needs, rather than a throwaway harness.
 4. **Failure paths.** What happens if pasta fails to attach: the sandbox is
    currently left blocked on `--block-fd` forever. Production needs a timeout
    and a clear error.
+
+5. **Identity, not just uid.** The prototype binds the host `/etc/passwd`, so
+   `getpwuid(1001)` resolves to the *host* home (`/home/vp22681`), which does not
+   exist inside the sandbox. Attach mode fixes the uid; it does not by itself fix
+   `~/.ssh`. The custom `/etc/passwd` that `buildBwrapCommand` already writes
+   supplies the other half and is already correct for uid 1001 — verified giving
+   `whoami: scoder` and `getpwuid home: /home/scoder`. `/etc/group` still needs
+   equivalent treatment, and `~/.ssh` itself is not bound at all. See
+   [ADR 0001](../../architecture/decision-records/0001-sandbox-uid-and-networking-composition.md).
 
 ## Running It
 

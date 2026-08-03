@@ -24,7 +24,7 @@ tags: [test-script, validation]
 
 `tests/scoder.test.ts` is a self-contained integration test suite that creates
 temporary git repositories under `/tmp`, runs `scoder` against them using
-`/bin/bash` as the sandboxed command, and asserts expected behaviour. 43
+`/bin/bash` as the sandboxed command, and asserts expected behaviour. 44
 tests cover all sandbox mechanics.
 
 Cleanup runs in an `afterAll` hook. It removes the temp repos, their worktrees
@@ -317,12 +317,11 @@ writable. The two are separate binds and must not be conflated.
 ### 42. sandbox-uid-preserved
 [TESTED_BY](/tests/scoder.test.ts#testSandboxUidPreserved)
 
-**Known failure**, marked `test.failing`. Asserts the uid inside the sandbox is
-the host uid rather than 0. It currently is 0, because pasta's spawn mode
-creates a nested user namespace that overrides bwrap's `--uid`. Because it is
-`test.failing`, it passes while the bug exists and starts failing the moment the
-composition is fixed — at which point the marker should be removed. See
-[sandbox-uid-becomes-root](../implementation/issues/sandbox-uid-becomes-root.md).
+The uid inside the sandbox is the host uid, not 0. Guards the regression where
+pasta's spawn mode created a nested user namespace overriding bwrap's `--uid`,
+so the tool ran as root. Was marked `test.failing` while the defect stood; the
+marker came off when bwrap took ownership of both namespaces. See
+[ADR 0001](../../architecture/decision-records/0001-sandbox-uid-and-networking-composition.md).
 
 ### 43. sandbox-uid-maps-to-host-user
 [TESTED_BY](/tests/scoder.test.ts#testSandboxUidMapsToHostUser)
@@ -330,6 +329,15 @@ composition is fixed — at which point the marker should be removed. See
 The property that makes case 42 survivable: whatever uid the sandbox reports,
 files it creates are owned by the real host user, because pasta maps inside-0
 back to the caller. This must keep holding through any fix.
+
+### 44. pasta-sidecar-reaped
+[TESTED_BY](/tests/scoder.test.ts#testPastaSidecarReaped)
+
+A completed session leaves no pasta process behind. This is the failure mode
+attach mode introduces: pasta runs outside the sandbox, so bwrap's
+`--die-with-parent` no longer reaps it and scoder must do so itself. Counts
+sidecars before and after rather than asserting zero, because the developer may
+legitimately have other scoder sessions running.
 
 ## Current Network Coverage
 

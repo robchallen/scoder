@@ -25,6 +25,7 @@ import {
 	setupGitWorktree,
 } from "./git/worktree.ts";
 import { buildBwrapCommand, collectBindDests } from "./sandbox/builder.ts";
+import { describeLaunch, launchSandbox } from "./sandbox/launch.ts";
 import { TOOL_PRESETS } from "./tools/presets.ts";
 import type { BindMount, GitWorktreeInfo } from "./types.ts";
 import {
@@ -322,11 +323,18 @@ async function main(): Promise<void> {
 	}
 
 	if (options.dryRun) {
-		// EM: Dry-run mode outputs bwrap command without executing
+		// EM: Dry-run mode outputs both stages without executing. Printing only
+		// EM: the bwrap command would no longer describe what actually runs.
 		// EM: Implements HAS_FEATURE: dry-run-mode
-		info("Dry run — would execute:");
+		const stages = describeLaunch(bwrapCmd, options);
+
+		info("Dry run — would execute, in order:");
 		console.log("");
-		printBwrapCommand(bwrapCmd);
+		info("1. sandbox (blocks until pasta has attached):");
+		printBwrapCommand(stages.sandbox);
+		console.log("");
+		info("2. network sidecar, attached to the sandbox's netns:");
+		printBwrapCommand(stages.pasta);
 		console.log("");
 		process.exit(0);
 	}
@@ -340,15 +348,11 @@ async function main(): Promise<void> {
 	let exitCode = 0;
 
 	try {
-		info(`Launching ${toolDescription} in sandbox...`);
-
-		const proc = Bun.spawn(bwrapCmd, {
-			stdout: "inherit",
-			stderr: "inherit",
-			stdin: "inherit",
-		});
-
-		exitCode = await proc.exited;
+		// EM: Two stages: bwrap creates the namespaces and waits, pasta attaches
+		// EM: to the netns from outside, then the tool is released. See
+		// EM: src/sandbox/launch.ts and ADR 0001.
+		const result = await launchSandbox(bwrapCmd, options, toolDescription);
+		exitCode = result.exitCode;
 
 		if (options.worktree && worktreeInfo && protectionConfig) {
 			// EM: Commit changes and print session summary for worktree mode

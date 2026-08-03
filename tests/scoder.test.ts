@@ -275,22 +275,50 @@ test("home-isolation: $HOME inside sandbox is /home/scoder", async () => {
 });
 
 // ### Test: sandbox-uid-preserved
-// KNOWN FAILURE — see design/implementation/issues/sandbox-uid-becomes-root.md
-//
-// scoder passes `--uid <host uid>` to bwrap, and bwrap applies it correctly.
-// But pasta runs *inside* the bwrap sandbox and its spawn mode unconditionally
-// creates a second, nested user namespace mapping inside-uid 0 to the caller,
-// so the tool ends up as root. `--runas` does not affect the spawned command.
-//
-// Marked `test.failing`: it passes while the bug exists and starts failing the
-// moment the composition is fixed — at which point drop the `.failing`.
-test.failing("sandbox-uid-preserved: uid inside the sandbox is the host uid, not root", async () => {
+// The regression this guards: pasta's spawn mode created a nested user
+// namespace that overrode bwrap's --uid, so the tool ran as root. bwrap now
+// owns both namespaces and pasta attaches from outside — see ADR 0001. Was
+// marked test.failing until the composition was fixed.
+test("sandbox-uid-preserved: uid inside the sandbox is the host uid, not root", async () => {
 	const repoDir = await createTempRepo();
 	tempRepos.push(repoDir);
 
 	try {
 		const output = await runScoder(repoDir, ["-q", "/bin/bash", "-c", "id -u"]);
 		expect(output.trim()).toBe(String(process.getuid?.()));
+	} finally {
+		await cleanupRepo(repoDir);
+	}
+});
+
+// ### Test: pasta-sidecar-reaped
+// pasta now runs outside the sandbox, so bwrap's --die-with-parent no longer
+// reaps it and scoder must do so explicitly. Without that, every session leaks
+// a process. Counts sidecars rather than asserting zero, because the developer
+// may legitimately have other scoder sessions running.
+test("pasta-sidecar-reaped: a completed session leaves no pasta process behind", async () => {
+	const repoDir = await createTempRepo();
+	tempRepos.push(repoDir);
+
+	const countPasta = async (): Promise<number> => {
+		const proc = Bun.spawn(["pgrep", "-c", "pasta"], {
+			stdout: "pipe",
+			stderr: "pipe",
+		});
+		await proc.exited;
+		// pgrep exits 1 with no output when nothing matches
+		const out = (await new Response(proc.stdout).text()).trim();
+		return out === "" ? 0 : Number.parseInt(out, 10);
+	};
+
+	try {
+		const before = await countPasta();
+
+		await runScoder(repoDir, ["-q", "/bin/bash", "-c", "true"]);
+		// Teardown signals and waits, but reaping is not instantaneous
+		await Bun.sleep(500);
+
+		expect(await countPasta()).toBe(before);
 	} finally {
 		await cleanupRepo(repoDir);
 	}

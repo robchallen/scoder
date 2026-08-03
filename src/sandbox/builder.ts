@@ -26,14 +26,15 @@ export interface SandboxConfig {
 // [IMPLEMENTS](/design/features/network-isolation.md)
 // [IMPLEMENTS](/design/features/path-mirroring.md)
 // [IMPLEMENTS](/design/features/host-tool-binding.md)
-// EM: Constructs complete bwrap command with all mount options and pasta networking
+// EM: Constructs the bwrap command: mounts, binds, env, namespaces and the tool.
+// EM: Networking is no longer part of this command — pasta attaches to the
+// EM: namespace afterwards, from outside. See src/sandbox/pasta.ts.
 export async function buildBwrapCommand(
 	config: SandboxConfig,
 ): Promise<string[]> {
 	const {
 		worktreeInfo,
 		sandboxProjDir,
-		options,
 		toolBinds,
 		toolDirs,
 		toolBin,
@@ -78,6 +79,18 @@ export async function buildBwrapCommand(
 		uid.toString(),
 		"--gid",
 		gid.toString(),
+		// EM: bwrap owns the network namespace too, so its uid mapping is the
+		// EM: only one. pasta attaches to this netns from outside instead of
+		// EM: creating its own — see ADR 0001.
+		"--unshare-net",
+		// EM: --info-fd publishes {"child-pid": N} so pasta knows what to attach
+		// EM: to; --block-fd holds the exec until pasta has attached, so the tool
+		// EM: never observes a window without networking. Both fds are opened by
+		// EM: the shell shim in wrapWithFdShim.
+		"--info-fd",
+		"3",
+		"--block-fd",
+		"9",
 	];
 
 	if (await dirExists("/lib64")) {
@@ -264,29 +277,34 @@ export async function buildBwrapCommand(
 		}
 	}
 
-	cmd.push(
-		"pasta",
-		"--quiet",
-		"--foreground",
-		"--config-net",
-		"--dhcp-dns",
-		"--no-map-gw",
-		"--tcp-ports",
-		"none",
-	);
-
-	// EM: Add localhost forwarding for LLM ports, block host loopback by default
-	if (options.llmPorts.length > 0) {
-		for (const port of options.llmPorts) {
-			cmd.push("--tcp-ns", port.toString());
-		}
-	} else {
-		cmd.push("--tcp-ns", "none");
-	}
-
-	cmd.push("--udp-ns", "none", "--", toolBin, ...toolArgs);
+	// EM: `--` marks end-of-options, so a tool path beginning with `-` cannot be
+	// EM: mistaken for a bwrap flag. Previously this separated pasta's options
+	// EM: from the command; bwrap accepts it in the same role.
+	cmd.push("--", toolBin, ...toolArgs);
 
 	return cmd;
+}
+
+// ### wrapWithFdShim
+// [IMPLEMENTS](/design/features/network-isolation.md)
+// Wrap a bwrap command so that --info-fd 3 and --block-fd 9 are open when it
+// runs.
+//
+// Bun.spawn cannot supply these: its stdio is a fixed 3-tuple, and passing a
+// fourth entry fails with "Bad file descriptor". A shell can open them itself.
+//
+// `exec` with only redirections applies them to the shim rather than replacing
+// it; `exec "$@"` then becomes bwrap. The command is passed as real argv, never
+// interpolated into the shell string, so arguments containing spaces survive.
+//
+// stdio 0/1/2 are left alone, since the sandboxed tool is usually interactive.
+export function wrapWithFdShim(
+	cmd: string[],
+	infoPath: string,
+	blockPath: string,
+): string[] {
+	const shim = 'exec 3>"$1"; exec 9<>"$2"; shift 2; exec "$@"';
+	return ["bash", "-c", shim, "_", infoPath, blockPath, ...cmd];
 }
 
 // ### collectBindDests

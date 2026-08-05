@@ -1,6 +1,6 @@
 {
   "name": "scoder",
-  "version": "2.2.0",
+  "version": "2.3.0",
   "description": "Sandboxed runner for coding tools using bubblewrap and pasta",
   "type": "module",
   "main": "src/index.ts",

@@ -3,7 +3,7 @@ import type { ScoderOptions } from "../types.ts";
 // EM: CLI argument parsing for scoder command-line interface
 // EM: Implements dry-run-mode and tool preset selection via --llm-port
 
-const USAGE = `scoder 2.2.0
+const USAGE = `scoder 2.3.0
 Sandboxed runner for coding tools using bubblewrap and pasta.
 
 Usage:
@@ -39,7 +39,7 @@ Setup (run once, requires sudo):
                           uses apt to install packages bubblewrap, passt
 `;
 
-const VERSION = "2.2.0";
+const VERSION = "2.3.0";
 
 interface ParseResult {
 	options: ScoderOptions;

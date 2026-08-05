@@ -20,12 +20,13 @@ tags: [test-script, validation]
 [HAS_FEATURE](../features/apparmor-compatibility.md)
 [HAS_FEATURE](../features/direct-mode.md)
 [HAS_FEATURE](../features/ssh-tunnel-access.md)
+[HAS_FEATURE](../features/persistent-scratch.md)
 
 ## Summary
 
 `tests/scoder.test.ts` is a self-contained integration test suite that creates
 temporary git repositories under `/tmp`, runs `scoder` against them using
-`/bin/bash` as the sandboxed command, and asserts expected behaviour. 55
+`/bin/bash` as the sandboxed command, and asserts expected behaviour. 63
 tests cover all sandbox mechanics.
 
 Cleanup runs in an `afterAll` hook. It removes the temp repos, their worktrees
@@ -428,6 +429,62 @@ test's repo path survives. Regression test for
 bwrap forks internally even without `--unshare-pid`, and killing only the
 outer, tracked pid left the inner one — the one actually holding the
 namespaces — running forever, reparented to pid 1.
+
+### 56. scratch-symlink-resolves-rw
+[TESTED_BY](/tests/scoder.test.ts#testScratchSymlinkResolvesRw)
+
+With a `scratch` symlink pointing at a directory under a throwaway location
+in the real `$HOME`, reading pre-existing content and writing new content
+through it inside the sandbox both work, and the write is visible on the
+host afterward. The real end-to-end proof that the mirrored bind works.
+
+### 57. scratch-absent-no-behaviour-change
+[TESTED_BY](/tests/scoder.test.ts#testScratchAbsentNoBehaviourChange)
+
+Without a `scratch` symlink, dry-run output never mentions it. Guards that
+the feature adds no new code path for the common case.
+
+### 58. scratch-outside-home-fails
+[TESTED_BY](/tests/scoder.test.ts#testScratchOutsideHomeFails)
+
+A `scratch` symlink resolving outside `$HOME` (e.g. `/tmp`) exits non-zero
+with a clear diagnostic naming the constraint.
+
+### 59. scratch-dangling-warns-and-continues
+[TESTED_BY](/tests/scoder.test.ts#testScratchDanglingWarnsAndContinues)
+
+A `scratch` symlink whose target doesn't exist yet warns, and the session
+still completes successfully — the dangling state is treated as valid and
+informative, not a failure.
+
+### 60. scratch-overlapping-furniture-is-readonly
+[TESTED_BY](/tests/scoder.test.ts#testScratchOverlappingFurnitureIsReadonly)
+
+A `scratch` symlink pointing at `~/.local/bin` — one of `buildExtraBinds`'
+fixed host-tool paths — results in `--ro-bind`, not `--bind`, in the dry-run
+output. Skips if `~/.local/bin` doesn't exist on the machine running the
+suite.
+
+### 61. scratch-overlapping-agentreadonly-home-is-readonly
+[TESTED_BY](/tests/scoder.test.ts#testScratchOverlappingAgentreadonlyHomeIsReadonly)
+
+Same guard, for a target that overlaps an `.agentreadonly` `$HOME/...` entry
+rather than a fixed furniture path.
+
+### 62. scratch-real-passthrough-unaffected
+[TESTED_BY](/tests/scoder.test.ts#testScratchRealPassthroughUnaffected)
+
+With `scratch` present, editing an ordinary tracked project file still
+writes straight through to the host. Guards against ever regressing towards
+the overlayfs approach rejected during design, whose copy-up write
+semantics would have broken this.
+
+### 63. scratch-tracked-symlink-present-in-fresh-worktree
+[TESTED_BY](/tests/scoder.test.ts#testScratchTrackedSymlinkPresentInFreshWorktree)
+
+A committed `scratch` symlink is present in a newly created worktree, with
+no scoder-side code involved in making that true — a sanity check on git's
+own symlink-as-blob behaviour, not a test of new scoder logic.
 
 ## Current Network Coverage
 

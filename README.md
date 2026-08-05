@@ -78,6 +78,10 @@ on a separate git branch via a worktree.
   single pre-authenticated ssh connection to that one destination outside the
   sandbox and multiplexes only that connection in. See
   [ssh access](#ssh-access---allow-ssh) below.
+- **No persistent scratch by default** — a symlink named `scratch` at the
+  project root opts in to a read-write area outside the project tree that
+  survives session restarts. See
+  [persistent scratch](#persistent-scratch-a-scratch-symlink) below.
 
 ## Usage
 
@@ -171,6 +175,48 @@ testing against a local server.
 You must have connected to the target at least once before, outside scoder:
 the master connection uses `BatchMode`, so it will not prompt to accept an
 unfamiliar host key.
+
+## Persistent scratch (a `scratch` symlink)
+
+A symlink named exactly `scratch` at the project root opts a session into a
+persistent, read-write area outside the project tree — for cloning and
+patching a third-party dependency, pulling down a dataset, writing analysis
+output, anything that shouldn't live in the project's own git history but
+needs to survive session restarts. No flag, no config: the symlink's
+presence is the entire mechanism.
+
+```bash
+mkdir -p ~/scratch/myproject
+ln -s ~/scratch/myproject scratch   # inside the project root
+git add scratch && git commit -m "add scratch link"   # recommended, see below
+```
+
+Inside the sandbox, `scratch` resolves exactly the way it does outside it —
+the symlink itself is never touched. Only its target is made available, and
+only that:
+
+- **Must resolve inside your home directory.** A target outside `$HOME`
+  fails the session outright, with a clear error.
+- **A target that doesn't exist yet just warns and continues** — the session
+  still runs. That's a deliberate, useful state for something like a
+  data-analysis project: a `scratch` symlink committed to the repo, dangling
+  on a fresh clone, tells the next person exactly what local setup step they
+  still need to do.
+- **Read-only if it overlaps something scoder already protects** — an
+  `.agentreadonly` `$HOME/...` entry, or one of the host-tool paths already
+  bound elsewhere (`~/.local/bin`, `~/.cargo`, `~/.rustup`, `~/.m2`, and
+  similar). `scratch` never upgrades access to something deliberately
+  read-only; point it at a directory dedicated to scratch use for read-write
+  access.
+
+**Tracked or gitignored, either works** — scoder only ever inspects the
+symlink on disk, never the git index. Tracked is recommended: git stores a
+symlink as a small blob holding the target path, never dereferencing it, so
+committing it costs nothing and touches no secrets — and a `-w`/`--worktree`
+session's fresh checkout then carries the symlink automatically. Gitignored
+works too, but only in direct mode: a new worktree checkout contains only
+tracked files, so an untracked `scratch` symlink from your main checkout
+won't appear there on its own.
 
 ## After a session
 

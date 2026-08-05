@@ -2270,3 +2270,233 @@ test("bwrap-not-orphaned-on-pasta-attach-failure: a failed pasta attach leaves n
 		await cleanupRepo(repoDir);
 	}
 });
+
+// EM: ### Tests for the `scratch` symlink
+// EM: See design/implementation/plans/persistent-rw-scratch.md
+// EM: Targets live under a throwaway directory in the real $HOME (the
+// EM: feature requires targets to resolve inside $HOME), cleaned up per test.
+
+function scratchTargetPath(): string {
+	return `${process.env.HOME}/.scoder-test-scratch-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
+}
+
+// ### Test: scratch-symlink-resolves-rw
+test("scratch-symlink-resolves-rw: reads and writes through a scratch symlink reach the real target", async () => {
+	const repoDir = await createTempRepo();
+	tempRepos.push(repoDir);
+	const target = scratchTargetPath();
+
+	try {
+		await Bun.spawn(["mkdir", "-p", target]).exited;
+		await Bun.write(`${target}/existing.txt`, "pre-existing\n");
+		await Bun.spawn(["ln", "-s", target, `${repoDir}/scratch`]).exited;
+
+		const output = await runScoder(repoDir, [
+			"-q",
+			"/bin/bash",
+			"-c",
+			"cat scratch/existing.txt && echo written > scratch/new.txt",
+		]);
+
+		expect(output.trim()).toBe("pre-existing");
+		expect(await Bun.file(`${target}/new.txt`).text()).toBe("written\n");
+	} finally {
+		await Bun.spawn(["rm", "-rf", target]).exited;
+		await cleanupRepo(repoDir);
+	}
+});
+
+// ### Test: scratch-absent-no-behaviour-change
+test("scratch-absent-no-behaviour-change: no scratch symlink means no scratch-related output", async () => {
+	const repoDir = await createTempRepo();
+	tempRepos.push(repoDir);
+
+	try {
+		const output = await runScoder(repoDir, ["--dry-run", "/bin/bash"]);
+		expect(output).not.toContain("scratch ->");
+	} finally {
+		await cleanupRepo(repoDir);
+	}
+});
+
+// ### Test: scratch-outside-home-fails
+test("scratch-outside-home-fails: a target outside $HOME exits non-zero with a clear error", async () => {
+	const repoDir = await createTempRepo();
+	tempRepos.push(repoDir);
+
+	try {
+		await Bun.spawn(["ln", "-s", "/tmp", `${repoDir}/scratch`]).exited;
+
+		const proc = Bun.spawn([SCODER_PATH, "--dry-run", "/bin/bash"], {
+			cwd: repoDir,
+			stdout: "pipe",
+			stderr: "pipe",
+		});
+		await proc.exited;
+
+		expect(proc.exitCode).not.toBe(0);
+		const stderr = await new Response(proc.stderr).text();
+		expect(stderr).toContain("scratch must resolve inside your home directory");
+	} finally {
+		await cleanupRepo(repoDir);
+	}
+});
+
+// ### Test: scratch-dangling-warns-and-continues
+test("scratch-dangling-warns-and-continues: a not-yet-existing target warns but the session still runs", async () => {
+	const repoDir = await createTempRepo();
+	tempRepos.push(repoDir);
+	const target = scratchTargetPath(); // deliberately never created
+
+	try {
+		await Bun.spawn(["ln", "-s", target, `${repoDir}/scratch`]).exited;
+
+		const proc = Bun.spawn([SCODER_PATH, "--dry-run", "/bin/bash"], {
+			cwd: repoDir,
+			stdout: "pipe",
+			stderr: "pipe",
+		});
+		await proc.exited;
+
+		expect(proc.exitCode).toBe(0);
+		const stderr = await new Response(proc.stderr).text();
+		expect(stderr).toContain("does not exist yet");
+	} finally {
+		await cleanupRepo(repoDir);
+	}
+});
+
+// ### Test: scratch-overlapping-furniture-is-readonly
+const localBinExists = await dirExists(`${process.env.HOME}/.local/bin`);
+test.skipIf(!localBinExists)(
+	"scratch-overlapping-furniture-is-readonly: a target under an existing host-tool bind is read-only",
+	async () => {
+		const repoDir = await createTempRepo();
+		tempRepos.push(repoDir);
+
+		try {
+			await Bun.spawn([
+				"ln",
+				"-s",
+				`${process.env.HOME}/.local/bin`,
+				`${repoDir}/scratch`,
+			]).exited;
+
+			const output = await runScoder(repoDir, ["--dry-run", "/bin/bash"]);
+			// info()'s "scratch -> ... (read-only)" message goes to stderr, not
+			// the stdout runScoder captures — the bwrap args themselves are the
+			// authoritative check, same as claude-preset-home-config-writable.
+			expect(output).toContain(
+				`--ro-bind ${process.env.HOME}/.local/bin ${process.env.HOME}/.local/bin`,
+			);
+			expect(output).not.toContain(
+				`--bind ${process.env.HOME}/.local/bin ${process.env.HOME}/.local/bin`,
+			);
+		} finally {
+			await cleanupRepo(repoDir);
+		}
+	},
+);
+
+// ### Test: scratch-overlapping-agentreadonly-home-is-readonly
+test("scratch-overlapping-agentreadonly-home-is-readonly: a target already protected via .agentreadonly is read-only", async () => {
+	const repoDir = await createTempRepo();
+	tempRepos.push(repoDir);
+	const target = scratchTargetPath();
+
+	try {
+		await Bun.spawn(["mkdir", "-p", target]).exited;
+		const relative = target.slice(`${process.env.HOME}/`.length);
+		await Bun.write(`${repoDir}/.agentreadonly`, `$HOME/${relative}\n`);
+		await Bun.spawn(["ln", "-s", target, `${repoDir}/scratch`]).exited;
+
+		const output = await runScoder(repoDir, ["--dry-run", "/bin/bash"]);
+		expect(output).toContain(`--ro-bind ${target} ${target}`);
+		expect(output).not.toContain(`--bind ${target} ${target}`);
+	} finally {
+		await Bun.spawn(["rm", "-rf", target]).exited;
+		await cleanupRepo(repoDir);
+	}
+});
+
+// ### Test: scratch-real-passthrough-unaffected
+test("scratch-real-passthrough-unaffected: an ordinary tracked file still writes straight through with scratch present", async () => {
+	const repoDir = await createTempRepo();
+	tempRepos.push(repoDir);
+	const target = scratchTargetPath();
+
+	try {
+		await Bun.spawn(["mkdir", "-p", target]).exited;
+		await Bun.spawn(["ln", "-s", target, `${repoDir}/scratch`]).exited;
+
+		await runScoder(repoDir, [
+			"-q",
+			"/bin/bash",
+			"-c",
+			"echo edited >> README.md",
+		]);
+
+		const content = await Bun.file(`${repoDir}/README.md`).text();
+		expect(content).toContain("edited");
+	} finally {
+		await Bun.spawn(["rm", "-rf", target]).exited;
+		await cleanupRepo(repoDir);
+	}
+});
+
+// ### Test: scratch-tracked-symlink-present-in-fresh-worktree
+test("scratch-tracked-symlink-present-in-fresh-worktree: a committed scratch symlink survives worktree creation", async () => {
+	const repoDir = await createTempRepo();
+	tempRepos.push(repoDir);
+	const target = scratchTargetPath();
+
+	try {
+		await Bun.spawn(["mkdir", "-p", target]).exited;
+		await Bun.spawn(["ln", "-s", target, `${repoDir}/scratch`]).exited;
+		await Bun.spawn(["git", "add", "scratch"], { cwd: repoDir }).exited;
+		await Bun.spawn(
+			[
+				"git",
+				"-c",
+				"user.email=t@t.com",
+				"-c",
+				"user.name=t",
+				"commit",
+				"-m",
+				"add scratch",
+			],
+			{ cwd: repoDir, stdout: "pipe", stderr: "pipe" },
+		).exited;
+
+		await runScoder(repoDir, ["-w", "-q", "/bin/bash", "-c", "true"]);
+
+		const worktreeListProc = await Bun.spawn(
+			["git", "worktree", "list", "--porcelain"],
+			{ cwd: repoDir, stdout: "pipe", stderr: "pipe" },
+		);
+		await worktreeListProc.exited;
+		const listing = await new Response(worktreeListProc.stdout).text();
+		const worktreePath = listing
+			.split("\n")
+			.find((line) => line.startsWith("worktree ") && line.includes("scoder"))
+			?.slice("worktree ".length)
+			.trim();
+
+		expect(worktreePath).toBeDefined();
+		if (worktreePath) {
+			const linkStat = await Bun.spawn(
+				["readlink", `${worktreePath}/scratch`],
+				{
+					stdout: "pipe",
+					stderr: "pipe",
+				},
+			);
+			await linkStat.exited;
+			const linkTarget = (await new Response(linkStat.stdout).text()).trim();
+			expect(linkTarget).toBe(target);
+		}
+	} finally {
+		await Bun.spawn(["rm", "-rf", target]).exited;
+		await cleanupRepo(repoDir);
+	}
+});

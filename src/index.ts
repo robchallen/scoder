@@ -16,6 +16,7 @@ import {
 	setupLocalBinSnapshot,
 	setupProtection,
 	setupResolvConf,
+	setupScratchLink,
 } from "./git/protection.ts";
 import {
 	commitAllChanges,
@@ -336,6 +337,16 @@ async function main(): Promise<void> {
 			protectionConfig.dirs?.push(...sshAccess.dirs);
 		}
 		sshTunnel = sshAccess.tunnel;
+	}
+
+	// EM: Same reasoning as the ssh block above — independent of worktree vs.
+	// EM: direct mode, so set up once here.
+	if (protectionConfig) {
+		const projectRoot =
+			options.worktree && worktreeInfo
+				? worktreeInfo.worktreeDir
+				: process.cwd();
+		await setupScratchLink(projectRoot, protectionConfig);
 	}
 
 	const config = {

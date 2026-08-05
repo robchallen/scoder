@@ -47,6 +47,8 @@ localhost services by default.
 
 [HAS_FEATURE](./features/ssh-tunnel-access.md) - Opt-in `--allow-ssh user@host` opens a single pre-authenticated ssh connection outside the sandbox and multiplexes only that one connection in, with no key material or agent socket exposed.
 
+[HAS_FEATURE](./features/persistent-scratch.md) - A `scratch` symlink at the project root mirrors its target at that target's own real absolute path — a persistent, read-write area outside the project tree, with no flag and no config.
+
 From [ROADMAP.md](./legacy/ROADMAP.md), not yet in development:
 
 - **Additional AI tool presets** — as new coding assistants emerge, add presets following the existing convention.

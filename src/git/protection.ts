@@ -1,12 +1,14 @@
 import {
 	realpath as fsRealpath,
+	lstat,
 	mkdir,
 	readdir,
 	readlink,
 	stat,
 } from "node:fs/promises";
+import { dirname, resolve as resolvePath } from "node:path";
 import type { BindMount } from "../types.ts";
-import { error, info } from "../utils/logger.ts";
+import { error, info, warning } from "../utils/logger.ts";
 import {
 	isUnderAny,
 	resolveHomePrefixes,
@@ -218,6 +220,154 @@ function pathsOverlap(left: string, right: string): boolean {
 	const r = right.endsWith("/") ? right.slice(0, -1) : right;
 
 	return l === r || l.startsWith(`${r}/`) || r.startsWith(`${l}/`);
+}
+
+const SCRATCH_LINK_NAME = "scratch";
+
+// Real host paths mirroring buildExtraBinds in src/sandbox/builder.ts —
+// what setupScratchLink treats as "already read-only furniture". Must be
+// kept in sync with that function, same caveat SANDBOX_MOUNT_PREFIXES above
+// already carries for a different check.
+function furniturePaths(realHome: string): string[] {
+	return [
+		`${realHome}/.local/bin`,
+		`${realHome}/.gitconfig`,
+		`${realHome}/R`,
+		`${realHome}/.Rprofile`,
+		`${realHome}/.m2`,
+		`${realHome}/.local/share/mise`,
+		`${realHome}/.config/mise`,
+		`${realHome}/.rustup`,
+		`${realHome}/.cargo/bin`,
+		`${realHome}/.npmrc`,
+		`${realHome}/.pypirc`,
+		`${realHome}/.config/gh`,
+	];
+}
+
+// ### setupScratchLink
+// [IMPLEMENTS](/design/features/persistent-scratch.md)
+// A `scratch` symlink at the project root is the entire opt-in mechanism —
+// no flag, no config. The symlink is never touched: its resolved target is
+// mirrored at that target's own real absolute path (the same path-mirroring
+// principle the project bind itself already relies on), so the symlink,
+// completely unmodified, resolves inside the sandbox exactly the way it
+// already does outside it.
+export async function setupScratchLink(
+	projectRoot: string,
+	protectionConfig: ProtectionConfig,
+): Promise<void> {
+	const linkPath = `${projectRoot}/${SCRATCH_LINK_NAME}`;
+
+	let linkStat: import("node:fs").Stats;
+	try {
+		linkStat = await lstat(linkPath);
+	} catch {
+		return; // No scratch symlink — nothing to do.
+	}
+
+	if (!linkStat.isSymbolicLink()) {
+		return; // An unrelated file/dir named "scratch" — leave it alone.
+	}
+
+	const realHome = process.env.HOME || "/home/user";
+	const target = await resolveScratchTarget(linkPath);
+
+	if (target !== realHome && !target.startsWith(`${realHome}/`)) {
+		error(`scratch must resolve inside your home directory, got: ${target}`);
+		process.exit(1);
+	}
+
+	let targetStat: import("node:fs").Stats;
+	try {
+		targetStat = await stat(target);
+	} catch {
+		// Expected, valid state: the target hasn't been set up on this
+		// machine yet (a fresh clone, a new colleague, CI). The dangling
+		// symlink is left exactly as-is, inside and outside the sandbox
+		// alike — that visible gap is the signal, not a bug to hide.
+		warning(`scratch points at ${target}, which does not exist yet — skipping`);
+		return;
+	}
+
+	if (!targetStat.isDirectory()) {
+		error(`scratch must resolve to a directory, got a file: ${target}`);
+		process.exit(1);
+	}
+
+	const readOnly = overlapsExistingReadOnlyBind(
+		target,
+		realHome,
+		protectionConfig,
+	);
+
+	protectionConfig.dirs = protectionConfig.dirs || [];
+	for (const dir of ancestorDirs(target)) {
+		if (!protectionConfig.dirs.includes(dir)) {
+			protectionConfig.dirs.push(dir);
+		}
+	}
+
+	protectionConfig.safeBinds.push({
+		type: readOnly ? "ro-bind" : "bind",
+		source: target,
+		dest: target,
+	});
+
+	info(`scratch -> ${target} (${readOnly ? "read-only" : "read-write"})`);
+}
+
+// ### resolveScratchTarget
+// Computes the symlink's absolute target directly from its stored string,
+// rather than requiring the target (or its ancestors) to already exist —
+// realpath(1) fails outright when the target's own parent directories are
+// also missing, which is exactly the "not set up on this machine yet" case
+// this feature needs to handle gracefully rather than mis-resolve.
+async function resolveScratchTarget(linkPath: string): Promise<string> {
+	const rawTarget = await readlink(linkPath);
+
+	return rawTarget.startsWith("/")
+		? rawTarget
+		: resolvePath(dirname(linkPath), rawTarget);
+}
+
+// ### overlapsExistingReadOnlyBind
+// True if target is already covered by a read-only bind: an .agentreadonly
+// $HOME/... entry (already in protectionConfig.safeBinds by the time this
+// runs), or one of buildExtraBinds' fixed host-tool paths. Deliberately not
+// exhaustive — it checks known sources, not every mechanism that might touch
+// $HOME (e.g. the ~/.agents and ~/.local/bin snapshots bind from a temp copy,
+// not the real path, so they can never appear here at all).
+function overlapsExistingReadOnlyBind(
+	target: string,
+	realHome: string,
+	protectionConfig: ProtectionConfig,
+): boolean {
+	for (const bind of protectionConfig.safeBinds) {
+		if (bind.type === "ro-bind" && pathsOverlap(target, bind.source)) {
+			return true;
+		}
+	}
+
+	return furniturePaths(realHome).some((furniture) =>
+		pathsOverlap(target, furniture),
+	);
+}
+
+// Every ancestor directory of an absolute path, root-to-leaf's-parent.
+// Excludes the path itself — the --bind at that final destination is what
+// establishes it as a directory.
+function ancestorDirs(absPath: string): string[] {
+	const parts = absPath.split("/").filter(Boolean);
+	const dirs: string[] = [];
+	let current = "";
+
+	for (let i = 0; i < parts.length - 1; i++) {
+		current += `/${parts[i]}`;
+		dirs.push(current);
+	}
+
+	return dirs;
 }
 
 async function findProtectedPaths(

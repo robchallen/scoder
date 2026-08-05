@@ -37,7 +37,7 @@ src/
 │   └── apparmor.ts       # AppArmor profile generation and installation
 ├── git/
 │   ├── worktree.ts       # Git worktree lifecycle: create, reuse, prune, commit, diffstat
-│   └── protection.ts     # .agentreadonly parsing, AGENTS.md overlay, skip-worktree masking, snapshots
+│   └── protection.ts     # .agentreadonly parsing, AGENTS.md overlay, skip-worktree masking, snapshots, scratch symlink
 ├── tools/
 │   └── presets.ts        # Per-tool config binds and validation for opencode/claude/copilot/pi
 ├── sandbox/
@@ -101,3 +101,4 @@ tests/
 [HAS_FEATURE](../design/features/nested-sandbox-detection.md)
 [HAS_FEATURE](../design/features/local-bin-resolution.md)
 [HAS_FEATURE](../design/features/ssh-tunnel-access.md)
+[HAS_FEATURE](../design/features/persistent-scratch.md)

@@ -45,6 +45,8 @@ localhost services by default.
 
 [HAS_FEATURE](./features/nested-sandbox-detection.md) - Refuses to start when it would nest a sandbox or create a worktree from a worktree (`SCODER_SANDBOX=1`, `.git` file detection).
 
+[HAS_FEATURE](./features/ssh-tunnel-access.md) - Opt-in `--allow-ssh user@host` opens a single pre-authenticated ssh connection outside the sandbox and multiplexes only that one connection in, with no key material or agent socket exposed.
+
 From [ROADMAP.md](./legacy/ROADMAP.md), not yet in development:
 
 - **Additional AI tool presets** — as new coding assistants emerge, add presets following the existing convention.

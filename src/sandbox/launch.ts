@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ScoderOptions } from "../types.ts";
 import { error, info } from "../utils/logger.ts";
+import { terminateProcess } from "../utils/process.ts";
 import { wrapWithFdShim } from "./builder.ts";
 import {
 	attachPasta,
@@ -25,6 +26,10 @@ import {
 /** How long to wait for bwrap to publish its child pid before giving up. */
 const CHILD_PID_TIMEOUT_MS = 5000;
 const CHILD_PID_POLL_MS = 25;
+
+/** Grace periods for shutting a failed launch down, before escalating. */
+const TERM_GRACE_MS = 500;
+const KILL_GRACE_MS = 500;
 
 export interface LaunchResult {
 	exitCode: number;
@@ -65,8 +70,7 @@ export async function launchSandbox(
 			// Bounded deliberately: with no timeout the sandbox sits on --block-fd
 			// forever and the session hangs with nothing said.
 			error("bwrap did not report its child pid, so networking cannot attach");
-			proc.kill();
-			await proc.exited;
+			await killBwrapTree(proc, null);
 			return { exitCode: 1 };
 		}
 
@@ -74,8 +78,7 @@ export async function launchSandbox(
 		if (!sidecar) {
 			// attachPasta has already explained why. Do not release the tool into
 			// a namespace with no route out.
-			proc.kill();
-			await proc.exited;
+			await killBwrapTree(proc, childPid);
 			return { exitCode: 1 };
 		}
 
@@ -110,6 +113,50 @@ export function describeLaunch(
 			"<bwrap-child-pid>",
 		],
 	};
+}
+
+// ### killBwrapTree
+// bwrap forks internally even without --unshare-pid: the pid Bun.spawn
+// returns is only the outer setup process. A second, inner process — its
+// child — is the one that actually holds the namespaces and blocks reading
+// --block-fd. Killing only the outer pid reaps it cleanly but leaves the
+// inner one running, reparented to pid 1, still blocked on a fifo nothing
+// will ever write to. Confirmed directly with a process-tree trace — see
+// design/implementation/issues/bwrap-orphaned-on-pasta-attach-failure.md.
+//
+// childPid is already known once bwrap has reported it (it is what pasta
+// needed to attach to); the lookup fallback only matters for the rarer case
+// where bwrap never reported one at all, and must run before the outer
+// process is killed, since findChildPid searches by current ppid and the
+// inner process's ppid changes once it is reparented.
+async function killBwrapTree(
+	proc: Bun.Subprocess<"inherit", "inherit", "inherit">,
+	childPid: number | null,
+): Promise<void> {
+	const innerPid = childPid ?? (await findChildPid(proc.pid));
+
+	proc.kill();
+	await proc.exited;
+
+	if (innerPid !== null) {
+		await terminateProcess(innerPid, TERM_GRACE_MS, KILL_GRACE_MS);
+	}
+}
+
+async function findChildPid(parentPid: number): Promise<number | null> {
+	const proc = Bun.spawn(["pgrep", "-P", parentPid.toString()], {
+		stdout: "pipe",
+		stderr: "pipe",
+	});
+	await proc.exited;
+
+	const out = (await new Response(proc.stdout).text()).trim();
+	if (!out) {
+		return null;
+	}
+
+	const pid = Number.parseInt(out.split("\n")[0], 10);
+	return Number.isNaN(pid) ? null : pid;
 }
 
 async function makeFifo(path: string): Promise<void> {

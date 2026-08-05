@@ -41,7 +41,11 @@ src/
 ├── tools/
 │   └── presets.ts        # Per-tool config binds and validation for opencode/claude/copilot/pi
 ├── sandbox/
-│   └── builder.ts        # bwrap command construction: system mounts, binds, env vars, pasta
+│   ├── builder.ts        # bwrap command construction: system mounts, binds, env vars, pasta
+│   ├── identity.ts       # passwd/group overlay so getpwuid() resolves to /home/scoder
+│   ├── launch.ts         # two-stage launch: bwrap blocks, pasta attaches, tool releases
+│   ├── pasta.ts          # network sidecar: attach to the sandbox netns, teardown
+│   └── ssh.ts            # --allow-ssh: ControlMaster tunnel sidecar, opened and torn down outside the sandbox
 └── utils/
     ├── logger.ts          # Coloured output: info, infoBlue, warning, error
     ├── checks.ts          # System checks: bwrap userns, command existence, port detection
@@ -96,3 +100,4 @@ tests/
 [HAS_FEATURE](../design/features/direct-mode.md)
 [HAS_FEATURE](../design/features/nested-sandbox-detection.md)
 [HAS_FEATURE](../design/features/local-bin-resolution.md)
+[HAS_FEATURE](../design/features/ssh-tunnel-access.md)

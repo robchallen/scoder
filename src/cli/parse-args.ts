@@ -26,6 +26,9 @@ Options:
        --llm-port PORTS    Allow localhost TCP access to these comma-separated ports
                             instead of the auto-detected default on 11434
                             (override with SCODER_LLM_PORT)
+       --allow-ssh USER@HOST  Open a single pre-authenticated ssh connection to
+                            USER@HOST outside the sandbox, and expose only
+                            that one connection inside it
        --dry-run           Print the bwrap command without executing
 
 Setup (run once, requires sudo):
@@ -56,6 +59,7 @@ export function parseArgs(args: string[]): ParseResult {
 		configureAppArmor: false,
 		installDependencies: false,
 		worktree: false,
+		sshTarget: null,
 	};
 
 	let toolName: string | null = null;
@@ -160,6 +164,39 @@ export function parseArgs(args: string[]): ParseResult {
 			continue;
 		}
 
+		if (arg.startsWith("--allow-ssh=")) {
+			const target = arg.slice("--allow-ssh=".length);
+			if (!isValidSshTarget(target)) {
+				return {
+					options,
+					toolName: null,
+					toolArgs: [],
+					showHelp: false,
+					showVersion: false,
+					error: "--allow-ssh must be in the form user@host",
+				};
+			}
+			options.sshTarget = target;
+			i++;
+			continue;
+		}
+
+		if (arg === "--allow-ssh") {
+			if (i + 1 >= args.length || !isValidSshTarget(args[i + 1])) {
+				return {
+					options,
+					toolName: null,
+					toolArgs: [],
+					showHelp: false,
+					showVersion: false,
+					error: "--allow-ssh must be in the form user@host",
+				};
+			}
+			options.sshTarget = args[i + 1];
+			i += 2;
+			continue;
+		}
+
 		if (arg.startsWith("-")) {
 			return {
 				options,
@@ -183,6 +220,17 @@ export function parseArgs(args: string[]): ParseResult {
 		showHelp,
 		showVersion,
 	};
+}
+
+// EM: Shape validation only — a plausible "user@host", not proof it resolves.
+// EM: Splitting into { user, host } happens in src/sandbox/ssh.ts.
+function isValidSshTarget(target: string | undefined): target is string {
+	if (!target) {
+		return false;
+	}
+
+	const parts = target.split("@");
+	return parts.length === 2 && parts[0].length > 0 && parts[1].length > 0;
 }
 
 function parsePorts(portStr: string): number[] | null {

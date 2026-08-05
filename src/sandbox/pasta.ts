@@ -1,6 +1,7 @@
 import { unlink } from "node:fs/promises";
 import type { ScoderOptions } from "../types.ts";
 import { error, warning } from "../utils/logger.ts";
+import { terminateProcess } from "../utils/process.ts";
 
 // EM: The pasta network sidecar
 // EM: Implements network-isolation via pasta attached to an existing netns
@@ -18,7 +19,6 @@ import { error, warning } from "../utils/logger.ts";
 /** Grace periods for shutting the sidecar down, before escalating. */
 const TERM_GRACE_MS = 500;
 const KILL_GRACE_MS = 500;
-const EXIT_POLL_MS = 20;
 
 /** A running pasta process servicing a sandbox's network namespace. */
 export interface PastaSidecar {
@@ -107,16 +107,13 @@ export async function stopPasta(sidecar: PastaSidecar | null): Promise<void> {
 		return;
 	}
 
-	if (isAlive(sidecar.pid)) {
-		signal(sidecar.pid, "SIGTERM");
-
-		if (!(await waitForExit(sidecar.pid, TERM_GRACE_MS))) {
-			signal(sidecar.pid, "SIGKILL");
-
-			if (!(await waitForExit(sidecar.pid, KILL_GRACE_MS))) {
-				warning(`pasta ${sidecar.pid} survived SIGKILL and is still running`);
-			}
-		}
+	const exited = await terminateProcess(
+		sidecar.pid,
+		TERM_GRACE_MS,
+		KILL_GRACE_MS,
+	);
+	if (!exited) {
+		warning(`pasta ${sidecar.pid} survived SIGKILL and is still running`);
 	}
 
 	try {
@@ -124,37 +121,6 @@ export async function stopPasta(sidecar: PastaSidecar | null): Promise<void> {
 	} catch {
 		// Never created, or already cleaned up
 	}
-}
-
-/** Signal 0 tests for existence without delivering anything. */
-function isAlive(pid: number): boolean {
-	try {
-		process.kill(pid, 0);
-		return true;
-	} catch {
-		return false;
-	}
-}
-
-function signal(pid: number, sig: "SIGTERM" | "SIGKILL"): void {
-	try {
-		process.kill(pid, sig);
-	} catch {
-		// Exited between the liveness check and the signal
-	}
-}
-
-async function waitForExit(pid: number, budgetMs: number): Promise<boolean> {
-	const deadline = Date.now() + budgetMs;
-
-	while (Date.now() < deadline) {
-		if (!isAlive(pid)) {
-			return true;
-		}
-		await Bun.sleep(EXIT_POLL_MS);
-	}
-
-	return !isAlive(pid);
 }
 
 async function readPidFile(pidFile: string): Promise<number | null> {

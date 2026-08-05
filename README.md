@@ -74,6 +74,10 @@ on a separate git branch via a worktree.
   port `11434` (the Ollama default) it is auto-detected at startup and that one
   port is forwarded into the sandbox. Override the probed port with
   `SCODER_LLM_PORT`, or name ports explicitly with `--llm-port=<ports>`.
+- **No ssh access by default** — with `--allow-ssh user@host`, scoder opens a
+  single pre-authenticated ssh connection to that one destination outside the
+  sandbox and multiplexes only that connection in. See
+  [ssh access](#ssh-access---allow-ssh) below.
 
 ## Usage
 
@@ -104,8 +108,16 @@ bun test                          # run the validation suite
     --llm-port PORTS    Allow localhost TCP access to these comma-separated ports
                          instead of the auto-detected default on 11434
                          (override the probed port with SCODER_LLM_PORT)
+    --allow-ssh USER@HOST  Open a single pre-authenticated ssh connection to
+                         USER@HOST outside the sandbox, and expose only that
+                         one connection inside it
     --dry-run           Print bwrap command without executing
 ```
+
+Scoder options must come before the tool name, same as `--llm-port`:
+`scoder --allow-ssh me@remote-host pi`, not `scoder pi --allow-ssh
+me@remote-host` (anything after the tool name is passed to the tool
+unparsed).
 
 ### `.agentreadonly` file
 
@@ -119,6 +131,46 @@ to an existing directory under the real host home directory, and scoder will
 bind that directory read-only into the sandbox at the matching mirrored path
 under `/home/scoder/`. For example, `$HOME/Git/other-project` becomes
 `/home/scoder/Git/other-project`.
+
+## ssh access (`--allow-ssh`)
+
+By default the sandbox has no ssh access at all: no private keys, no
+ssh-agent, nothing under `~/.ssh`. `--allow-ssh me@remote-host` opens a
+single pre-authenticated ssh connection to that one destination *outside*
+the sandbox, and multiplexes only that connection into it — the sandboxed
+agent never sees a private key or an ssh-agent socket, and cannot choose a
+different destination.
+
+```bash
+scoder --allow-ssh me@remote-host pi   # pi can run: ssh remote-host <command>
+```
+
+Inside the sandbox, `ssh remote-host` (and `ssh remote-host <command>`) works
+exactly as it would outside it. Any other destination — a different host, a
+different user, a different port — fails the way ssh always fails when it
+has nothing to authenticate with, because it is not the connection scoder
+opened.
+
+**What the flag grants.** For the session's duration, the sandboxed agent can
+run commands as **exactly the named user, on exactly the named host** —
+nothing else. It cannot reach a different host, authenticate as a different
+user, or extract the credentials that made the connection possible.
+
+**This is still real exposure**, just a narrower one than forwarding an
+ssh-agent would be: whatever `me@remote-host` can do, the sandboxed agent can
+now do, for the session's duration. Use a narrowly-scoped remote account for
+whatever administration task is intended, the same as you would running that
+command by hand.
+
+**Pointing `--allow-ssh` at the machine scoder itself runs on** (`localhost`,
+`127.0.0.1`, or any address that resolves to this host) removes the sandbox
+boundary for anything reachable that way — scoder warns when it detects
+this, but does not block it, since the one legitimate reason to do it is
+testing against a local server.
+
+You must have connected to the target at least once before, outside scoder:
+the master connection uses `BatchMode`, so it will not prompt to accept an
+unfamiliar host key.
 
 ## After a session
 
@@ -167,6 +219,7 @@ scoder: To discard: git worktree remove /tmp/scoder/<git-repo-path> && git branc
 - `bwrap` (bubblewrap)
 - `pasta` (usually provided by the `passt` package)
 - `git`
+- `ssh` (OpenSSH client) — only needed for `--allow-ssh`
 - `bun` (TypeScript runtime) - install via `curl -fsSL https://bun.sh/install | bash`
 - The tool you want to sandbox (e.g. `opencode`, `copilot`, `claude`)
 - Tool-specific prerequisites must already be set up (and installed globally):

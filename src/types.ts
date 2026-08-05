@@ -5,6 +5,7 @@ export interface ScoderOptions {
 	configureAppArmor: boolean;
 	installDependencies: boolean;
 	worktree: boolean;
+	sshTarget: string | null;
 }
 
 export interface ToolPreset {

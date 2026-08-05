@@ -33,6 +33,12 @@ import {
 	setupSandboxIdentity,
 } from "./sandbox/identity.ts";
 import { describeLaunch, launchSandbox } from "./sandbox/launch.ts";
+import {
+	describeSshAccess,
+	type SshTunnel,
+	startSshTunnel,
+	stopSshTunnel,
+} from "./sandbox/ssh.ts";
 import { TOOL_PRESETS } from "./tools/presets.ts";
 import type { BindMount, GitWorktreeInfo } from "./types.ts";
 import {
@@ -198,6 +204,7 @@ async function main(): Promise<void> {
 	let protectionConfig: ProtectionConfig | undefined;
 	let sandboxProjDir = "";
 	let identity: SandboxIdentity | undefined;
+	let sshTunnel: SshTunnel | null = null;
 
 	const uid = getSandboxUid();
 	const gid = getSandboxGid();
@@ -300,6 +307,37 @@ async function main(): Promise<void> {
 		}
 	}
 
+	// EM: Independent of worktree vs. direct mode, so set up once here rather
+	// EM: than duplicated into both branches above.
+	if (options.sshTarget) {
+		const sshHomeBindConflict = protectionConfig?.safeBinds.some(
+			(bind) =>
+				bind.dest === `${SCODER_HOME}/.ssh` ||
+				bind.dest.startsWith(`${SCODER_HOME}/.ssh/`),
+		);
+		if (sshHomeBindConflict) {
+			error(
+				".agentreadonly binds $HOME/.ssh, which conflicts with --allow-ssh — use one or the other",
+			);
+			process.exit(1);
+		}
+
+		const sshAccess = options.dryRun
+			? describeSshAccess(options.sshTarget)
+			: await startSshTunnel(options.sshTarget);
+
+		if (!sshAccess) {
+			// startSshTunnel has already explained why.
+			process.exit(1);
+		}
+
+		if (protectionConfig) {
+			protectionConfig.safeBinds.push(...sshAccess.binds);
+			protectionConfig.dirs?.push(...sshAccess.dirs);
+		}
+		sshTunnel = sshAccess.tunnel;
+	}
+
 	const config = {
 		worktreeInfo,
 		sandboxProjDir,
@@ -400,6 +438,10 @@ async function main(): Promise<void> {
 		if (identity) {
 			await rm(identity.dir, { recursive: true, force: true });
 		}
+
+		// EM: ssh runs outside the sandbox, like pasta — nothing in the
+		// EM: sandbox's own lifecycle reaps it.
+		await stopSshTunnel(sshTunnel);
 	}
 
 	process.exit(exitCode);

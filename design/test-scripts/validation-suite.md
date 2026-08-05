@@ -19,12 +19,13 @@ tags: [test-script, validation]
 [HAS_FEATURE](../features/dry-run-mode.md)
 [HAS_FEATURE](../features/apparmor-compatibility.md)
 [HAS_FEATURE](../features/direct-mode.md)
+[HAS_FEATURE](../features/ssh-tunnel-access.md)
 
 ## Summary
 
 `tests/scoder.test.ts` is a self-contained integration test suite that creates
 temporary git repositories under `/tmp`, runs `scoder` against them using
-`/bin/bash` as the sandboxed command, and asserts expected behaviour. 46
+`/bin/bash` as the sandboxed command, and asserts expected behaviour. 55
 tests cover all sandbox mechanics.
 
 Cleanup runs in an `afterAll` hook. It removes the temp repos, their worktrees
@@ -36,6 +37,11 @@ session worktrees.
 Two exceptions use the real `claude` preset (cases 40-41). They run under
 `--dry-run`, so they inspect the built command without launching a sandbox or
 touching the host's config, and self-skip when `claude` is not installed.
+
+Most of the `--allow-ssh` cases (47, 49-51, 53) start a disposable `sshd` —
+ControlMaster multiplexing is a genuine OpenSSH client/server behaviour a
+plain TCP stub cannot stand in for — and self-skip when `sshd` or
+`ssh-keygen` is not installed. See "Mock ssh Server" below.
 
 ## How to Run
 
@@ -355,6 +361,74 @@ No `scoder-identity-*` temp directory survives a session. The implementation
 these replaced wrote a fixed `/tmp/bwrap_passwd_<uid>` that was never removed and
 collided between concurrent sessions.
 
+### 47. ssh-tunnel-established-with-flag
+[TESTED_BY](/tests/scoder.test.ts#testSshTunnelEstablishedWithFlag)
+
+With `--allow-ssh <user>@127.0.0.1` and a mock `sshd` running, `ssh 127.0.0.1
+whoami` inside the sandbox returns the expected remote username. The real
+end-to-end proof that the tunnel works.
+
+### 48. ssh-blocked-by-default
+[TESTED_BY](/tests/scoder.test.ts#testSshBlockedByDefault)
+
+Without the flag, `ssh 127.0.0.1 whoami` inside the sandbox fails regardless
+of what is reachable outside it. Guards the default.
+
+### 49. ssh-wrong-host-falls-through
+[TESTED_BY](/tests/scoder.test.ts#testSshWrongHostFallsThrough)
+
+With `--allow-ssh` pointed at the mock server, `ssh some-other-host.invalid
+whoami` inside the sandbox still fails. The tunnel is pinned to one
+destination; a different hostname does not match the generated `Host` block
+and falls through to a normal, failing connection attempt.
+
+### 50. ssh-wrong-user-falls-through
+[TESTED_BY](/tests/scoder.test.ts#testSshWrongUserFallsThrough)
+
+Same reachable host, a different login (`ssh someoneelse@127.0.0.1 whoami`) —
+also fails. Guards the `%r`-based pinning specifically: matching by hostname
+alone would let a different user ride the tunnel.
+
+### 51. ssh-no-private-keys-in-sandbox
+[TESTED_BY](/tests/scoder.test.ts#testSshNoPrivateKeysInSandbox)
+
+With `--allow-ssh` active, nothing under `/home/scoder/.ssh` or
+`/home/scoder/.ssh-control` contains private key material. The most
+important guard in the set — it is what stops a future "just forward the
+agent, it's easier" change from passing review.
+
+### 52. ssh-tunnel-fails-closed-on-bad-target
+[TESTED_BY](/tests/scoder.test.ts#testSshTunnelFailsClosedOnBadTarget)
+
+`--allow-ssh` pointed at an unreachable target (`nobody@unreachable.invalid`)
+exits non-zero with a clear error rather than hanging or silently
+continuing. Needs no mock server.
+
+### 53. ssh-tunnel-torn-down-on-exit
+[TESTED_BY](/tests/scoder.test.ts#testSshTunnelTornDownOnExit)
+
+After a completed session, no leftover ssh master process survives. Counts
+before/after rather than asserting zero, matching `pasta-sidecar-reaped`'s
+reasoning: the developer may have other legitimate ssh sessions running.
+
+### 54. ssh-dry-run-describes-without-connecting
+[TESTED_BY](/tests/scoder.test.ts#testSshDryRunDescribesWithoutConnecting)
+
+`--dry-run --allow-ssh` shows the control-socket bind as `--ro-bind`, not
+`--bind`, and never opens a real connection — `describeSshAccess` never calls
+`startSshTunnel`.
+
+### 55. bwrap-not-orphaned-on-pasta-attach-failure
+[TESTED_BY](/tests/scoder.test.ts#testBwrapNotOrphanedOnPastaAttachFailure)
+
+A fake `pasta` shimmed onto `PATH`, always exiting non-zero, forces the
+attach-failure path deterministically. Asserts no bwrap process matching the
+test's repo path survives. Regression test for
+[bwrap-orphaned-on-pasta-attach-failure](../implementation/issues/bwrap-orphaned-on-pasta-attach-failure.md):
+bwrap forks internally even without `--unshare-pid`, and killing only the
+outer, tracked pid left the inner one — the one actually holding the
+namespaces — running forever, reparented to pid 1.
+
 ## Current Network Coverage
 
 - Host loopback access is blocked (`host-loopback-blocked`)
@@ -399,6 +473,26 @@ The `worktree-recreated-if-missing` test identifies the scoder branch worktree
 
 Tests use `git ls-files -v` to check `--skip-worktree` state: uppercase `S`
 means skip-worktree, uppercase `H` means normal staged file.
+
+### Mock ssh Server
+
+`startMockSshd()` starts a disposable `sshd` on a fixed port (`19996`) with an
+ephemeral host key and an ephemeral client key authorized for the *current*
+user — `sshd` authenticates against real system accounts, so there is no
+fabricated identity to log in as, only a throwaway key for a real one.
+
+It also writes a `ssh` shim ahead of the real one on `PATH`:
+`exec /usr/bin/ssh -F <tmp>/client_config "$@"`. This is what redirects the
+*host-side master connection* `startSshTunnel` opens to the mock server's
+port and identity. Overriding `$HOME` does not work for this — confirmed
+directly while building the fixture: ssh resolves `~/.ssh/config` via
+`getpwuid()`, not `$HOME` (the same identity quirk documented in
+[ADR 0001](/architecture/decision-records/0001-sandbox-uid-and-networking-composition.md)),
+so `HOME=<fixture> ssh -G host` still reports the real config's settings. The
+shim never affects the *sandboxed* ssh invocation under test: `bwrap
+--clearenv` wipes the host `PATH`, and the generated
+`/home/scoder/.ssh/config` is read correctly because `getpwuid()` resolves to
+`/home/scoder` inside the sandbox — that's what `setupSandboxIdentity` is for.
 
 ### Temp Directory Cleanup
 

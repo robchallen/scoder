@@ -150,9 +150,13 @@ A user who wants it opts in explicitly with a `$HOME/.ssh` line in
 `.agentreadonly`, which already binds host directories read-only at the mirrored
 path. That is the whole mechanism — no scoder change required.
 
-`SSH_AUTH_SOCK` forwarding is a possible future alternative that avoids exposing
-key material, but it is not planned and would need more than an env var: see the
-note in [accept-root-uid-in-sandbox](./accept-root-uid-in-sandbox.md).
+Explicit opt-in *without* binding key material is now planned:
+[ssh-tunnel-opt-in](./ssh-tunnel-opt-in.md) forwards a single
+pre-authenticated ssh connection to an operator-named `user@host`, in place of
+the `SSH_AUTH_SOCK`-forwarding idea floated here and in
+[accept-root-uid-in-sandbox](./accept-root-uid-in-sandbox.md) — that idea
+would have granted the sandbox the use of every key the agent holds against
+any host it trusts, which turned out to be more reach than the goal needed.
 
 ## Test Plan
 

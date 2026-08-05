@@ -222,6 +222,14 @@ afterAll(async () => {
 		}
 	}
 
+	for (const proc of mockSshdProcesses) {
+		try {
+			proc.kill();
+		} catch {
+			// Ignore errors
+		}
+	}
+
 	for (const path of CLEANUP_PATHS) {
 		try {
 			await Bun.spawn(["rm", "-rf", path]).exited;
@@ -1806,4 +1814,459 @@ test("scoder should succeed in worktree mode with AGENTS.md excluded from worktr
 
 	// Should succeed
 	expect(scoderResult.exitCode).toBe(0);
+});
+
+// EM: ### Tests for --allow-ssh
+// EM: Implements ssh-tunnel-access (design/implementation/plans/ssh-tunnel-opt-in.md)
+// EM: Needs a real sshd — ControlMaster multiplexing is a genuine OpenSSH
+// EM: client/server behaviour that a plain TCP stub cannot stand in for.
+// EM: skipIf when sshd/ssh-keygen are not installed, so the suite still
+// EM: passes on a machine without them.
+
+const MOCK_SSHD_PORT = 19996;
+const mockSshdProcesses: Bun.Subprocess[] = [];
+
+async function currentUsername(): Promise<string> {
+	const proc = Bun.spawn(["id", "-un"], { stdout: "pipe", stderr: "pipe" });
+	await proc.exited;
+	return (await new Response(proc.stdout).text()).trim();
+}
+
+const HOST_USER = await currentUsername();
+const sshTunnelTestable =
+	(await commandAvailable("sshd")) && (await commandAvailable("ssh-keygen"));
+
+interface MockSshd {
+	tmpDir: string;
+	port: number;
+	proc: Bun.Subprocess;
+	binDir: string;
+}
+
+// Starts a disposable sshd on a fixed non-default port with an ephemeral host
+// key and an ephemeral client key authorized to log in as the current user
+// (sshd authenticates against real system accounts, so there is no fabricated
+// identity to log in as). Also writes a PATH-shimmed `ssh` that injects
+// `-F <client_config>` into every invocation: this is what redirects the
+// *host-side master connection* startSshTunnel opens to the mock server's
+// port and identity. Overriding $HOME does not work for this — ssh resolves
+// ~/.ssh/config via getpwuid(), not $HOME, confirmed directly while writing
+// this fixture (see ssh-tunnel-opt-in.md). This shim never affects the
+// sandboxed ssh invocation under test, which reads the real generated
+// /home/scoder/.ssh/config: bwrap's --clearenv wipes the host PATH, and
+// getpwuid() resolves correctly to /home/scoder inside the sandbox because
+// setupSandboxIdentity overlays /etc/passwd for exactly this reason.
+async function startMockSshd(port: number = MOCK_SSHD_PORT): Promise<MockSshd> {
+	const tmpDir = `/tmp/scoder-ssh-test-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
+	await Bun.spawn(["mkdir", "-p", tmpDir]).exited;
+
+	await Bun.spawn([
+		"ssh-keygen",
+		"-t",
+		"ed25519",
+		"-f",
+		`${tmpDir}/host_key`,
+		"-N",
+		"",
+		"-q",
+	]).exited;
+	await Bun.spawn([
+		"ssh-keygen",
+		"-t",
+		"ed25519",
+		"-f",
+		`${tmpDir}/client_key`,
+		"-N",
+		"",
+		"-q",
+	]).exited;
+	await Bun.write(
+		`${tmpDir}/authorized_keys`,
+		await Bun.file(`${tmpDir}/client_key.pub`).text(),
+	);
+
+	await Bun.write(
+		`${tmpDir}/sshd_config`,
+		[
+			`Port ${port}`,
+			"ListenAddress 127.0.0.1",
+			`HostKey ${tmpDir}/host_key`,
+			`AuthorizedKeysFile ${tmpDir}/authorized_keys`,
+			"UsePAM no",
+			"StrictModes no",
+			`PidFile ${tmpDir}/sshd.pid`,
+			"LogLevel ERROR",
+			"",
+		].join("\n"),
+	);
+
+	const proc = Bun.spawn(["sshd", "-f", `${tmpDir}/sshd_config`, "-D"], {
+		stdout: "pipe",
+		stderr: "pipe",
+	});
+	mockSshdProcesses.push(proc);
+
+	// Give sshd a moment to bind before anything tries to connect.
+	await Bun.sleep(300);
+
+	const keyscan = Bun.spawn(
+		["ssh-keyscan", "-p", port.toString(), "127.0.0.1"],
+		{ stdout: "pipe", stderr: "pipe" },
+	);
+	await keyscan.exited;
+	await Bun.write(
+		`${tmpDir}/known_hosts`,
+		await new Response(keyscan.stdout).text(),
+	);
+
+	await Bun.write(
+		`${tmpDir}/client_config`,
+		[
+			"Host 127.0.0.1",
+			`    Port ${port}`,
+			`    IdentityFile ${tmpDir}/client_key`,
+			`    UserKnownHostsFile ${tmpDir}/known_hosts`,
+			"    StrictHostKeyChecking yes",
+			"",
+		].join("\n"),
+	);
+
+	const binDir = `${tmpDir}/bin`;
+	await Bun.spawn(["mkdir", "-p", binDir]).exited;
+	await Bun.write(
+		`${binDir}/ssh`,
+		`#!/bin/sh\nexec /usr/bin/ssh -F "${tmpDir}/client_config" "$@"\n`,
+	);
+	await Bun.spawn(["chmod", "+x", `${binDir}/ssh`]).exited;
+
+	return { tmpDir, port, proc, binDir };
+}
+
+async function stopMockSshd(mock: MockSshd): Promise<void> {
+	try {
+		mock.proc.kill();
+		await mock.proc.exited;
+	} catch {
+		// Already gone
+	}
+	await Bun.spawn(["rm", "-rf", mock.tmpDir]).exited;
+}
+
+function sshShimEnv(mock: MockSshd): Record<string, string> {
+	return { ...process.env, PATH: `${mock.binDir}:${process.env.PATH}` };
+}
+
+// ### Test: ssh-tunnel-established-with-flag
+// The real end-to-end proof: with --allow-ssh, ssh <host> inside the sandbox
+// reaches the pinned target through the pre-authenticated tunnel.
+test.skipIf(!sshTunnelTestable)(
+	"ssh-tunnel-established-with-flag: --allow-ssh reaches the named target",
+	async () => {
+		const repoDir = await createTempRepo();
+		tempRepos.push(repoDir);
+		const mock = await startMockSshd();
+
+		try {
+			const proc = Bun.spawn(
+				[
+					SCODER_PATH,
+					"-q",
+					"--allow-ssh",
+					`${HOST_USER}@127.0.0.1`,
+					"/bin/bash",
+					"-c",
+					"ssh 127.0.0.1 whoami",
+				],
+				{ cwd: repoDir, env: sshShimEnv(mock), stdout: "pipe", stderr: "pipe" },
+			);
+			await proc.exited;
+
+			expect(proc.exitCode).toBe(0);
+			const output = await new Response(proc.stdout).text();
+			expect(output.trim()).toBe(HOST_USER);
+		} finally {
+			await stopMockSshd(mock);
+			await cleanupRepo(repoDir);
+		}
+	},
+);
+
+// ### Test: ssh-blocked-by-default
+// Guards the default: no flag, no ssh access, regardless of what is
+// reachable outside the sandbox.
+test("ssh-blocked-by-default: without --allow-ssh, ssh has nothing to authenticate with", async () => {
+	const repoDir = await createTempRepo();
+	tempRepos.push(repoDir);
+
+	try {
+		const proc = Bun.spawn(
+			[
+				SCODER_PATH,
+				"-q",
+				"/bin/bash",
+				"-c",
+				"ssh -o BatchMode=yes -o ConnectTimeout=5 127.0.0.1 whoami",
+			],
+			{ cwd: repoDir, stdout: "pipe", stderr: "pipe" },
+		);
+		await proc.exited;
+
+		expect(proc.exitCode).not.toBe(0);
+	} finally {
+		await cleanupRepo(repoDir);
+	}
+});
+
+// ### Test: ssh-wrong-host-falls-through
+// The tunnel is pinned to one destination. A different hostname does not
+// match the generated Host block at all and falls through to a normal,
+// failing connection attempt.
+test.skipIf(!sshTunnelTestable)(
+	"ssh-wrong-host-falls-through: a different destination does not ride the tunnel",
+	async () => {
+		const repoDir = await createTempRepo();
+		tempRepos.push(repoDir);
+		const mock = await startMockSshd();
+
+		try {
+			const proc = Bun.spawn(
+				[
+					SCODER_PATH,
+					"-q",
+					"--allow-ssh",
+					`${HOST_USER}@127.0.0.1`,
+					"/bin/bash",
+					"-c",
+					"ssh some-other-host.invalid whoami",
+				],
+				{ cwd: repoDir, env: sshShimEnv(mock), stdout: "pipe", stderr: "pipe" },
+			);
+			await proc.exited;
+
+			expect(proc.exitCode).not.toBe(0);
+		} finally {
+			await stopMockSshd(mock);
+			await cleanupRepo(repoDir);
+		}
+	},
+);
+
+// ### Test: ssh-wrong-user-falls-through
+// Guards the %r-based pinning specifically: same reachable host, different
+// login, still falls through rather than riding the tunnel as someone else.
+test.skipIf(!sshTunnelTestable)(
+	"ssh-wrong-user-falls-through: a different login does not ride the tunnel",
+	async () => {
+		const repoDir = await createTempRepo();
+		tempRepos.push(repoDir);
+		const mock = await startMockSshd();
+
+		try {
+			const proc = Bun.spawn(
+				[
+					SCODER_PATH,
+					"-q",
+					"--allow-ssh",
+					`${HOST_USER}@127.0.0.1`,
+					"/bin/bash",
+					"-c",
+					"ssh someoneelse@127.0.0.1 whoami",
+				],
+				{ cwd: repoDir, env: sshShimEnv(mock), stdout: "pipe", stderr: "pipe" },
+			);
+			await proc.exited;
+
+			expect(proc.exitCode).not.toBe(0);
+		} finally {
+			await stopMockSshd(mock);
+			await cleanupRepo(repoDir);
+		}
+	},
+);
+
+// ### Test: ssh-no-private-keys-in-sandbox
+// The most important guard in the set: it is what stops a future "just
+// forward the agent, it's easier" change from passing review.
+test.skipIf(!sshTunnelTestable)(
+	"ssh-no-private-keys-in-sandbox: no private key material is bound in",
+	async () => {
+		const repoDir = await createTempRepo();
+		tempRepos.push(repoDir);
+		const mock = await startMockSshd();
+
+		try {
+			const proc = Bun.spawn(
+				[
+					SCODER_PATH,
+					"-q",
+					"--allow-ssh",
+					`${HOST_USER}@127.0.0.1`,
+					"/bin/bash",
+					"-c",
+					"grep -rl 'PRIVATE KEY' /home/scoder/.ssh /home/scoder/.ssh-control 2>/dev/null; echo DONE",
+				],
+				{ cwd: repoDir, env: sshShimEnv(mock), stdout: "pipe", stderr: "pipe" },
+			);
+			await proc.exited;
+
+			const output = await new Response(proc.stdout).text();
+			expect(output.trim()).toBe("DONE");
+		} finally {
+			await stopMockSshd(mock);
+			await cleanupRepo(repoDir);
+		}
+	},
+);
+
+// ### Test: ssh-tunnel-fails-closed-on-bad-target
+// An unreachable destination exits non-zero with a clear error rather than
+// hanging or silently continuing. Needs no mock server — the target must
+// never answer.
+test("ssh-tunnel-fails-closed-on-bad-target: unreachable target exits non-zero with a clear error", async () => {
+	const repoDir = await createTempRepo();
+	tempRepos.push(repoDir);
+
+	try {
+		const proc = Bun.spawn(
+			[
+				SCODER_PATH,
+				"--allow-ssh",
+				"nobody@unreachable.invalid",
+				"/bin/bash",
+				"-c",
+				"true",
+			],
+			{ cwd: repoDir, stdout: "pipe", stderr: "pipe" },
+		);
+		await proc.exited;
+
+		expect(proc.exitCode).not.toBe(0);
+		const stderr = await new Response(proc.stderr).text();
+		expect(stderr).toContain("failed to establish a connection");
+	} finally {
+		await cleanupRepo(repoDir);
+	}
+});
+
+// ### Test: ssh-tunnel-torn-down-on-exit
+// Mirrors pasta-sidecar-reaped: counts before/after rather than asserting
+// zero, since the developer may have other legitimate ssh sessions running.
+test.skipIf(!sshTunnelTestable)(
+	"ssh-tunnel-torn-down-on-exit: a completed session leaves no ssh master process behind",
+	async () => {
+		const repoDir = await createTempRepo();
+		tempRepos.push(repoDir);
+		const mock = await startMockSshd();
+
+		const countMasters = async (): Promise<number> => {
+			const proc = Bun.spawn(["pgrep", "-cf", "ssh -M -N"], {
+				stdout: "pipe",
+				stderr: "pipe",
+			});
+			await proc.exited;
+			const out = (await new Response(proc.stdout).text()).trim();
+			return out === "" ? 0 : Number.parseInt(out, 10);
+		};
+
+		try {
+			const before = await countMasters();
+
+			const proc = Bun.spawn(
+				[
+					SCODER_PATH,
+					"-q",
+					"--allow-ssh",
+					`${HOST_USER}@127.0.0.1`,
+					"/bin/bash",
+					"-c",
+					"true",
+				],
+				{ cwd: repoDir, env: sshShimEnv(mock), stdout: "pipe", stderr: "pipe" },
+			);
+			await proc.exited;
+
+			// Teardown signals and waits, but reaping is not instantaneous.
+			await Bun.sleep(500);
+			expect(await countMasters()).toBe(before);
+		} finally {
+			await stopMockSshd(mock);
+			await cleanupRepo(repoDir);
+		}
+	},
+);
+
+// ### Test: ssh-dry-run-describes-without-connecting
+// --dry-run must stay side-effect free: it shows the binds it would create,
+// including that the control-socket directory is ro-bind not bind, without
+// ever opening a real connection (describeSshAccess never runs startSshTunnel).
+test("ssh-dry-run-describes-without-connecting: --dry-run shows the bind without opening a connection", async () => {
+	const repoDir = await createTempRepo();
+	tempRepos.push(repoDir);
+
+	try {
+		const output = await runScoder(repoDir, [
+			"--dry-run",
+			"--allow-ssh",
+			"someone@example.invalid",
+			"/bin/bash",
+		]);
+
+		expect(output).toContain(
+			"--ro-bind <ssh-tunnel-tmp>/socket /home/scoder/.ssh-control",
+		);
+		expect(output).toContain(
+			"--ro-bind <ssh-tunnel-tmp>/config/config /home/scoder/.ssh/config",
+		);
+		expect(output).not.toContain("--bind <ssh-tunnel-tmp>/socket");
+	} finally {
+		await cleanupRepo(repoDir);
+	}
+});
+
+// EM: ### Test for bwrap-orphaned-on-pasta-attach-failure
+// EM: See design/implementation/issues/bwrap-orphaned-on-pasta-attach-failure.md
+// EM: A fake pasta forces the failure deterministically, rather than relying
+// EM: on an environment where pasta genuinely cannot attach (this suite's own
+// EM: dev environment lacks /dev/net/tun, which is what surfaced the bug, but
+// EM: that trigger will not reproduce everywhere the bug itself does).
+
+// ### Test: bwrap-not-orphaned-on-pasta-attach-failure
+test("bwrap-not-orphaned-on-pasta-attach-failure: a failed pasta attach leaves no bwrap process behind", async () => {
+	const repoDir = await createTempRepo();
+	tempRepos.push(repoDir);
+
+	const shimDir = `/tmp/scoder-fake-pasta-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
+	await Bun.spawn(["mkdir", "-p", shimDir]).exited;
+	await Bun.write(`${shimDir}/pasta`, "#!/bin/sh\nexit 1\n");
+	await Bun.spawn(["chmod", "+x", `${shimDir}/pasta`]).exited;
+
+	const countMatchingBwrap = async (): Promise<number> => {
+		const proc = Bun.spawn(["pgrep", "-cf", `bwrap.*${repoDir}`], {
+			stdout: "pipe",
+			stderr: "pipe",
+		});
+		await proc.exited;
+		const out = (await new Response(proc.stdout).text()).trim();
+		return out === "" ? 0 : Number.parseInt(out, 10);
+	};
+
+	try {
+		const proc = Bun.spawn([SCODER_PATH, "-q", "/bin/bash", "-c", "true"], {
+			cwd: repoDir,
+			env: { ...process.env, PATH: `${shimDir}:${process.env.PATH}` },
+			stdout: "pipe",
+			stderr: "pipe",
+		});
+		await proc.exited;
+
+		// The fake pasta always fails the attach, so the session itself fails.
+		expect(proc.exitCode).not.toBe(0);
+
+		// Teardown signals and waits, but reaping is not instantaneous.
+		await Bun.sleep(500);
+		expect(await countMatchingBwrap()).toBe(0);
+	} finally {
+		await Bun.spawn(["rm", "-rf", shimDir]).exited;
+		await cleanupRepo(repoDir);
+	}
 });

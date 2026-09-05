@@ -33,26 +33,26 @@ src/
 ├── index.ts              # Main orchestration: parse → validate → setup → build → execute
 ├── types.ts              # All TypeScript interfaces: ScoderOptions, ToolPreset, GitWorktreeInfo, BindMount
 ├── cli/
-│   ├── parse-args.ts     # CLI option parsing, USAGE text, port validation
+│   ├── parse-args.ts     # CLI option parsing, USAGE text
 │   └── apparmor.ts       # AppArmor profile generation and installation
 ├── git/
 │   ├── worktree.ts       # Git worktree lifecycle: create, reuse, prune, commit, diffstat
-│   └── protection.ts     # .agentreadonly parsing, AGENTS.md overlay, skip-worktree masking, snapshots, scratch symlink
+│   └── protection.ts     # .agentreadonly parsing, AGENTS.md overlay, skip-worktree masking, snapshots, scratch symlink, .agentports read/append/bind
 ├── tools/
 │   └── presets.ts        # Per-tool config binds and validation for opencode/claude/copilot/pi
 ├── sandbox/
 │   ├── builder.ts        # bwrap command construction: system mounts, binds, env vars, pasta
 │   ├── identity.ts       # passwd/group overlay so getpwuid() resolves to /home/scoder
-│   ├── launch.ts         # two-stage launch: bwrap blocks, pasta attaches, tool releases
+│   ├── launch.ts         # two-stage launch: bwrap blocks, pasta attaches, tool releases; live-reload watcher for .agentports
 │   ├── pasta.ts          # network sidecar: attach to the sandbox netns, teardown
 │   └── ssh.ts            # --allow-ssh: ControlMaster tunnel sidecar, opened and torn down outside the sandbox
 └── utils/
     ├── logger.ts          # Coloured output: info, infoBlue, warning, error
-    ├── checks.ts          # System checks: bwrap userns, command existence, port detection
+    ├── checks.ts          # System checks: bwrap userns, command existence, LLM port auto-detect probe
     └── paths.ts           # Host ↔ sandbox path translation (home remapping)
 
 tests/
-└── scoder.test.ts        # Integration test suite (33 tests as of v2.2.0)
+└── scoder.test.ts        # Integration test suite (69 tests as of v2.4.0)
 ```
 
 ## Execution Flow
@@ -60,7 +60,7 @@ tests/
 1. **Parse** CLI args into `ScoderOptions`
 2. **Nesting checks** — refuse if cwd is a linked git worktree (`.git` is a file), or if `SCODER_SANDBOX=1` and worktree mode was requested
 3. **Early validation** — bwrap exists, pasta exists, userns works (AppArmor diagnostic if it fails)
-4. **LLM port detection** — probe `127.0.0.1:11434` (or `SCODER_LLM_PORT`) unless `--llm-port` was given
+4. **`.agentports`** — read the project's `.agentports` file for host-loopback ports to forward; probe `127.0.0.1:11434` (or `SCODER_LLM_PORT`) and append a hit additively (skipped under `--dry-run`)
 5. **Special modes** — `--configure-apparmor`, `--install-dependencies` exit early
 6. **Tool selection** — resolve preset, validate tool exists, get config binds, translate the host tool path into the sandbox namespace
 7. **If worktree mode:**
@@ -84,7 +84,10 @@ tests/
    - Environment variables (clearenv + selective setenv)
    - pasta network layer
 11. **Pre-flight the exec target** — a `$HOME`-installed tool whose directory is not among the command's bind destinations cannot run; fail with a diagnostic rather than a bare `execvp` error
-12. **Execute** — `bwrap ... pasta ... <tool> <args>`
+12. **Execute** — `bwrap ... pasta ... <tool> <args>`, while a background poll
+    watches `.agentports` for the life of the session and reattaches pasta
+    with an updated port list on a change (falling back to the last
+    known-good list if the new attach fails)
 13. **On exit:**
     - Commit changes in worktree mode
     - Print session summary (commits, diffstat, branch info)

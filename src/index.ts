@@ -9,8 +9,11 @@ import { configureAppArmor } from "./cli/apparmor.ts";
 import { parseArgs, printUsage, printVersion } from "./cli/parse-args.ts";
 import {
 	addGitExclude,
+	appendAgentPort,
+	getAgentPortsBind,
 	getAgentsMdOverlayBind,
 	type ProtectionConfig,
+	readAgentPorts,
 	removeGitExclude,
 	setupAgentsSnapshot,
 	setupLocalBinSnapshot,
@@ -145,13 +148,6 @@ async function main(): Promise<void> {
 		error("pasta not found in PATH");
 		error("run sudo scoder --install-dependencies");
 		process.exit(1);
-	}
-
-	if (options.llmPorts.length === 0) {
-		const detectedPort = await detectDefaultLlmPort();
-		if (detectedPort) {
-			options.llmPorts = [detectedPort];
-		}
 	}
 
 	if (options.configureAppArmor) {
@@ -346,6 +342,33 @@ async function main(): Promise<void> {
 			options.worktree && worktreeInfo
 				? worktreeInfo.worktreeDir
 				: process.cwd();
+
+		// EM: .agentports replaces --llm-port entirely: read what's already
+		// EM: configured, then (outside --dry-run, which must stay side-effect
+		// EM: free) let the LLM auto-detect probe seed it additively on a hit.
+		// EM: readAgentPorts throws rather than exiting itself (see its own
+		// EM: comment) — this is the one caller for which exiting is correct,
+		// EM: since nothing is running yet.
+		try {
+			options.openPorts = await readAgentPorts(projectRoot);
+		} catch (err) {
+			error(`${err instanceof Error ? err.message : err}`);
+			process.exit(1);
+		}
+
+		if (!options.dryRun) {
+			const detectedPort = await detectDefaultLlmPort();
+			if (detectedPort && !options.openPorts.includes(detectedPort)) {
+				await appendAgentPort(projectRoot, detectedPort);
+				options.openPorts.push(detectedPort);
+			}
+		}
+
+		const agentPortsBind = await getAgentPortsBind(projectRoot, sandboxProjDir);
+		if (agentPortsBind) {
+			protectionConfig.safeBinds.push(agentPortsBind);
+		}
+
 		await setupScratchLink(projectRoot, protectionConfig);
 	}
 
@@ -425,7 +448,12 @@ async function main(): Promise<void> {
 		// EM: Two stages: bwrap creates the namespaces and waits, pasta attaches
 		// EM: to the netns from outside, then the tool is released. See
 		// EM: src/sandbox/launch.ts and ADR 0001.
-		const result = await launchSandbox(bwrapCmd, options, toolDescription);
+		const result = await launchSandbox(
+			bwrapCmd,
+			options,
+			toolDescription,
+			repoRoot,
+		);
 		exitCode = result.exitCode;
 
 		if (options.worktree && worktreeInfo && protectionConfig) {

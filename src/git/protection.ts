@@ -370,6 +370,113 @@ function ancestorDirs(absPath: string): string[] {
 	return dirs;
 }
 
+const AGENT_PORTS_FILE = ".agentports";
+
+// ### readAgentPorts
+// [IMPLEMENTS](/design/features/network-isolation.md)
+// Reads and validates .agentports: one port per line, blank lines and #
+// comments (leading or trailing) skipped. Missing file -> []. A malformed
+// line throws rather than silently skipping — this is host-loopback network
+// exposure, not a workspace-protection list, so a config file that could
+// silently mean less than it looks like is the wrong failure mode here.
+//
+// Throws rather than calling process.exit itself, deliberately: this is also
+// called on every tick of the live-reload watcher in launch.ts, mid-session,
+// long after the sandbox is up. process.exit() there would kill the whole
+// scoder process from inside a background poll loop, skipping launchSandbox's
+// finally block entirely — no stopPasta, no bwrap teardown. The watcher
+// catches the throw and just warns, keeping the last-known-good config
+// running; only the startup caller in index.ts, where nothing is running
+// yet, treats it as fatal and exits.
+export async function readAgentPorts(projectRoot: string): Promise<number[]> {
+	const path = `${projectRoot}/${AGENT_PORTS_FILE}`;
+
+	if (!(await fileExists(path))) {
+		return [];
+	}
+
+	const content = await Bun.file(path).text();
+	const ports: number[] = [];
+
+	for (const rawLine of content.split("\n")) {
+		const trimmed = rawLine.split("#")[0]?.trim() ?? "";
+
+		if (trimmed === "") {
+			continue;
+		}
+
+		if (!/^\d+$/.test(trimmed)) {
+			throw new Error(
+				`${AGENT_PORTS_FILE} has an invalid line: "${rawLine.trim()}" — each line must be a single port number between 1 and 65535`,
+			);
+		}
+
+		const port = Number.parseInt(trimmed, 10);
+		if (port < 1 || port > 65535) {
+			throw new Error(
+				`${AGENT_PORTS_FILE} has a port out of range: "${rawLine.trim()}" — each line must be a single port number between 1 and 65535`,
+			);
+		}
+
+		if (!ports.includes(port)) {
+			ports.push(port);
+		}
+	}
+
+	return ports;
+}
+
+// ### appendAgentPort
+// Appends `port` if not already present, creating the file if missing.
+// Never reorders or removes existing entries — the same shape of thing
+// setupProtection already does for a missing .agentreadonly (seeding a
+// default), just additive to an existing file too, not only when absent.
+export async function appendAgentPort(
+	projectRoot: string,
+	port: number,
+): Promise<void> {
+	const path = `${projectRoot}/${AGENT_PORTS_FILE}`;
+	const existingPorts = await readAgentPorts(projectRoot);
+
+	if (existingPorts.includes(port)) {
+		return;
+	}
+
+	const alreadyExists = await fileExists(path);
+	const line = `${port}\n`;
+
+	if (alreadyExists) {
+		const content = await Bun.file(path).text();
+		const needsNewline = content.length > 0 && !content.endsWith("\n");
+		await Bun.write(path, content + (needsNewline ? "\n" : "") + line);
+	} else {
+		await Bun.write(path, line);
+	}
+
+	info(`Added ${port} to ${AGENT_PORTS_FILE}`);
+}
+
+// ### getAgentPortsBind
+// .agentports is always read-only inside the sandbox, unconditionally — the
+// same self-protection .agentreadonly already gives itself, not routed
+// through the .agentreadonly protected-paths mechanism.
+export async function getAgentPortsBind(
+	projectRoot: string,
+	sandboxProjDir: string,
+): Promise<BindMount | null> {
+	const path = `${projectRoot}/${AGENT_PORTS_FILE}`;
+
+	if (!(await fileExists(path))) {
+		return null;
+	}
+
+	return {
+		type: "ro-bind",
+		source: path,
+		dest: `${sandboxProjDir}/${AGENT_PORTS_FILE}`,
+	};
+}
+
 async function findProtectedPaths(
 	worktreeDir: string,
 	pattern: string,

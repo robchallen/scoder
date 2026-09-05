@@ -1,7 +1,7 @@
 export interface ScoderOptions {
 	quiet: boolean;
 	dryRun: boolean;
-	llmPorts: number[];
+	openPorts: number[];
 	configureAppArmor: boolean;
 	installDependencies: boolean;
 	worktree: boolean;

@@ -151,10 +151,11 @@ AGENTS.md overlay in direct mode does not include worktree-specific messages.
 
 Host localhost HTTP server is unreachable from the sandbox via pasta's default loopback blocking.
 
-### 17. llm-port-allows-host-loopback
-[TESTED_BY](/tests/scoder.test.ts#testLlmPortAllowsHostLoopback)
+### 17. agentports-forwards-listed-port
+[TESTED_BY](/tests/scoder.test.ts#testAgentportsForwardsListedPort)
 
-`--llm-port=<port>` allows reaching a specific host localhost port.
+A port listed in a project's `.agentports` file is reachable inside the
+sandbox without any CLI flag — `.agentports` replaced `--llm-port` entirely.
 
 ### 18. outbound-dns-works
 [TESTED_BY](/tests/scoder.test.ts#testOutboundDnsWorks)
@@ -194,12 +195,13 @@ Forwarding shim passes all arguments through to the underlying tool.
 symlink surviving. Running it in isolation only passes if a previous full run
 left the artifact behind. It should create its own fixture.
 
-### 24. llm-port-auto-detect
-[TESTED_BY](/tests/scoder.test.ts#testLlmPortAutoDetect)
+### 24. agentports-auto-detect-appends
+[TESTED_BY](/tests/scoder.test.ts#testAgentportsAutoDetectAppends)
 
 When `SCODER_LLM_PORT` is set and the port is open on localhost, scoder
-auto-detects it and allows the sandbox to reach that port without
-explicitly passing `--llm-port`.
+auto-detects it, reaches it immediately, and appends it to `.agentports` —
+additively, and only once: a second run with the port already listed does
+not duplicate the entry.
 
 ### 25. addGitExclude should mark AGENTS.md as skip-worktree
 [TESTED_BY](/tests/scoder.test.ts#testAddGitExclude)
@@ -486,11 +488,58 @@ A committed `scratch` symlink is present in a newly created worktree, with
 no scoder-side code involved in making that true — a sanity check on git's
 own symlink-as-blob behaviour, not a test of new scoder logic.
 
+### 64. llm-port-flag-removed
+[TESTED_BY](/tests/scoder.test.ts#testLlmPortFlagRemoved)
+
+`--llm-port` is an unknown option — it was removed, not deprecated, in
+favour of `.agentports`. See
+[design/implementation/plans/agentports.md](/design/implementation/plans/agentports.md).
+
+### 65. agentports-malformed-line-fails
+[TESTED_BY](/tests/scoder.test.ts#testAgentportsMalformedLineFails)
+
+A non-numeric line in `.agentports` exits non-zero, naming the bad line.
+
+### 66. agentports-is-readonly
+[TESTED_BY](/tests/scoder.test.ts#testAgentportsIsReadonly)
+
+`.agentports` is always bind-mounted read-only inside the sandbox, the same
+self-protection `.agentreadonly` gives itself.
+
+### 67. agentports-auto-detect-skips-under-dry-run
+[TESTED_BY](/tests/scoder.test.ts#testAgentportsAutoDetectSkipsUnderDryRun)
+
+`--dry-run` with a detectable port does not write `.agentports` — dry-run
+stays entirely side-effect free.
+
+### 68. agentports-live-reload-adds-port
+[TESTED_BY](/tests/scoder.test.ts#testAgentportsLiveReloadAddsPort)
+
+Editing `.agentports` mid-session reattaches pasta with the updated port
+list, without restarting the session. Uses a fake `pasta` that mimics real
+pasta's daemonize-then-exit shape — same reasoning as case 55
+(`bwrap-not-orphaned-on-pasta-attach-failure`), applied to the success path:
+this environment's own lack of `/dev/net/tun` would make a real pasta attach
+non-deterministic here, when what's actually under test is the watcher's
+swap logic, not pasta's own forwarding. Verified manually against this exact
+shim shape before being committed to the suite.
+
+### 69. agentports-live-reload-bad-edit-keeps-old-config
+[TESTED_BY](/tests/scoder.test.ts#testAgentportsLiveReloadBadEditKeepsOldConfig)
+
+A reattach that fails to attach falls back to re-attaching the last
+known-good port list, rather than leaving the sandbox with no networking.
+Only pins down the fail-then-restore sequence itself (the first three fake
+pasta invocations); a later poll tick retrying the same edit and succeeding
+is correct behaviour for a transient failure, not something this case
+constrains.
+
 ## Current Network Coverage
 
 - Host loopback access is blocked (`host-loopback-blocked`)
-- A configured localhost LLM port can be reached (`llm-port-allows-host-loopback`)
-- Auto-detection of an open LLM port enables that port without `--llm-port` (`llm-port-auto-detect`)
+- A port listed in `.agentports` can be reached (`agentports-forwards-listed-port`)
+- Auto-detection of an open LLM port appends it to `.agentports` (`agentports-auto-detect-appends`)
+- Editing `.agentports` mid-session live-reloads pasta (`agentports-live-reload-adds-port`, `agentports-live-reload-bad-edit-keeps-old-config`)
 - Outbound DNS resolution works (`outbound-dns-works`)
 
 ## Test Implementation Notes

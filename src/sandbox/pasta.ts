@@ -50,8 +50,8 @@ export function buildPastaArgs(
 	];
 
 	// EM: Forward the named localhost ports in, and block host loopback otherwise
-	if (options.llmPorts.length > 0) {
-		for (const port of options.llmPorts) {
+	if (options.openPorts.length > 0) {
+		for (const port of options.openPorts) {
 			args.push("--tcp-ns", port.toString());
 		}
 	} else {

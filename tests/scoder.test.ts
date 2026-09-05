@@ -601,6 +601,75 @@ test("agentreadonly-protected: .agentreadonly is always mounted read-only", asyn
 	}
 });
 
+// EM: ### Tests for the missing-.agentreadonly escape
+// EM: A missing source path gets no bind mount at all, which otherwise
+// EM: leaves that path part of the regular read-write project bind —
+// EM: letting the sandboxed agent create or edit .agentreadonly itself.
+// EM: Same bug class as .agentports; see
+// EM: design/implementation/plans/agentports.md.
+
+// ### Test: agentreadonly-created-if-missing
+test("agentreadonly-created-if-missing: a real session creates .agentreadonly with the default protected list", async () => {
+	const repoDir = await createTempRepo();
+	tempRepos.push(repoDir);
+
+	try {
+		const proc = Bun.spawn([SCODER_PATH, "-q", "/bin/bash", "-c", "true"], {
+			cwd: repoDir,
+			stdout: "pipe",
+			stderr: "pipe",
+		});
+		await proc.exited;
+
+		// The session itself may still fail later (pasta attaching), but the
+		// file is created before that point is ever reached.
+		const content = await Bun.file(`${repoDir}/.agentreadonly`).text();
+		expect(content).toContain(".github/");
+	} finally {
+		await cleanupRepo(repoDir);
+	}
+});
+
+// ### Test: agentreadonly-missing-file-not-writable-from-sandbox
+test("agentreadonly-missing-file-not-writable-from-sandbox: a session with no pre-existing .agentreadonly still protects it read-only", async () => {
+	const repoDir = await createTempRepo();
+	tempRepos.push(repoDir);
+
+	try {
+		const proc = Bun.spawn(
+			[
+				SCODER_PATH,
+				"-q",
+				"/bin/bash",
+				"-c",
+				"echo '# modified' >> .agentreadonly",
+			],
+			{ cwd: repoDir, stdout: "pipe", stderr: "pipe" },
+		);
+		await proc.exited;
+
+		const stderr = await new Response(proc.stderr).text();
+
+		// A pasta-attach failure means the sandboxed command never ran at
+		// all — the file would be untouched regardless of whether the fix
+		// under test works, so this would otherwise pass trivially whenever
+		// the sandbox can't launch (as in this suite's own dev environment,
+		// which lacks /dev/net/tun). Requiring the absence of that specific
+		// failure keeps the case honest: it fails here for that reason, not
+		// a false pass, and proves the real thing on a working machine.
+		expect(stderr).not.toContain("pasta failed to attach");
+
+		// Writing must fail inside the sandbox, in this very first session —
+		// not just protected starting the next run.
+		expect(proc.exitCode).not.toBe(0);
+
+		const content = await Bun.file(`${repoDir}/.agentreadonly`).text();
+		expect(content).not.toContain("modified");
+	} finally {
+		await cleanupRepo(repoDir);
+	}
+});
+
 // ### Test: agentreadonly-home-directory-readonly
 test("agentreadonly-home-directory-readonly: .agentreadonly HOME bind is read-only", async () => {
 	// Create a test directory in home

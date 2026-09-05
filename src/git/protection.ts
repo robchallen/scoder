@@ -143,13 +143,19 @@ export async function setupProtection(
 		}
 	}
 
-	if (agentreadonlyExists) {
-		safeBinds.push({
-			type: "ro-bind",
-			source: agentreadonlyPath,
-			dest: `${sandboxProjDir}/.agentreadonly`,
-		});
-	}
+	// EM: Unconditional, not gated on agentreadonlyExists: by this point the
+	// EM: file always exists, either it did already or the else branch above
+	// EM: just wrote a default. Gating this on the pre-write flag left a
+	// EM: freshly created default writable from inside the sandbox for that
+	// EM: first session — a missing source path gets no bind mount at all,
+	// EM: leaving .agentreadonly part of the regular read-write project bind.
+	// EM: Same bug class as the .agentports fix; see
+	// EM: design/implementation/plans/agentports.md.
+	safeBinds.push({
+		type: "ro-bind",
+		source: agentreadonlyPath,
+		dest: `${sandboxProjDir}/.agentreadonly`,
+	});
 
 	const agentsMdOverlay = await _setupAgentsMdOverlay(
 		sourceDir,

@@ -26,7 +26,11 @@ rules, or alter lockfiles. Read-only overlays prevent this.
 - `.agentreadonly` (gitignore-style, one path per line, `#` comments) overrides defaults
 - An empty `.agentreadonly` removes all default protections
 - `$HOME/...` entries bind host home directories read-only into `/home/scoder/`
-- The `.agentreadonly` file itself is always read-only
+- The `.agentreadonly` file itself is always read-only — including in the
+  very first session that finds it missing and writes the default: a
+  missing source path gets no bind mount at all, which previously left the
+  freshly created default writable from inside that same session (fixed;
+  see `agentreadonly-missing-file-not-writable-from-sandbox`)
 - Protected paths are applied as `--ro-bind` overlays **after** the worktree bind
 
 [HAS_FEATURE](./sandbox-isolation.md)

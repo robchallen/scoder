@@ -32,6 +32,23 @@ tags: [plan, sandbox, network, pasta, filesystem]
 >   startup caller in `index.ts` catches and exits (preserving the original
 >   behaviour), and the watcher catches and warns, keeping the last-known-
 >   good config running instead.
+>
+> A third issue was found and fixed *after* the initial implementation
+> shipped: **a missing `.agentports` was never created, so nothing was bound
+> at that path at all** — a missing source path gets no bind mount, which
+> left the path part of the regular read-write project bind. The sandboxed
+> agent could create `.agentports` itself, with whatever ports it liked,
+> completely unprotected — worse, `getAgentPortsBind` creating it (before
+> `buildBwrapCommand` runs) closes this within the very same session that
+> finds it missing, so this was never actually a "safe until next run" gap,
+> it was open in the first session too. Fixed by having `getAgentPortsBind`
+> create the file (a single header comment, `AGENT_PORTS_HEADER` in
+> `src/git/protection.ts`) before computing the bind, skipped under
+> `--dry-run` (which never runs anything inside the sandbox, so the gap
+> can't be exploited there, and dry-run must stay side-effect free per
+> Interaction 3 below). See `agentports-created-if-missing`,
+> `agentports-not-created-under-dry-run`, and
+> `agentports-missing-file-not-writable-from-sandbox` in the test suite.
 
 ## Goal
 

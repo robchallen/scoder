@@ -364,7 +364,11 @@ async function main(): Promise<void> {
 			}
 		}
 
-		const agentPortsBind = await getAgentPortsBind(projectRoot, sandboxProjDir);
+		const agentPortsBind = await getAgentPortsBind(
+			projectRoot,
+			sandboxProjDir,
+			options.dryRun,
+		);
 		if (agentPortsBind) {
 			protectionConfig.safeBinds.push(agentPortsBind);
 		}

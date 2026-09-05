@@ -371,6 +371,8 @@ function ancestorDirs(absPath: string): string[] {
 }
 
 const AGENT_PORTS_FILE = ".agentports";
+const AGENT_PORTS_HEADER =
+	"# .agentports — ports forwarded from host loopback into the sandbox, one per line\n";
 
 // ### readAgentPorts
 // [IMPLEMENTS](/design/features/network-isolation.md)
@@ -450,7 +452,7 @@ export async function appendAgentPort(
 		const needsNewline = content.length > 0 && !content.endsWith("\n");
 		await Bun.write(path, content + (needsNewline ? "\n" : "") + line);
 	} else {
-		await Bun.write(path, line);
+		await Bun.write(path, AGENT_PORTS_HEADER + line);
 	}
 
 	info(`Added ${port} to ${AGENT_PORTS_FILE}`);
@@ -460,14 +462,30 @@ export async function appendAgentPort(
 // .agentports is always read-only inside the sandbox, unconditionally — the
 // same self-protection .agentreadonly already gives itself, not routed
 // through the .agentreadonly protected-paths mechanism.
+//
+// If it doesn't exist yet, it is created first (header comment only) rather
+// than left unbound: a missing source path gets no bind mount at all, which
+// leaves that path part of the regular read-write project bind — letting the
+// sandboxed agent create .agentports itself, with whatever ports it likes
+// taking effect, completely unprotected, from that point on. Creating it
+// before buildBwrapCommand runs closes this within the very same session
+// that finds it missing, not just from the next run onward.
+//
+// Skipped under --dry-run, which never actually runs anything inside the
+// sandbox — there is nothing for the gap above to expose — and must stay
+// side-effect free, same as the auto-detect-and-append step.
 export async function getAgentPortsBind(
 	projectRoot: string,
 	sandboxProjDir: string,
+	dryRun: boolean,
 ): Promise<BindMount | null> {
 	const path = `${projectRoot}/${AGENT_PORTS_FILE}`;
 
 	if (!(await fileExists(path))) {
-		return null;
+		if (dryRun) {
+			return null;
+		}
+		await Bun.write(path, AGENT_PORTS_HEADER);
 	}
 
 	return {

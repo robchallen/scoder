@@ -28,7 +28,11 @@ localhost) unless explicitly allowed.
   allowed), listing host-loopback ports forwarded into the sandbox — an MCP
   server, a locally hosted research-tool API (Zotero, say), or an LLM
   endpoint. Always bind-mounted read-only into the sandbox, like
-  `.agentreadonly`. A malformed line throws with a clear message (not a
+  `.agentreadonly` — created first (a single header comment) if missing,
+  since a missing source path gets no bind mount at all, which would
+  otherwise leave the path part of the regular read-write project bind and
+  let the sandboxed agent create it itself, unprotected. Skipped under
+  `--dry-run`. A malformed line throws with a clear message (not a
   silent skip — this is network exposure, not a protection list).
 - **Auto-detection**: scoder checks if port 11434 is open on localhost at
   startup (override the probed port with `SCODER_LLM_PORT`). If something

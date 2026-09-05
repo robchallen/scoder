@@ -534,12 +534,42 @@ pasta invocations); a later poll tick retrying the same edit and succeeding
 is correct behaviour for a transient failure, not something this case
 constrains.
 
+### 70. agentports-not-created-under-dry-run
+[TESTED_BY](/tests/scoder.test.ts#testAgentportsNotCreatedUnderDryRun)
+
+`--dry-run` with no pre-existing `.agentports` does not create one — dry-run
+never runs anything inside the sandbox, so there is nothing for a missing
+bind to expose, and dry-run must stay side-effect free regardless.
+
+### 71. agentports-created-if-missing
+[TESTED_BY](/tests/scoder.test.ts#testAgentportsCreatedIfMissing)
+
+A real session with no pre-existing `.agentports` creates one on the host,
+containing a header comment, before the sandbox is ever built — closing the
+bind-mount gap described below regardless of whether the rest of the
+session goes on to succeed or fail.
+
+### 72. agentports-missing-file-not-writable-from-sandbox
+[TESTED_BY](/tests/scoder.test.ts#testAgentportsMissingFileNotWritableFromSandbox)
+
+A missing source path gets no bind mount at all, which otherwise leaves that
+path part of the regular read-write project bind — letting the sandboxed
+agent create `.agentports` itself, with whatever ports it likes, completely
+unprotected. This case attempts exactly that write from inside a session
+that started with no `.agentports` at all, and requires it to fail in the
+very first session, not just from the next run onward. Distinguishes a
+pasta-attach failure (this suite's own dev environment lacks
+`/dev/net/tun`, an unrelated cause) from an actual rejected write, so it
+cannot pass trivially just because the sandbox failed to launch for a
+different reason.
+
 ## Current Network Coverage
 
 - Host loopback access is blocked (`host-loopback-blocked`)
 - A port listed in `.agentports` can be reached (`agentports-forwards-listed-port`)
 - Auto-detection of an open LLM port appends it to `.agentports` (`agentports-auto-detect-appends`)
 - Editing `.agentports` mid-session live-reloads pasta (`agentports-live-reload-adds-port`, `agentports-live-reload-bad-edit-keeps-old-config`)
+- A missing `.agentports` is created and stays protected in the same session (`agentports-created-if-missing`, `agentports-missing-file-not-writable-from-sandbox`)
 - Outbound DNS resolution works (`outbound-dns-works`)
 
 ## Test Implementation Notes

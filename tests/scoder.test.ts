@@ -1144,6 +1144,83 @@ test("agentports-auto-detect-skips-under-dry-run: --dry-run with a detectable po
 	}
 });
 
+// ### Test: agentports-not-created-under-dry-run
+test("agentports-not-created-under-dry-run: --dry-run with no .agentports does not create one", async () => {
+	const repoDir = await createTempRepo();
+	tempRepos.push(repoDir);
+
+	try {
+		const output = await runScoder(repoDir, ["--dry-run", "/bin/bash"]);
+		expect(output).not.toContain(".agentports");
+		expect(await fileExists(`${repoDir}/.agentports`)).toBe(false);
+	} finally {
+		await cleanupRepo(repoDir);
+	}
+});
+
+// EM: ### Test for the missing-.agentports escape
+// EM: A missing source path gets no bind mount at all, which otherwise
+// EM: leaves that path part of the regular read-write project bind — letting
+// EM: the sandboxed agent create .agentports itself, with whatever ports it
+// EM: likes, unprotected, from that point on.
+
+// ### Test: agentports-created-if-missing
+test("agentports-created-if-missing: a real session creates .agentports with a header comment", async () => {
+	const repoDir = await createTempRepo();
+	tempRepos.push(repoDir);
+
+	try {
+		const proc = Bun.spawn([SCODER_PATH, "-q", "/bin/bash", "-c", "true"], {
+			cwd: repoDir,
+			stdout: "pipe",
+			stderr: "pipe",
+		});
+		await proc.exited;
+
+		// The session itself may still fail later (pasta attaching), but the
+		// file is created before that point is ever reached.
+		const content = await Bun.file(`${repoDir}/.agentports`).text();
+		expect(content).toContain("# .agentports");
+	} finally {
+		await cleanupRepo(repoDir);
+	}
+});
+
+// ### Test: agentports-missing-file-not-writable-from-sandbox
+test("agentports-missing-file-not-writable-from-sandbox: a session with no pre-existing .agentports still protects it read-only", async () => {
+	const repoDir = await createTempRepo();
+	tempRepos.push(repoDir);
+
+	try {
+		const proc = Bun.spawn(
+			[SCODER_PATH, "-q", "/bin/bash", "-c", "echo 1234 > .agentports"],
+			{ cwd: repoDir, stdout: "pipe", stderr: "pipe" },
+		);
+		await proc.exited;
+
+		const stderr = await new Response(proc.stderr).text();
+
+		// A pasta-attach failure means the sandboxed command never ran at
+		// all — the file would be untouched regardless of whether the fix
+		// under test works, so this would otherwise pass trivially whenever
+		// the sandbox can't launch (as in this suite's own dev environment,
+		// which lacks /dev/net/tun). Requiring the absence of that specific
+		// failure keeps the case honest: it fails here for that reason, not
+		// a false pass, and proves the real thing on a working machine.
+		expect(stderr).not.toContain("pasta failed to attach");
+
+		// Writing must fail inside the sandbox, in this very first session —
+		// not just protected starting the next run.
+		expect(proc.exitCode).not.toBe(0);
+
+		const content = await Bun.file(`${repoDir}/.agentports`).text();
+		expect(content).not.toContain("1234");
+		expect(content).toContain("# .agentports");
+	} finally {
+		await cleanupRepo(repoDir);
+	}
+});
+
 // ### Test: outbound-dns-works
 test("outbound-dns-works: DNS resolution works inside sandbox", async () => {
 	const repoDir = await createTempRepo();

@@ -191,7 +191,9 @@ file's presence and content is the entire mechanism, same as
 ```
 
 - **Always read-only inside the sandbox**, like `.agentreadonly` — only the
-  host side can change it.
+  host side can change it. If it doesn't exist yet, it's created first (just
+  a header comment) rather than left unbound, which would otherwise leave it
+  writable from inside the sandbox in that first session.
 - **A malformed line fails the session outright**, naming the bad line —
   this is network exposure, not a workspace-protection list, so a config
   file that could silently mean less than it looks like is the wrong

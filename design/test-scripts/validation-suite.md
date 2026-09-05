@@ -26,7 +26,7 @@ tags: [test-script, validation]
 
 `tests/scoder.test.ts` is a self-contained integration test suite that creates
 temporary git repositories under `/tmp`, runs `scoder` against them using
-`/bin/bash` as the sandboxed command, and asserts expected behaviour. 63
+`/bin/bash` as the sandboxed command, and asserts expected behaviour. 74
 tests cover all sandbox mechanics.
 
 Cleanup runs in an `afterAll` hook. It removes the temp repos, their worktrees
@@ -562,6 +562,26 @@ pasta-attach failure (this suite's own dev environment lacks
 `/dev/net/tun`, an unrelated cause) from an actual rejected write, so it
 cannot pass trivially just because the sandbox failed to launch for a
 different reason.
+
+### 73. agentreadonly-created-if-missing
+[TESTED_BY](/tests/scoder.test.ts#testAgentreadonlyCreatedIfMissing)
+
+A real session with no pre-existing `.agentreadonly` creates one on the
+host, containing the default protected-path list, before the sandbox is
+ever built.
+
+### 74. agentreadonly-missing-file-not-writable-from-sandbox
+[TESTED_BY](/tests/scoder.test.ts#testAgentreadonlyMissingFileNotWritableFromSandbox)
+
+A missing source path gets no bind mount at all, which otherwise leaves
+that path part of the regular read-write project bind — letting the
+sandboxed agent create or edit `.agentreadonly` itself. This case attempts
+exactly that edit from inside a session that started with no
+`.agentreadonly` at all, and requires it to fail in the very first session,
+not just from the next run onward. Distinguishes a pasta-attach failure
+(this suite's own dev environment lacks `/dev/net/tun`, an unrelated cause)
+from an actual rejected write, so it cannot pass trivially just because the
+sandbox failed to launch for a different reason.
 
 ## Current Network Coverage
 

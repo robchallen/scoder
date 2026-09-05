@@ -52,7 +52,7 @@ src/
     └── paths.ts           # Host ↔ sandbox path translation (home remapping)
 
 tests/
-└── scoder.test.ts        # Integration test suite (69 tests as of v2.4.0)
+└── scoder.test.ts        # Integration test suite (74 tests as of v2.4.0)
 ```
 
 ## Execution Flow

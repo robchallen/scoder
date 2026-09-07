@@ -1,7 +1,9 @@
 import type { ScoderOptions } from "../types.ts";
 
 // EM: CLI argument parsing for scoder command-line interface
-// EM: Implements dry-run-mode and tool preset selection via --llm-port
+// EM: Implements dry-run-mode and tool preset selection
+// EM: Host-loopback port access is configured via .agentports, not a flag —
+// EM: see src/git/protection.ts and design/implementation/plans/agentports.md
 
 const USAGE = `scoder 2.3.0
 Sandboxed runner for coding tools using bubblewrap and pasta.
@@ -23,9 +25,6 @@ Options:
    -q, --quiet             Suppress informational output
    -w, --worktree          Enable git worktree isolation
        --no-worktree       Run directly in current directory (no worktree) (default)
-       --llm-port PORTS    Allow localhost TCP access to these comma-separated ports
-                            instead of the auto-detected default on 11434
-                            (override with SCODER_LLM_PORT)
        --allow-ssh USER@HOST  Open a single pre-authenticated ssh connection to
                             USER@HOST outside the sandbox, and expose only
                             that one connection inside it
@@ -55,7 +54,7 @@ export function parseArgs(args: string[]): ParseResult {
 	const options: ScoderOptions = {
 		quiet: false,
 		dryRun: false,
-		llmPorts: [],
+		openPorts: [],
 		configureAppArmor: false,
 		installDependencies: false,
 		worktree: false,
@@ -114,53 +113,6 @@ export function parseArgs(args: string[]): ParseResult {
 		if (arg === "--install-dependencies") {
 			options.installDependencies = true;
 			i++;
-			continue;
-		}
-
-		if (arg.startsWith("--llm-port=")) {
-			const portStr = arg.slice("--llm-port=".length);
-			const ports = parsePorts(portStr);
-			if (ports === null) {
-				return {
-					options,
-					toolName: null,
-					toolArgs: [],
-					showHelp: false,
-					showVersion: false,
-					error:
-						"--llm-port must be a comma-separated list of integers between 1 and 65535",
-				};
-			}
-			options.llmPorts = ports;
-			i++;
-			continue;
-		}
-
-		if (arg === "--llm-port") {
-			if (i + 1 >= args.length) {
-				return {
-					options,
-					toolName: null,
-					toolArgs: [],
-					showHelp: false,
-					showVersion: false,
-					error: "--llm-port requires a port number",
-				};
-			}
-			const ports = parsePorts(args[i + 1]);
-			if (ports === null) {
-				return {
-					options,
-					toolName: null,
-					toolArgs: [],
-					showHelp: false,
-					showVersion: false,
-					error:
-						"--llm-port must be a comma-separated list of integers between 1 and 65535",
-				};
-			}
-			options.llmPorts = ports;
-			i += 2;
 			continue;
 		}
 
@@ -231,21 +183,6 @@ function isValidSshTarget(target: string | undefined): target is string {
 
 	const parts = target.split("@");
 	return parts.length === 2 && parts[0].length > 0 && parts[1].length > 0;
-}
-
-function parsePorts(portStr: string): number[] | null {
-	const ports = portStr.split(",");
-	const result: number[] = [];
-
-	for (const port of ports) {
-		const num = parseInt(port, 10);
-		if (Number.isNaN(num) || num < 1 || num > 65535) {
-			return null;
-		}
-		result.push(num);
-	}
-
-	return result;
 }
 
 export function printUsage(): void {

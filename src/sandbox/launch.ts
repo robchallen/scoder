@@ -1,6 +1,7 @@
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { readAgentPorts } from "../git/protection.ts";
 import type { ScoderOptions } from "../types.ts";
 import { error, info, warning } from "../utils/logger.ts";
 import { terminateProcess } from "../utils/process.ts";
@@ -40,6 +41,13 @@ const FORWARDED_SIGNALS = ["SIGWINCH", "SIGINT", "SIGQUIT", "SIGTSTP"] as const;
 const DOUBLE_SIGINT_WINDOW_MS =
 	Number.parseInt(process.env.SCODER_DOUBLE_SIGINT_WINDOW_MS || "", 10) || 2000;
 
+/**
+ * How often to re-read .agentports during a live session. Overridable so
+ * tests don't have to wait out a multi-second interval to observe a reload.
+ */
+const AGENT_PORTS_POLL_MS =
+	Number.parseInt(process.env.SCODER_AGENTPORTS_POLL_MS || "", 10) || 2000;
+
 export interface LaunchResult {
 	exitCode: number;
 }
@@ -53,14 +61,16 @@ export async function launchSandbox(
 	bwrapCmd: string[],
 	options: ScoderOptions,
 	toolDescription: string,
+	projectRoot: string,
 ): Promise<LaunchResult> {
 	const rendezvous = await mkdtemp(join(tmpdir(), "scoder-launch-"));
 	const infoPath = join(rendezvous, "info");
 	const blockPath = join(rendezvous, "block");
-	const pidFile = join(rendezvous, "pasta.pid");
+	const pidFile = join(rendezvous, "pasta-0.pid");
 
 	let sidecar: PastaSidecar | null = null;
 	let signalForwarder: SignalForwarder | null = null;
+	let portsWatcher: AgentPortsWatcher | null = null;
 
 	try {
 		// bwrap blocks reading this fifo until we release it
@@ -101,6 +111,16 @@ export async function launchSandbox(
 		// the fifo rather than anything fd-based on our side.
 		await Bun.write(blockPath, "go\n");
 
+		// From here on the ports watcher owns the sidecar's lifetime — it may
+		// swap it out for a fresh one if .agentports changes mid-session.
+		portsWatcher = startAgentPortsWatcher(
+			projectRoot,
+			options,
+			childPid,
+			rendezvous,
+			sidecar,
+		);
+
 		const exitCode = await proc.exited;
 		return { exitCode };
 	} finally {
@@ -111,7 +131,11 @@ export async function launchSandbox(
 
 		// pasta lives outside the sandbox, so bwrap's --die-with-parent does not
 		// reap it. Every exit path has to come through here.
-		await stopPasta(sidecar);
+		if (portsWatcher) {
+			await portsWatcher.stop();
+		} else {
+			await stopPasta(sidecar);
+		}
 		await rm(rendezvous, { recursive: true, force: true });
 	}
 }
@@ -267,6 +291,121 @@ function installSignalForwarding(
 			}
 		},
 	};
+}
+
+interface AgentPortsWatcher {
+	/** Stops polling and tears down whichever sidecar is currently active. */
+	stop(): Promise<void>;
+}
+
+// ### startAgentPortsWatcher
+// [IMPLEMENTS](/design/features/network-isolation.md)
+// Polls .agentports for the rest of the session and reloads pasta when it
+// changes — the netns belongs to bwrap, not pasta (see ADR 0001), so a swap
+// never touches the sandbox itself, only which ports are forwarded into it.
+//
+// Deliberately polling, not inotify/fs.watch: sidesteps a real class of bugs
+// atomic-save editors cause for single-file watches (write-to-temp-then-
+// rename changes the inode). A few seconds of reload latency is a fine trade
+// for that; nothing here needs sub-second responsiveness.
+//
+// Sequential swap (stop the old sidecar, then attach the new one), not the
+// zero-gap "attach new before stopping old" version considered during
+// design: whether two pasta processes can be attached to one netns at once
+// was never verified, so this takes the option that doesn't depend on the
+// answer. If the new attach fails, it falls back to re-attaching the last
+// known-good port list rather than leaving the sandbox with no networking —
+// that fallback is a real (if brief) second gap on the failure path, not the
+// common one.
+function startAgentPortsWatcher(
+	projectRoot: string,
+	options: ScoderOptions,
+	childPid: number,
+	rendezvous: string,
+	initialSidecar: PastaSidecar,
+): AgentPortsWatcher {
+	let current: PastaSidecar | null = initialSidecar;
+	let currentPorts = options.openPorts;
+	let stopped = false;
+	let swapCount = 0;
+
+	const loop = (async () => {
+		while (!stopped) {
+			await Bun.sleep(AGENT_PORTS_POLL_MS);
+			if (stopped) {
+				return;
+			}
+
+			let latestPorts: number[];
+			try {
+				latestPorts = await readAgentPorts(projectRoot);
+			} catch (err) {
+				warning(`Failed to re-read .agentports: ${err}`);
+				continue;
+			}
+
+			if (portsEqual(latestPorts, currentPorts)) {
+				continue;
+			}
+
+			info(
+				`.agentports changed — reloading pasta with ports: ${latestPorts.join(", ") || "none"}`,
+			);
+
+			await stopPasta(current);
+			swapCount++;
+			const newSidecar = await attachPasta(
+				{ ...options, openPorts: latestPorts },
+				childPid,
+				join(rendezvous, `pasta-${swapCount}.pid`),
+			);
+
+			if (newSidecar) {
+				current = newSidecar;
+				currentPorts = latestPorts;
+				continue;
+			}
+
+			warning(
+				".agentports reload failed to attach — restoring the previous port configuration",
+			);
+			swapCount++;
+			const restored = await attachPasta(
+				{ ...options, openPorts: currentPorts },
+				childPid,
+				join(rendezvous, `pasta-${swapCount}.pid`),
+			);
+
+			if (restored) {
+				current = restored;
+				warning("restored the previous .agentports configuration");
+			} else {
+				current = null;
+				error(
+					"failed to restore the previous .agentports configuration — the sandbox has no forwarded ports",
+				);
+			}
+		}
+	})();
+
+	return {
+		async stop(): Promise<void> {
+			stopped = true;
+			await loop;
+			await stopPasta(current);
+		},
+	};
+}
+
+function portsEqual(a: number[], b: number[]): boolean {
+	if (a.length !== b.length) {
+		return false;
+	}
+
+	const sortedA = [...a].sort((x, y) => x - y);
+	const sortedB = [...b].sort((x, y) => x - y);
+
+	return sortedA.every((port, i) => port === sortedB[i]);
 }
 
 async function findChildPid(parentPid: number): Promise<number | null> {

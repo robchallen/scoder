@@ -1016,26 +1016,130 @@ test("host-loopback-blocked: Host localhost HTTP server is unreachable", async (
 	}
 });
 
-// ### Test: llm-port-auto-detect
-let autoDetectServer: Bun.Server | null = null;
+// EM: ### Tests for `.agentports`
+// EM: See design/implementation/plans/agentports.md. Replaces the old
+// EM: --llm-port flag entirely — llm-port-auto-detect and
+// EM: llm-port-allows-host-loopback lived here before; their functional
+// EM: coverage now lives in agentports-auto-detect-appends and
+// EM: agentports-forwards-listed-port below.
 
-test("llm-port-auto-detect: Auto-detected port is reachable without --llm-port", async () => {
-	const testPort = parseInt(process.env.SCODER_LLM_PORT || "", 10) || 19997;
-
+// ### Test: llm-port-flag-removed
+test("llm-port-flag-removed: --llm-port is an unknown option", async () => {
 	const repoDir = await createTempRepo();
 	tempRepos.push(repoDir);
 
-	// Start a local HTTP server (must await - Bun.serve() is async)
-	autoDetectServer = await Bun.serve({
+	try {
+		const proc = Bun.spawn([SCODER_PATH, "--llm-port", "8080", "/bin/bash"], {
+			cwd: repoDir,
+			stdout: "pipe",
+			stderr: "pipe",
+		});
+		await proc.exited;
+
+		expect(proc.exitCode).not.toBe(0);
+		const stderr = await new Response(proc.stderr).text();
+		expect(stderr).toContain("unknown option: --llm-port");
+	} finally {
+		await cleanupRepo(repoDir);
+	}
+});
+
+// ### Test: agentports-forwards-listed-port
+test("agentports-forwards-listed-port: a port listed in .agentports is reachable without any flag", async () => {
+	const repoDir = await createTempRepo();
+	tempRepos.push(repoDir);
+
+	const server = Bun.serve({
+		port: 19998,
+		fetch() {
+			return new Response("OK");
+		},
+	});
+	testServers.push(server);
+
+	try {
+		await Bun.write(`${repoDir}/.agentports`, "19998\n");
+
+		const proc = Bun.spawn(
+			[
+				SCODER_PATH,
+				"-q",
+				"/bin/bash",
+				"-c",
+				"curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:19998",
+			],
+			{ cwd: repoDir, stdout: "pipe", stderr: "pipe" },
+		);
+		await proc.exited;
+
+		expect(proc.exitCode).toBe(0);
+		const output = await new Response(proc.stdout).text();
+		expect(output.trim()).toBe("200");
+	} finally {
+		await cleanupRepo(repoDir);
+		server.stop();
+	}
+});
+
+// ### Test: agentports-malformed-line-fails
+test("agentports-malformed-line-fails: a non-numeric line exits 1 naming the bad line", async () => {
+	const repoDir = await createTempRepo();
+	tempRepos.push(repoDir);
+
+	try {
+		await Bun.write(`${repoDir}/.agentports`, "11434\nnotaport\n");
+
+		const proc = Bun.spawn([SCODER_PATH, "--dry-run", "/bin/bash"], {
+			cwd: repoDir,
+			stdout: "pipe",
+			stderr: "pipe",
+		});
+		await proc.exited;
+
+		expect(proc.exitCode).not.toBe(0);
+		const stderr = await new Response(proc.stderr).text();
+		expect(stderr).toContain('.agentports has an invalid line: "notaport"');
+	} finally {
+		await cleanupRepo(repoDir);
+	}
+});
+
+// ### Test: agentports-is-readonly
+test("agentports-is-readonly: --dry-run shows a ro-bind for .agentports, not a bind", async () => {
+	const repoDir = await createTempRepo();
+	tempRepos.push(repoDir);
+
+	try {
+		await Bun.write(`${repoDir}/.agentports`, "8080\n");
+
+		const output = await runScoder(repoDir, ["--dry-run", "/bin/bash"]);
+		expect(output).toContain(
+			`--ro-bind ${repoDir}/.agentports ${SCODER_HOME}${repoDir}/.agentports`,
+		);
+		expect(output).not.toContain(
+			`--bind ${repoDir}/.agentports ${SCODER_HOME}${repoDir}/.agentports`,
+		);
+	} finally {
+		await cleanupRepo(repoDir);
+	}
+});
+
+// ### Test: agentports-auto-detect-appends
+test("agentports-auto-detect-appends: an auto-detected port is written to .agentports, once", async () => {
+	const repoDir = await createTempRepo();
+	tempRepos.push(repoDir);
+	const testPort = 19997;
+
+	const server = await Bun.serve({
 		port: testPort,
 		fetch() {
 			return new Response("auto-detected-ok");
 		},
 	});
+	testServers.push(server);
 
 	try {
-		// Run scoder WITHOUT --llm-port but with SCODER_LLM_PORT set
-		const proc = await Bun.spawn(
+		const first = await Bun.spawn(
 			[
 				SCODER_PATH,
 				"-q",
@@ -1047,63 +1151,142 @@ test("llm-port-auto-detect: Auto-detected port is reachable without --llm-port",
 				cwd: repoDir,
 				stdout: "pipe",
 				stderr: "pipe",
-				env: { SCODER_LLM_PORT: testPort.toString() },
+				env: { ...process.env, SCODER_LLM_PORT: testPort.toString() },
 			},
 		);
-		await proc.exited;
+		await first.exited;
 
-		// Should succeed because scoder auto-detected the port
-		expect(proc.exitCode).toBe(0);
-
-		const output = await new Response(proc.stdout).text();
+		expect(first.exitCode).toBe(0);
+		const output = await new Response(first.stdout).text();
 		expect(output.trim()).toBe("auto-detected-ok");
+
+		const afterFirst = await Bun.file(`${repoDir}/.agentports`).text();
+		expect(afterFirst.trim()).toBe(testPort.toString());
+
+		// Second run: the port is already listed, so it must not duplicate.
+		const second = await Bun.spawn(
+			[SCODER_PATH, "-q", "/bin/bash", "-c", "true"],
+			{
+				cwd: repoDir,
+				stdout: "pipe",
+				stderr: "pipe",
+				env: { ...process.env, SCODER_LLM_PORT: testPort.toString() },
+			},
+		);
+		await second.exited;
+		expect(second.exitCode).toBe(0);
+
+		const afterSecond = await Bun.file(`${repoDir}/.agentports`).text();
+		expect(afterSecond.trim()).toBe(testPort.toString());
 	} finally {
 		await cleanupRepo(repoDir);
-		if (autoDetectServer) {
-			autoDetectServer.stop();
-			autoDetectServer = null;
-		}
 	}
 });
 
-// ### Test: llm-port-allows-host-loopback
-test("llm-port-allows-host-loopback: --llm-port allows reaching specific localhost port", async () => {
+// ### Test: agentports-auto-detect-skips-under-dry-run
+test("agentports-auto-detect-skips-under-dry-run: --dry-run with a detectable port does not write .agentports", async () => {
 	const repoDir = await createTempRepo();
 	tempRepos.push(repoDir);
+	const testPort = 19996;
 
-	// Start a local HTTP server
-	const server = Bun.serve({
-		port: 19998,
+	const server = await Bun.serve({
+		port: testPort,
 		fetch() {
-			return new Response("OK");
+			return new Response("ok");
 		},
 	});
 	testServers.push(server);
 
 	try {
-		// Try to reach the host localhost with --llm-port
-		const proc = await Bun.spawn(
-			[
-				"scoder",
-				"--llm-port",
-				"19998",
-				"-q",
-				"/bin/bash",
-				"-c",
-				"curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:19998",
-			],
+		const proc = Bun.spawn([SCODER_PATH, "--dry-run", "/bin/bash"], {
+			cwd: repoDir,
+			stdout: "pipe",
+			stderr: "pipe",
+			env: { ...process.env, SCODER_LLM_PORT: testPort.toString() },
+		});
+		await proc.exited;
+		expect(proc.exitCode).toBe(0);
+
+		expect(await fileExists(`${repoDir}/.agentports`)).toBe(false);
+	} finally {
+		await cleanupRepo(repoDir);
+	}
+});
+
+// ### Test: agentports-not-created-under-dry-run
+test("agentports-not-created-under-dry-run: --dry-run with no .agentports does not create one", async () => {
+	const repoDir = await createTempRepo();
+	tempRepos.push(repoDir);
+
+	try {
+		const output = await runScoder(repoDir, ["--dry-run", "/bin/bash"]);
+		expect(output).not.toContain(".agentports");
+		expect(await fileExists(`${repoDir}/.agentports`)).toBe(false);
+	} finally {
+		await cleanupRepo(repoDir);
+	}
+});
+
+// EM: ### Test for the missing-.agentports escape
+// EM: A missing source path gets no bind mount at all, which otherwise
+// EM: leaves that path part of the regular read-write project bind — letting
+// EM: the sandboxed agent create .agentports itself, with whatever ports it
+// EM: likes, unprotected, from that point on.
+
+// ### Test: agentports-created-if-missing
+test("agentports-created-if-missing: a real session creates .agentports with a header comment", async () => {
+	const repoDir = await createTempRepo();
+	tempRepos.push(repoDir);
+
+	try {
+		const proc = Bun.spawn([SCODER_PATH, "-q", "/bin/bash", "-c", "true"], {
+			cwd: repoDir,
+			stdout: "pipe",
+			stderr: "pipe",
+		});
+		await proc.exited;
+
+		// The session itself may still fail later (pasta attaching), but the
+		// file is created before that point is ever reached.
+		const content = await Bun.file(`${repoDir}/.agentports`).text();
+		expect(content).toContain("# .agentports");
+	} finally {
+		await cleanupRepo(repoDir);
+	}
+});
+
+// ### Test: agentports-missing-file-not-writable-from-sandbox
+test("agentports-missing-file-not-writable-from-sandbox: a session with no pre-existing .agentports still protects it read-only", async () => {
+	const repoDir = await createTempRepo();
+	tempRepos.push(repoDir);
+
+	try {
+		const proc = Bun.spawn(
+			[SCODER_PATH, "-q", "/bin/bash", "-c", "echo 1234 > .agentports"],
 			{ cwd: repoDir, stdout: "pipe", stderr: "pipe" },
 		);
 		await proc.exited;
 
-		// Should succeed now that we've enabled the port
-		expect(proc.exitCode).toBe(0);
+		const stderr = await new Response(proc.stderr).text();
 
-		const output = await new Response(proc.stdout).text();
-		expect(output.trim()).toBe("200");
+		// A pasta-attach failure means the sandboxed command never ran at
+		// all — the file would be untouched regardless of whether the fix
+		// under test works, so this would otherwise pass trivially whenever
+		// the sandbox can't launch (as in this suite's own dev environment,
+		// which lacks /dev/net/tun). Requiring the absence of that specific
+		// failure keeps the case honest: it fails here for that reason, not
+		// a false pass, and proves the real thing on a working machine.
+		expect(stderr).not.toContain("pasta failed to attach");
+
+		// Writing must fail inside the sandbox, in this very first session —
+		// not just protected starting the next run.
+		expect(proc.exitCode).not.toBe(0);
+
+		const content = await Bun.file(`${repoDir}/.agentports`).text();
+		expect(content).not.toContain("1234");
+		expect(content).toContain("# .agentports");
 	} finally {
 		await cleanupRepo(repoDir);
-		server.stop();
 	}
 });
 
@@ -2438,6 +2621,167 @@ test.skipIf(!python3Available)(
 		}
 	},
 );
+
+// EM: ### Tests for .agentports live-reload
+// EM: See design/implementation/plans/agentports.md. A fake pasta that
+// EM: mimics real pasta's daemonize-then-exit shape (writes its own pid to
+// EM: --pid, then keeps running detached) lets the watcher's swap logic be
+// EM: exercised deterministically, without needing a working /dev/net/tun —
+// EM: same reasoning as the bwrap-orphan test above, applied to the success
+// EM: path instead of the failure path. Verified manually against this exact
+// EM: shim shape before being committed to the suite.
+//
+// EM: The pidfile write happens in the shim's foreground, using the
+// EM: already-known backgrounded pid ($!) — writing it from the backgrounded
+// EM: process itself would race attachPasta's immediate read of the file.
+
+async function createFakePastaShim(
+	logPath: string,
+	failOnInvocation?: number,
+): Promise<string> {
+	const shimDir = `/tmp/scoder-fake-pasta-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
+	await Bun.spawn(["mkdir", "-p", shimDir]).exited;
+
+	const failClause = failOnInvocation
+		? `if [ "$COUNT" -eq ${failOnInvocation} ]; then exit 1; fi\n`
+		: "";
+
+	// biome-ignore-start lint/suspicious/noTemplateCurlyInString: these are
+	// literal bash "${...}" references in a generated shell script, not
+	// forgotten JS template placeholders — this is a plain string, not a
+	// template literal, so JS never interpolates them.
+	const script =
+		"#!/bin/bash\n" +
+		'PIDFILE=""\n' +
+		'ARGS=("$@")\n' +
+		"for ((i=0; i<${#ARGS[@]}; i++)); do\n" +
+		'  if [[ "${ARGS[$i]}" == "--pid" ]]; then\n' +
+		'    PIDFILE="${ARGS[$((i+1))]}"\n' +
+		"  fi\n" +
+		"done\n" +
+		// biome-ignore-end lint/suspicious/noTemplateCurlyInString: see above
+		`COUNT_FILE="${logPath}.count"\n` +
+		'COUNT=$(( $(cat "$COUNT_FILE" 2>/dev/null || echo 0) + 1 ))\n' +
+		'echo "$COUNT" > "$COUNT_FILE"\n' +
+		`echo "$*" >> "${logPath}"\n` +
+		failClause +
+		"nohup sleep infinity >/dev/null 2>&1 &\n" +
+		"BGPID=$!\n" +
+		"disown\n" +
+		'echo "$BGPID" > "$PIDFILE"\n' +
+		"exit 0\n";
+
+	await Bun.write(`${shimDir}/pasta`, script);
+	await Bun.spawn(["chmod", "+x", `${shimDir}/pasta`]).exited;
+	return shimDir;
+}
+
+// ### Test: agentports-live-reload-adds-port
+test("agentports-live-reload-adds-port: editing .agentports mid-session reattaches with the new ports", async () => {
+	const repoDir = await createTempRepo();
+	tempRepos.push(repoDir);
+	const logPath = `${repoDir}-pasta.log`;
+	const shimDir = await createFakePastaShim(logPath);
+
+	try {
+		await Bun.write(`${repoDir}/.agentports`, "11434\n");
+
+		const proc = Bun.spawn([SCODER_PATH, "-q", "/bin/bash", "-c", "sleep 3"], {
+			cwd: repoDir,
+			stdout: "pipe",
+			stderr: "pipe",
+			env: {
+				...process.env,
+				PATH: `${shimDir}:${process.env.PATH}`,
+				SCODER_AGENTPORTS_POLL_MS: "200",
+			},
+		});
+
+		// Give the initial attach time to land before editing.
+		await Bun.sleep(800);
+		await Bun.write(`${repoDir}/.agentports`, "11434\n23119\n");
+
+		await proc.exited;
+		expect(proc.exitCode).toBe(0);
+
+		const invocations = (await Bun.file(logPath).text())
+			.trim()
+			.split("\n")
+			.filter((line) => line.length > 0);
+
+		expect(invocations.length).toBe(2);
+		expect(invocations[0]).toContain("--tcp-ns 11434");
+		expect(invocations[0]).not.toContain("23119");
+		expect(invocations[1]).toContain("--tcp-ns 11434");
+		expect(invocations[1]).toContain("--tcp-ns 23119");
+	} finally {
+		await Bun.spawn(["pkill", "-f", shimDir]).exited;
+		await Bun.spawn(["rm", "-rf", shimDir]).exited;
+		await Bun.spawn(["rm", "-f", logPath, `${logPath}.count`]).exited;
+		await cleanupRepo(repoDir);
+	}
+});
+
+// ### Test: agentports-live-reload-bad-edit-keeps-old-config
+test("agentports-live-reload-bad-edit-keeps-old-config: a failed reattach falls back to the previous ports", async () => {
+	const repoDir = await createTempRepo();
+	tempRepos.push(repoDir);
+	const logPath = `${repoDir}-pasta.log`;
+	// Invocation 1 is the initial attach; invocation 2 is the watcher's first
+	// reload attempt (forced to fail); invocation 3 is the restore attempt.
+	const shimDir = await createFakePastaShim(logPath, 2);
+
+	try {
+		await Bun.write(`${repoDir}/.agentports`, "11434\n");
+
+		const proc = Bun.spawn([SCODER_PATH, "-q", "/bin/bash", "-c", "sleep 3"], {
+			cwd: repoDir,
+			stdout: "pipe",
+			stderr: "pipe",
+			env: {
+				...process.env,
+				PATH: `${shimDir}:${process.env.PATH}`,
+				SCODER_AGENTPORTS_POLL_MS: "200",
+			},
+		});
+
+		await Bun.sleep(800);
+		await Bun.write(`${repoDir}/.agentports`, "11434\n23119\n");
+
+		await proc.exited;
+		expect(proc.exitCode).toBe(0);
+
+		const stderr = await new Response(proc.stderr).text();
+		expect(stderr).toContain(
+			"reload failed to attach — restoring the previous port configuration",
+		);
+		expect(stderr).toContain("restored the previous .agentports configuration");
+
+		// Only the second invocation is forced to fail, so once the restore
+		// (the third invocation) puts the watcher back on the old ports, the
+		// next poll tick sees .agentports still asking for the new ones and
+		// retries — which now succeeds. That retry-on-a-transient-failure
+		// behaviour is correct, not a bug, so this only pins down the first
+		// three invocations (the fail-then-restore sequence itself), not the
+		// total count.
+		const invocations = (await Bun.file(logPath).text())
+			.trim()
+			.split("\n")
+			.filter((line) => line.length > 0);
+
+		expect(invocations.length).toBeGreaterThanOrEqual(3);
+		expect(invocations[0]).toContain("--tcp-ns 11434");
+		expect(invocations[0]).not.toContain("23119");
+		expect(invocations[1]).toContain("--tcp-ns 23119"); // the attempt that failed
+		expect(invocations[2]).toContain("--tcp-ns 11434");
+		expect(invocations[2]).not.toContain("23119"); // restored to the old list
+	} finally {
+		await Bun.spawn(["pkill", "-f", shimDir]).exited;
+		await Bun.spawn(["rm", "-rf", shimDir]).exited;
+		await Bun.spawn(["rm", "-f", logPath, `${logPath}.count`]).exited;
+		await cleanupRepo(repoDir);
+	}
+});
 
 // EM: ### Tests for the `scratch` symlink
 // EM: See design/implementation/plans/persistent-rw-scratch.md

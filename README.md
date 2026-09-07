@@ -70,10 +70,14 @@ on a separate git branch via a worktree.
 - **Host localhost blocked** — tools run behind `pasta` with host localhost
   forwarding disabled, so host-local TCP services are not reachable
   from the sandbox while outbound networking stays available.
-- **Localhost LLM exemption** — if a local OpenAI-compatible API is listening on
-  port `11434` (the Ollama default) it is auto-detected at startup and that one
-  port is forwarded into the sandbox. Override the probed port with
-  `SCODER_LLM_PORT`, or name ports explicitly with `--llm-port=<ports>`.
+- **Persistent host-loopback ports** — an `.agentports` file at the project
+  root lists ports forwarded into the sandbox (an MCP server, a local
+  research-tool API, an LLM endpoint), live-reloaded if edited mid-session.
+  If a local OpenAI-compatible API is listening on port `11434` (the Ollama
+  default) it is auto-detected at startup and appended to `.agentports`
+  automatically. Override the probed port with `SCODER_LLM_PORT`. See
+  [persistent host-loopback ports](#persistent-host-loopback-ports-an-agentports-file)
+  below.
 - **No ssh access by default** — with `--allow-ssh user@host`, scoder opens a
   single pre-authenticated ssh connection to that one destination outside the
   sandbox and multiplexes only that connection in. See
@@ -96,7 +100,6 @@ scoder opencode                   # sandbox opencode in current directory (direc
 scoder claude                     # sandbox claude code
 scoder copilot                    # sandbox GitHub Copilot CLI
 scoder -w opencode                # isolate changes on a scoder/<repo> branch
-scoder --llm-port=8080 claude     # allow access to a local LLM on port 8080
 scoder --dry-run opencode         # show bwrap command without running
 bun test                          # run the validation suite
 ```
@@ -109,16 +112,13 @@ bun test                          # run the validation suite
 -q, --quiet             Suppress informational output
 -w, --worktree          Enable git worktree isolation
     --no-worktree       Run directly in current directory (no worktree) (default)
-    --llm-port PORTS    Allow localhost TCP access to these comma-separated ports
-                         instead of the auto-detected default on 11434
-                         (override the probed port with SCODER_LLM_PORT)
     --allow-ssh USER@HOST  Open a single pre-authenticated ssh connection to
                          USER@HOST outside the sandbox, and expose only that
                          one connection inside it
     --dry-run           Print bwrap command without executing
 ```
 
-Scoder options must come before the tool name, same as `--llm-port`:
+Scoder options must come before the tool name:
 `scoder --allow-ssh me@remote-host pi`, not `scoder pi --allow-ssh
 me@remote-host` (anything after the tool name is passed to the tool
 unparsed).
@@ -175,6 +175,42 @@ testing against a local server.
 You must have connected to the target at least once before, outside scoder:
 the master connection uses `BatchMode`, so it will not prompt to accept an
 unfamiliar host key.
+
+## Persistent host-loopback ports (an `.agentports` file)
+
+A file named `.agentports` at the project root lists host-loopback ports
+forwarded into the sandbox — an MCP server running outside it, a locally
+hosted research-tool API (Zotero's, say), an LLM endpoint. No flag: the
+file's presence and content is the entire mechanism, same as
+`.agentreadonly` and `scratch`.
+
+```
+# .agentports — one port per line, # comments allowed
+11434   # ollama, auto-detected
+23119   # zotero local api
+```
+
+- **Always read-only inside the sandbox**, like `.agentreadonly` — only the
+  host side can change it. If it doesn't exist yet, it's created first (just
+  a header comment) rather than left unbound, which would otherwise leave it
+  writable from inside the sandbox in that first session.
+- **A malformed line fails the session outright**, naming the bad line —
+  this is network exposure, not a workspace-protection list, so a config
+  file that could silently mean less than it looks like is the wrong
+  failure mode.
+- **Auto-detection persists automatically**: if a local OpenAI-compatible
+  API is listening on port `11434` (override with `SCODER_LLM_PORT`) it is
+  appended to `.agentports` — additively, only once — so the next session,
+  and every teammate's session, has it without anyone naming the port
+  again. Skipped entirely under `--dry-run`.
+- **Live-reloaded.** Editing `.agentports` while a session is running
+  reattaches networking with the new port list, without restarting the
+  session. A malformed or failing edit falls back to whatever was working
+  before, rather than leaving the sandbox with no networking.
+- **Tracked or gitignored, either works** — same trade-off as `scratch`:
+  tracked means a `-w`/`--worktree` session's fresh checkout carries it
+  automatically, which is the recommended default for anything a whole
+  project needs, not just one person's session.
 
 ## Persistent scratch (a `scratch` symlink)
 

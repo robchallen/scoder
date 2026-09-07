@@ -2340,6 +2340,105 @@ test("bwrap-not-orphaned-on-pasta-attach-failure: a failed pasta attach leaves n
 	}
 });
 
+// EM: ### Test for terminal-signals-not-forwarded-to-sandbox
+// EM: See design/implementation/issues/terminal-signals-not-forwarded-to-sandbox.md
+// EM: Needs a real controlling-terminal relationship to reproduce at all —
+// EM: a plain Bun.spawn (pipes, no tty) cannot exercise this, and Bun/Node
+// EM: have no first-party PTY allocation, so the pty mechanics live in a
+// EM: small, reusable Python helper (tests/helpers/pty-signal-harness.py)
+// EM: rather than being reimplemented here. Self-skips if python3 is
+// EM: unavailable, matching the sshd-dependent tests' own pattern above.
+// EM: A fake pasta (daemonize-then-exit, matching real pasta's own shape)
+// EM: stands in for the real one — same reasoning as
+// EM: bwrap-not-orphaned-on-pasta-attach-failure: this environment's own
+// EM: /dev/net/tun absence would make a real attach non-deterministic here,
+// EM: when what's under test is signal delivery, not pasta itself.
+
+const python3Available = await commandAvailable("python3");
+
+test.skipIf(!python3Available)(
+	"terminal-signals-forwarded-to-sandbox: SIGWINCH/SIGINT reach the sandboxed process, a second Ctrl-C force-kills",
+	async () => {
+		const repoDir = await createTempRepo();
+		tempRepos.push(repoDir);
+
+		const shimDir = `/tmp/scoder-fake-pasta-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
+		await Bun.spawn(["mkdir", "-p", shimDir]).exited;
+		// Mimics real pasta's daemonize-then-exit shape: attachPasta awaits the
+		// spawned process's exit, then reads the pid file it wrote. The pidfile
+		// write happens in the foreground, using the already-known backgrounded
+		// pid ($!) — writing it from the backgrounded process itself would race
+		// attachPasta's immediate read of the file.
+		// biome-ignore-start lint/suspicious/noTemplateCurlyInString: these are
+		// literal bash "${...}" references in a generated shell script, not
+		// forgotten JS template placeholders — this is a plain string, not a
+		// template literal, so JS never interpolates them.
+		const fakePastaScript =
+			"#!/bin/bash\n" +
+			'PIDFILE=""\n' +
+			'ARGS=("$@")\n' +
+			"for ((i=0; i<${#ARGS[@]}; i++)); do\n" +
+			'  if [[ "${ARGS[$i]}" == "--pid" ]]; then\n' +
+			'    PIDFILE="${ARGS[$((i+1))]}"\n' +
+			"  fi\n" +
+			"done\n" +
+			// biome-ignore-end lint/suspicious/noTemplateCurlyInString: see above
+			"nohup sleep infinity >/dev/null 2>&1 &\n" +
+			"BGPID=$!\n" +
+			"disown\n" +
+			'echo "$BGPID" > "$PIDFILE"\n' +
+			"exit 0\n";
+		await Bun.write(`${shimDir}/pasta`, fakePastaScript);
+		await Bun.spawn(["chmod", "+x", `${shimDir}/pasta`]).exited;
+
+		await Bun.spawn([
+			"cp",
+			`${import.meta.dir}/helpers/signal-diagnostic.py`,
+			`${repoDir}/signal-diagnostic.py`,
+		]).exited;
+
+		// The harness (host side) polls this absolute path; the sandboxed
+		// diagnostic is given the same file as a path relative to its own
+		// cwd — path mirroring means these are the same underlying file via
+		// the project's read-write bind, but the sandbox never sees a
+		// host-absolute path directly.
+		const hostLogPath = `${repoDir}/signal-test.log`;
+
+		try {
+			const proc = Bun.spawn(
+				[
+					"python3",
+					`${import.meta.dir}/helpers/pty-signal-harness.py`,
+					"--logfile",
+					hostLogPath,
+					"--cwd",
+					repoDir,
+					"--",
+					SCODER_PATH,
+					"-q",
+					"--no-worktree",
+					"python3",
+					"signal-diagnostic.py",
+					"signal-test.log",
+				],
+				{
+					env: { ...process.env, PATH: `${shimDir}:${process.env.PATH}` },
+					stdout: "pipe",
+					stderr: "pipe",
+				},
+			);
+			await proc.exited;
+
+			const stdout = await new Response(proc.stdout).text();
+			expect(stdout).toContain("PASS");
+			expect(proc.exitCode).toBe(0);
+		} finally {
+			await Bun.spawn(["rm", "-rf", shimDir]).exited;
+			await cleanupRepo(repoDir);
+		}
+	},
+);
+
 // EM: ### Tests for the `scratch` symlink
 // EM: See design/implementation/plans/persistent-rw-scratch.md
 // EM: Targets live under a throwaway directory in the real $HOME (the

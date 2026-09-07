@@ -287,12 +287,34 @@ export async function buildBwrapCommand(
 // interpolated into the shell string, so arguments containing spaces survive.
 //
 // stdio 0/1/2 are left alone, since the sandboxed tool is usually interactive.
+//
+// `trap "" INT QUIT TSTP` before that exec is load-bearing, not optional: bwrap
+// (Bun.spawn's direct child) shares scoder's own process group by default, so
+// a real terminal's Ctrl-C/Ctrl-\/Ctrl-Z delivers the signal to bwrap directly
+// too, at the same moment scoder's own handler receives its copy. bwrap has no
+// handler of its own for these, so the kernel's default disposition applies —
+// termination for INT/QUIT — and --die-with-parent (see buildBwrapCommand)
+// reacts to that death by SIGKILLing the sandboxed process immediately. That
+// races scoder's own JS-level forwarding (installSignalForwarding in
+// launch.ts) and wins every time: confirmed directly, forwarding a real
+// Ctrl-C without this trap left the sandboxed process already gone
+// (ESRCH) by the time scoder's handler ran. Ignoring these in the shim
+// fixes it: SIG_IGN persists across exec (unlike a handler, which resets to
+// default), so bwrap's own process — and the sandboxed program after it —
+// inherits the ignore and survives. The sandboxed program is still free to
+// install its own real handler for any of these; ignoring is not a handler,
+// and a process can always override its own inherited disposition via
+// sigaction()/signal(). (Not true of a *shell's* `trap` builtin specifically
+// — POSIX forbids a non-interactive shell from un-ignoring a signal that was
+// already SIG_IGN on entry, which only matters if the sandboxed command
+// happens to be a shell script relying on its own trap for one of these.)
 export function wrapWithFdShim(
 	cmd: string[],
 	infoPath: string,
 	blockPath: string,
 ): string[] {
-	const shim = 'exec 3>"$1"; exec 9<>"$2"; shift 2; exec "$@"';
+	const shim =
+		'trap "" INT QUIT TSTP; exec 3>"$1"; exec 9<>"$2"; shift 2; exec "$@"';
 	return ["bash", "-c", shim, "_", infoPath, blockPath, ...cmd];
 }
 

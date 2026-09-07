@@ -26,7 +26,7 @@ tags: [test-script, validation]
 
 `tests/scoder.test.ts` is a self-contained integration test suite that creates
 temporary git repositories under `/tmp`, runs `scoder` against them using
-`/bin/bash` as the sandboxed command, and asserts expected behaviour. 65
+`/bin/bash` as the sandboxed command, and asserts expected behaviour. 66
 tests cover all sandbox mechanics.
 
 Cleanup runs in an `afterAll` hook. It removes the temp repos, their worktrees
@@ -505,6 +505,19 @@ not just from the next run onward. Distinguishes a pasta-attach failure
 (this suite's own dev environment lacks `/dev/net/tun`, an unrelated cause)
 from an actual rejected write, so it cannot pass trivially just because the
 sandbox failed to launch for a different reason.
+
+### 66. terminal-signals-forwarded-to-sandbox
+[TESTED_BY](/tests/scoder.test.ts#testTerminalSignalsForwardedToSandbox)
+
+SIGWINCH (a real resize, via `TIOCSWINSZ`) and SIGINT (a real Ctrl-C byte)
+reach the sandboxed process, which `--new-session` would otherwise fully
+detach from any controlling terminal. A second Ctrl-C sent quickly
+force-kills the whole launch rather than forwarding again. Needs a real
+controlling-terminal relationship to reproduce at all — a plain `Bun.spawn`
+(pipes, no tty) cannot exercise this — so it drives a real PTY through
+`tests/helpers/pty-signal-harness.py` (Bun/Node have no first-party PTY
+allocation). Self-skips if `python3` is not installed. See
+[design/implementation/issues/terminal-signals-not-forwarded-to-sandbox.md](/design/implementation/issues/terminal-signals-not-forwarded-to-sandbox.md).
 
 ## Current Network Coverage
 

@@ -2,7 +2,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ScoderOptions } from "../types.ts";
-import { error, info } from "../utils/logger.ts";
+import { error, info, warning } from "../utils/logger.ts";
 import { terminateProcess } from "../utils/process.ts";
 import { wrapWithFdShim } from "./builder.ts";
 import {
@@ -31,6 +31,15 @@ const CHILD_PID_POLL_MS = 25;
 const TERM_GRACE_MS = 500;
 const KILL_GRACE_MS = 500;
 
+/** Terminal-driven signals --new-session detaches the sandboxed process
+ * from — see installSignalForwarding. */
+const FORWARDED_SIGNALS = ["SIGWINCH", "SIGINT", "SIGQUIT", "SIGTSTP"] as const;
+
+/** A second SIGINT within this window force-kills instead of forwarding
+ * again. Overridable so tests don't have to wait out the real window. */
+const DOUBLE_SIGINT_WINDOW_MS =
+	Number.parseInt(process.env.SCODER_DOUBLE_SIGINT_WINDOW_MS || "", 10) || 2000;
+
 export interface LaunchResult {
 	exitCode: number;
 }
@@ -51,6 +60,7 @@ export async function launchSandbox(
 	const pidFile = join(rendezvous, "pasta.pid");
 
 	let sidecar: PastaSidecar | null = null;
+	let signalForwarder: SignalForwarder | null = null;
 
 	try {
 		// bwrap blocks reading this fifo until we release it
@@ -74,6 +84,11 @@ export async function launchSandbox(
 			return { exitCode: 1 };
 		}
 
+		// Installed as soon as childPid is known, not just once the tool is
+		// released: the double-Ctrl-C escape hatch should cover the pasta-attach
+		// window too, not only the "tool is running" phase.
+		signalForwarder = installSignalForwarding(proc, childPid);
+
 		sidecar = await attachPasta(options, childPid, pidFile);
 		if (!sidecar) {
 			// attachPasta has already explained why. Do not release the tool into
@@ -89,6 +104,11 @@ export async function launchSandbox(
 		const exitCode = await proc.exited;
 		return { exitCode };
 	} finally {
+		// Removing the listeners first, not last: once the tool has exited
+		// there is nothing left to forward signals to, and a stray one
+		// arriving mid-cleanup would just hit an already-gone process group.
+		signalForwarder?.stop();
+
 		// pasta lives outside the sandbox, so bwrap's --die-with-parent does not
 		// reap it. Every exit path has to come through here.
 		await stopPasta(sidecar);
@@ -141,6 +161,112 @@ async function killBwrapTree(
 	if (innerPid !== null) {
 		await terminateProcess(innerPid, TERM_GRACE_MS, KILL_GRACE_MS);
 	}
+}
+
+interface SignalForwarder {
+	/** Removes the listeners this installed. Synchronous — nothing to await. */
+	stop(): void;
+}
+
+// ### installSignalForwarding
+// [IMPLEMENTS](/design/features/sandbox-isolation.md)
+// bwrap's --new-session (see buildBwrapCommand) calls setsid() on the
+// sandboxed process — a real security control: it is what blocks
+// TIOCSTI-style terminal injection and other signal leakage between the
+// sandbox and the session outside it. A side effect: the sandboxed process
+// loses its controlling-terminal relationship entirely, so the kernel can no
+// longer deliver any signal a terminal normally generates for it — SIGWINCH
+// on resize, SIGINT/SIGQUIT/SIGTSTP on Ctrl-C/Ctrl-\/Ctrl-Z — since there is
+// no foreground process group left for it to target. Confirmed directly:
+// tcgetpgrp() on the inherited tty fd fails with ENOTTY from inside the
+// sandbox once --new-session has run. See
+// design/implementation/issues/terminal-signals-not-forwarded-to-sandbox.md.
+//
+// scoder's own process sits outside that detached session, so it still
+// receives these signals normally, and relays them on with a plain kill() —
+// which, unlike the kernel's tty-driven delivery, is gated only on
+// permissions, not on any controlling-terminal relationship. This does not
+// reopen what --new-session closed: that flag stops the sandboxed process
+// from reaching things outside it; this is scoder, the trusted launcher,
+// explicitly relaying a signal in, using a mechanism the sandboxed process
+// has no way to trigger itself.
+//
+// Targets -childPid (the whole process group), not childPid alone:
+// --new-session's setsid() makes it both session and process group leader
+// (confirmed directly — pgid == sid == childPid), so this also reaches
+// anything it forks internally, not just its own top-level process.
+//
+// This alone is not sufficient, though — see the trap in wrapWithFdShim
+// (builder.ts). bwrap shares scoder's own process group by default, so a
+// real Ctrl-C also lands on bwrap directly, at the same moment as on scoder.
+// Without that trap, bwrap's own unhandled default disposition for
+// INT/QUIT kills it, --die-with-parent reacts by SIGKILLing the sandboxed
+// process, and that race wins every time — confirmed directly, forwarding
+// without the trap hit ESRCH because the target was already gone by the
+// time this code ran. The trap removes the race entirely rather than trying
+// to win it.
+//
+// A second SIGINT within DOUBLE_SIGINT_WINDOW_MS force-kills the launch via
+// killBwrapTree instead of forwarding again, in case the sandboxed tool
+// doesn't exit on its own after the first one — a bug in that tool, not
+// scoder, but the user still needs an escape hatch that doesn't depend on it
+// working.
+//
+// Independently of forwarding, installing any handler at all fixes a
+// separate, previously real gap: scoder's own process had no signal
+// handlers of any kind, so an unhandled SIGINT hit Bun's default
+// disposition — immediate termination, skipping launchSandbox's finally
+// block entirely (confirmed directly: a try/finally around a plain
+// Bun.sleep never reaches its finally on an unhandled SIGINT). That leaked
+// the pasta sidecar on every Ctrl-C, the same leak class
+// bwrap-orphaned-on-pasta-attach-failure fixed, just triggered a different
+// way.
+function installSignalForwarding(
+	proc: Bun.Subprocess<"inherit", "inherit", "inherit">,
+	childPid: number,
+): SignalForwarder {
+	let lastSigintAt: number | null = null;
+	let forceKilling = false;
+
+	function forward(signal: NodeJS.Signals): void {
+		try {
+			process.kill(-childPid, signal);
+		} catch {
+			// The sandboxed process may already be gone.
+		}
+	}
+
+	function onSignal(signal: NodeJS.Signals): void {
+		if (signal !== "SIGINT") {
+			forward(signal);
+			return;
+		}
+
+		const now = Date.now();
+		if (lastSigintAt !== null && now - lastSigintAt < DOUBLE_SIGINT_WINDOW_MS) {
+			if (!forceKilling) {
+				forceKilling = true;
+				warning("Second Ctrl-C — force-killing the sandbox");
+				killBwrapTree(proc, childPid).catch(() => {});
+			}
+			return;
+		}
+
+		lastSigintAt = now;
+		forward(signal);
+	}
+
+	for (const signal of FORWARDED_SIGNALS) {
+		process.on(signal, onSignal);
+	}
+
+	return {
+		stop(): void {
+			for (const signal of FORWARDED_SIGNALS) {
+				process.off(signal, onSignal);
+			}
+		},
+	};
 }
 
 async function findChildPid(parentPid: number): Promise<number | null> {

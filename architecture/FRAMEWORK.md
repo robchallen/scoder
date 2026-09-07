@@ -43,7 +43,7 @@ src/
 ├── sandbox/
 │   ├── builder.ts        # bwrap command construction: system mounts, binds, env vars, pasta
 │   ├── identity.ts       # passwd/group overlay so getpwuid() resolves to /home/scoder
-│   ├── launch.ts         # two-stage launch: bwrap blocks, pasta attaches, tool releases
+│   ├── launch.ts         # two-stage launch: bwrap blocks, pasta attaches, tool releases; forwards terminal signals (SIGWINCH/SIGINT/SIGQUIT/SIGTSTP) into the sandbox
 │   ├── pasta.ts          # network sidecar: attach to the sandbox netns, teardown
 │   └── ssh.ts            # --allow-ssh: ControlMaster tunnel sidecar, opened and torn down outside the sandbox
 └── utils/
@@ -52,7 +52,10 @@ src/
     └── paths.ts           # Host ↔ sandbox path translation (home remapping)
 
 tests/
-└── scoder.test.ts        # Integration test suite (33 tests as of v2.2.0)
+├── scoder.test.ts        # Integration test suite (66 tests as of v2.4.0)
+└── helpers/
+    ├── pty-signal-harness.py  # Real-PTY driver for terminal-signal-forwarding tests (Bun/Node have no first-party PTY allocation)
+    └── signal-diagnostic.py   # Fixture: registers signal handlers, logs each one received
 ```
 
 ## Execution Flow
@@ -84,7 +87,7 @@ tests/
    - Environment variables (clearenv + selective setenv)
    - pasta network layer
 11. **Pre-flight the exec target** — a `$HOME`-installed tool whose directory is not among the command's bind destinations cannot run; fail with a diagnostic rather than a bare `execvp` error
-12. **Execute** — `bwrap ... pasta ... <tool> <args>`
+12. **Execute** — `bwrap ... pasta ... <tool> <args>`, while scoder's own process forwards SIGWINCH/SIGINT/SIGQUIT/SIGTSTP into the sandbox for the life of the session (`--new-session` otherwise fully detaches the sandboxed process from the controlling terminal these are delivered through)
 13. **On exit:**
     - Commit changes in worktree mode
     - Print session summary (commits, diffstat, branch info)

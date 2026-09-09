@@ -986,6 +986,15 @@ test("agents-md-overlay-uses-real-host-home-for-external-tools: overlay states t
 			`The host's real home directory is \`${realHome}\``,
 		);
 		expect(content).not.toContain("Always use paths relative to $HOME");
+
+		// Loosely, not word-for-word: only pins down that the distinction is
+		// present at all (stdio MCP servers run inside the sandbox and need
+		// sandbox paths; localhost-HTTP ones run outside and need the real
+		// host path) — an earlier draft of this wording didn't have it, and
+		// treated every MCP server as if it ran outside the sandbox, which
+		// is wrong for the stdio case.
+		expect(content).toContain("stdio");
+		expect(content.toLowerCase()).toContain("localhost");
 	} finally {
 		if (overlayPath) {
 			await Bun.spawn(["rm", "-f", overlayPath]).exited;

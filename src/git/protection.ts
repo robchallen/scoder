@@ -557,16 +557,27 @@ async function _setupAgentsMdOverlay(
 
 	const realHome = getRealHome();
 
-	const sandboxSection = `## scoder sandbox
+	let sandboxSection = `## scoder sandbox
 
 This section is injected by scoder inside the sandbox and is not part of the repository.
 
 - You are running inside a scoder sandbox.
 - \`/home/scoder\` is an ephemeral sandbox home — nothing here persists between sessions, and it is not a real host path.
-- The host's real home directory is \`${realHome}\`. MCP servers and other tools or services running outside the sandbox operate on the real host filesystem: any file-path argument you send them must use \`${realHome}/...\`, never \`/home/scoder/...\` — that path does not exist there.
-${sourceDir.startsWith("/tmp/scoder/") ? "- This checkout is an isolated git worktree managed by scoder.\n- Commit after all changes otherwise your edits will be lost.\n" : ""}- You cannot edit files like \`AGENTS.md\` or \`.agents/*\` or other configuration files, so do not try.
+- The host's real home directory is \`${realHome}\`.
+- Wherever possible use relative paths to reference files that make no assumption on the home directory.
+- \`localhost\` http MCP servers may be running outside the sandbox and operate on real host filesystem.
+- \`stdio\` MCP servers run inside the sandbox and use sandbox paths.
+- If you get errors when using MCP servers with file-path arguments, then use \`${realHome}/...\`, instead of \`/home/scoder/...\`
+- You cannot edit files like \`AGENTS.md\` or \`.agents/*\` or other configuration files, so do not try. Ask the user to edit them instead.
 - Read the \`working-in-a-scoder-sandbox\` skill: \`npx skills add https://github.com/robchallen/scoder/tree/main/skills/working-in-a-scoder-sandbox\`
 `;
+
+	if (sourceDir.startsWith("/tmp/scoder/")) {
+		sandboxSection = `${sandboxSection}
+- This checkout is an isolated git worktree managed by scoder.
+- Commit after all changes otherwise your edits will be lost.
+`;
+	}
 
 	const existingContent = await Bun.file(overlayFile).text();
 	await Bun.write(overlayFile, existingContent + sandboxSection);

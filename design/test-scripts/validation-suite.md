@@ -26,7 +26,7 @@ tags: [test-script, validation]
 
 `tests/scoder.test.ts` is a self-contained integration test suite that creates
 temporary git repositories under `/tmp`, runs `scoder` against them using
-`/bin/bash` as the sandboxed command, and asserts expected behaviour. 75
+`/bin/bash` as the sandboxed command, and asserts expected behaviour. 76
 tests cover all sandbox mechanics.
 
 Cleanup runs in an `afterAll` hook. It removes the temp repos, their worktrees
@@ -595,6 +595,16 @@ controlling-terminal relationship to reproduce at all — a plain `Bun.spawn`
 `tests/helpers/pty-signal-harness.py` (Bun/Node have no first-party PTY
 allocation). Self-skips if `python3` is not installed. See
 [design/implementation/issues/terminal-signals-not-forwarded-to-sandbox.md](/design/implementation/issues/terminal-signals-not-forwarded-to-sandbox.md).
+
+### 76. agents-md-overlay-uses-real-host-home-for-external-tools
+[TESTED_BY](/tests/scoder.test.ts#testAgentsMdOverlayUsesRealHostHomeForExternalTools)
+
+The overlay states the real host home directory literally (`getRealHome()`),
+not just `/home/scoder`, and no longer tells the agent to "always use paths
+relative to $HOME" — wording that was reported as actually misread as "always
+use `/home/scoder/...`", including when passing a file path to a locally
+hosted MCP server running outside the sandbox on the real host filesystem,
+where `/home/scoder/...` does not exist.
 
 ## Current Network Coverage
 

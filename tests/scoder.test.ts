@@ -951,6 +951,49 @@ test("sandbox-agents-md-overlay-visible: AGENTS.md overlay is visible in sandbox
 	}
 });
 
+// ### Test: agents-md-overlay-uses-real-host-home-for-external-tools
+// EM: Guards against a real mistake an agent made in practice: the old
+// EM: wording ("Always use paths relative to $HOME") was interpreted as
+// EM: "always pass /home/scoder/... paths", including to a locally hosted
+// EM: MCP server running outside the sandbox on the real host filesystem,
+// EM: where /home/scoder/... does not exist. Uses --dry-run (no pasta
+// EM: needed) since the overlay file is written before the dry-run branch,
+// EM: same timing agentports's own auto-detect-skips-under-dry-run test
+// EM: relies on.
+test("agents-md-overlay-uses-real-host-home-for-external-tools: overlay states the real host home, not /home/scoder, for external tools", async () => {
+	const repoDir = await createTempRepo();
+	tempRepos.push(repoDir);
+	let overlayPath: string | undefined;
+
+	try {
+		const output = await runScoder(repoDir, [
+			"--dry-run",
+			"--no-worktree",
+			"/bin/bash",
+		]);
+
+		const match = output.match(
+			/--ro-bind (\/tmp\/scoder-agents-md\.\S+) \S+\/AGENTS\.md/,
+		);
+		overlayPath = match?.[1];
+		expect(overlayPath).toBeDefined();
+
+		const content = await Bun.file(overlayPath ?? "").text();
+		const realHome = process.env.HOME;
+		expect(realHome).toBeTruthy();
+
+		expect(content).toContain(
+			`The host's real home directory is \`${realHome}\``,
+		);
+		expect(content).not.toContain("Always use paths relative to $HOME");
+	} finally {
+		if (overlayPath) {
+			await Bun.spawn(["rm", "-f", overlayPath]).exited;
+		}
+		await cleanupRepo(repoDir);
+	}
+});
+
 // ### Test: agents-md-overlay-in-direct-mode
 test("agents-md-overlay-in-direct-mode: AGENTS.md overlay in direct mode lacks worktree messages", async () => {
 	const repoDir = await createTempRepo();

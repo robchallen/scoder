@@ -10,6 +10,7 @@ import { dirname, resolve as resolvePath } from "node:path";
 import type { BindMount } from "../types.ts";
 import { error, info, warning } from "../utils/logger.ts";
 import {
+	getRealHome,
 	isUnderAny,
 	resolveHomePrefixes,
 	toSandboxPath,
@@ -554,14 +555,16 @@ async function _setupAgentsMdOverlay(
 		await Bun.write(overlayFile, "");
 	}
 
+	const realHome = getRealHome();
+
 	const sandboxSection = `## scoder sandbox
 
 This section is injected by scoder inside the sandbox and is not part of the repository.
 
 - You are running inside a scoder sandbox.
-- \`/home/scoder\` is an ephemeral sandbox home. Other paths in your context may be stale if they refer to the host's home path. Always use paths relative to $HOME.
-${sourceDir.startsWith("/tmp/scoder/") ? "- This checkout is an isolated git worktree managed by scoder.\n- Commit after all changes otherwise your edits will be lost.\n" : ""}- Locally hosted HTTP MCP servers may not be available.
-- You cannot edit files like \`AGENTS.md\` or \`.agents/*\` or other configuration files, so do not try.
+- \`/home/scoder\` is an ephemeral sandbox home — nothing here persists between sessions, and it is not a real host path.
+- The host's real home directory is \`${realHome}\`. MCP servers and other tools or services running outside the sandbox operate on the real host filesystem: any file-path argument you send them must use \`${realHome}/...\`, never \`/home/scoder/...\` — that path does not exist there.
+${sourceDir.startsWith("/tmp/scoder/") ? "- This checkout is an isolated git worktree managed by scoder.\n- Commit after all changes otherwise your edits will be lost.\n" : ""}- You cannot edit files like \`AGENTS.md\` or \`.agents/*\` or other configuration files, so do not try.
 - Read the \`working-in-a-scoder-sandbox\` skill: \`npx skills add https://github.com/robchallen/scoder/tree/main/skills/working-in-a-scoder-sandbox\`
 `;
 

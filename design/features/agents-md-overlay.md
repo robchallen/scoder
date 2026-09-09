@@ -18,6 +18,13 @@ The sandboxed agent needs to know it is running in a restricted environment
 so it does not try to access unavailable paths or assume host HOME. The
 repository `AGENTS.md` must remain untouched.
 
+The overlay also states the real host home directory literally — reported in
+practice, via a locally hosted MCP server running outside the sandbox: the
+agent had no way to know the real host path, and an earlier, vaguer wording
+("always use paths relative to $HOME") was misread as "always use
+`/home/scoder/...`", including for that external server's own filesystem,
+where `/home/scoder/...` does not exist.
+
 ## Implementation
 
 [IMPLEMENTED_BY](/src/git/protection.ts#getAgentsMdOverlayBind)

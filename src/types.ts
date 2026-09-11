@@ -12,6 +12,16 @@ export interface ToolPreset {
 	description: string;
 	configBinds: (realHome: string, sandboxHome: string) => Promise<ToolBindSpec>;
 	validate: () => Promise<boolean>;
+	// Optional: lets a preset choose the tool's argv once the project
+	// directory is known, rather than leaving the user to always pass it
+	// explicitly. configBinds runs before sandboxProjDir exists, so this is
+	// a separate hook rather than something configBinds itself could do.
+	// Only called when the user passed no args of their own — an explicit
+	// argument always wins.
+	resolveArgs?: (
+		hostProjectDir: string,
+		sandboxProjectDir: string,
+	) => Promise<string[]>;
 }
 
 export interface ToolBindSpec {

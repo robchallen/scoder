@@ -1,3 +1,4 @@
+import { readdir } from "node:fs/promises";
 import type { BindMount, ToolBindSpec, ToolPreset } from "../types.ts";
 import { error, warning } from "../utils/logger.ts";
 
@@ -282,6 +283,31 @@ export const TOOL_PRESETS: Record<string, ToolPreset> = {
 				env.DISPLAY = process.env.DISPLAY;
 			}
 
+			// EM: Reported: most menu items greyed out except cut/copy/paste,
+			// EM: and only the window manager's own close button quits RStudio.
+			// EM: RStudio Desktop is Electron/Chromium-based (confirmed by the
+			// EM: "ozone/platform/x11" string in the original X11 error), and
+			// EM: Electron apps on Linux commonly use D-Bus / xdg-desktop-portal
+			// EM: for native file dialogs, single-instance activation, and
+			// EM: session/quit integration — degrading rather than crashing when
+			// EM: unavailable, which matches the symptom. Passing these through
+			// EM: is a reasonable, well-motivated fix, not a verified one: this
+			// EM: project has no real RStudio Desktop install or desktop D-Bus
+			// EM: session to confirm it against directly, unlike the X11
+			// EM: mechanics above. No extra bind needed for the socket itself —
+			// EM: confirmed directly that bwrap's --ro-bind recurses into a
+			// EM: nested mount stacked on its source (built one and tested it),
+			// EM: so /run/user/<uid> — a separate tmpfs on a real systemd-managed
+			// EM: desktop — is already reachable through the existing wholesale
+			// EM: --ro-bind /run /run once these env vars tell RStudio where to
+			// EM: look.
+			if (process.env.XDG_RUNTIME_DIR) {
+				env.XDG_RUNTIME_DIR = process.env.XDG_RUNTIME_DIR;
+			}
+			if (process.env.DBUS_SESSION_BUS_ADDRESS) {
+				env.DBUS_SESSION_BUS_ADDRESS = process.env.DBUS_SESSION_BUS_ADDRESS;
+			}
+
 			const xauthPath = process.env.XAUTHORITY || `${realHome}/.Xauthority`;
 			if (await fileExists(xauthPath)) {
 				const sandboxXauthPath = `${sandboxHome}/.Xauthority`;
@@ -336,6 +362,38 @@ export const TOOL_PRESETS: Record<string, ToolPreset> = {
 				return false;
 			}
 			return true;
+		},
+
+		// EM: RStudio Desktop does not inherit the launching process's cwd for
+		// EM: its initial R session — with no argument it reopens whatever
+		// EM: project it last had open, or falls back to $HOME, which in a
+		// EM: fresh sandbox is always the case. Passing a .Rproj file
+		// EM: explicitly is RStudio's own documented, reliable way to choose a
+		// EM: project. A bare directory argument is also documented to work
+		// EM: as a fallback when there's no .Rproj — used here, but not
+		// EM: independently verified against a real RStudio Desktop install
+		// EM: in this project, unlike the X11 mechanics in configBinds above.
+		resolveArgs: async (hostProjectDir, sandboxProjectDir) => {
+			let entries: string[];
+			try {
+				entries = await readdir(hostProjectDir);
+			} catch {
+				return [sandboxProjectDir];
+			}
+
+			const rprojFiles = entries
+				.filter((name) => name.endsWith(".Rproj"))
+				.sort();
+
+			if (rprojFiles.length === 0) {
+				return [sandboxProjectDir];
+			}
+			if (rprojFiles.length > 1) {
+				warning(
+					`Multiple .Rproj files found in ${hostProjectDir}; using ${rprojFiles[0]}`,
+				);
+			}
+			return [`${sandboxProjectDir}/${rprojFiles[0]}`];
 		},
 	},
 };

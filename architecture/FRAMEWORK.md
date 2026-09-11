@@ -52,7 +52,7 @@ src/
     └── paths.ts           # Host ↔ sandbox path translation (home remapping)
 
 tests/
-├── scoder.test.ts        # Integration test suite (81 tests as of v2.5.0)
+├── scoder.test.ts        # Integration test suite (85 tests as of v2.5.0)
 └── helpers/
     ├── pty-signal-harness.py  # Real-PTY driver for terminal-signal-forwarding tests (Bun/Node have no first-party PTY allocation)
     └── signal-diagnostic.py   # Fixture: registers signal handlers, logs each one received

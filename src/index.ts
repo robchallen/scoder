@@ -85,7 +85,8 @@ async function main(): Promise<void> {
 		process.exit(0);
 	}
 
-	const { options, toolName, toolArgs } = result;
+	const { options, toolName } = result;
+	let toolArgs = result.toolArgs;
 
 	// EM: Nested sandbox detection - refuse if already in a worktree or running in scoder
 	const gitDir = GIT_DIR;
@@ -304,6 +305,17 @@ async function main(): Promise<void> {
 				protectionConfig.safeBinds.push(agentsMdBind);
 			}
 		}
+	}
+
+	// EM: Independent of worktree vs. direct mode, so set up once here.
+	// EM: Only when the user passed no args of their own — an explicit
+	// EM: argument (e.g. a specific file to open) always wins.
+	if (preset?.resolveArgs && toolArgs.length === 0) {
+		const hostProjectDir =
+			options.worktree && worktreeInfo
+				? worktreeInfo.worktreeDir
+				: process.cwd();
+		toolArgs = await preset.resolveArgs(hostProjectDir, sandboxProjDir);
 	}
 
 	// EM: Independent of worktree vs. direct mode, so set up once here rather

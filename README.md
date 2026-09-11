@@ -33,6 +33,12 @@ for what was verified and why the alternatives (RStudio Server over HTTP,
 a nested VNC server, a VM) were rejected as heavier than this project's
 own weight class.
 
+If a `*.Rproj` file exists at the project root, `rstudio` opens it
+automatically (RStudio Desktop doesn't otherwise pick up the sandbox's
+working directory on its own); with none found, it opens the project
+directory itself. Passing your own argument (e.g. a specific file)
+always overrides this.
+
 ## How it works
 
 ### Default mode (direct)

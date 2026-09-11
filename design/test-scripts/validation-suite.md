@@ -26,7 +26,7 @@ tags: [test-script, validation]
 
 `tests/scoder.test.ts` is a self-contained integration test suite that creates
 temporary git repositories under `/tmp`, runs `scoder` against them using
-`/bin/bash` as the sandboxed command, and asserts expected behaviour. 81
+`/bin/bash` as the sandboxed command, and asserts expected behaviour. 85
 tests cover all sandbox mechanics.
 
 Cleanup runs in an `afterAll` hook. It removes the temp repos, their worktrees
@@ -645,6 +645,33 @@ earlier in this suite. Self-skips if `Xvfb`/`xdpyinfo`/`xauth` aren't
 installed, or if a real `rstudio` is already installed on the
 test-running machine (so this test never shadows a genuine local
 installation, even temporarily).
+
+### 82. rstudio-preset-passes-through-xdg-runtime-and-dbus
+[TESTED_BY](/tests/scoder.test.ts#testRstudioPresetPassesThroughXdgRuntimeAndDbus)
+
+`XDG_RUNTIME_DIR` and `DBUS_SESSION_BUS_ADDRESS` are set inside the
+sandbox when present on the host — the (unverified, well-motivated) fix
+for RStudio's reported greyed-out menus. See
+[0002-rstudio-x11-access](/architecture/decision-records/0002-rstudio-x11-access.md).
+
+### 83. rstudio-resolveargs-picks-rproj-file
+[TESTED_BY](/tests/scoder.test.ts#testRstudioResolveargsPicksRprojFile)
+
+With a `.Rproj` file at the project root and no explicit argument,
+`rstudio` is launched with that file's sandbox-side path — fixes RStudio
+starting with `getwd()` at `/home/scoder` rather than the project.
+
+### 84. rstudio-resolveargs-falls-back-to-project-dir
+[TESTED_BY](/tests/scoder.test.ts#testRstudioResolveargsFallsBackToProjectDir)
+
+With no `.Rproj` file, `rstudio` is launched with the project directory
+itself.
+
+### 85. rstudio-resolveargs-does-not-override-explicit-args
+[TESTED_BY](/tests/scoder.test.ts#testRstudioResolveargsDoesNotOverrideExplicitArgs)
+
+An explicit argument (e.g. a specific file to open) is left untouched,
+even when a `.Rproj` file is present.
 
 ## Current Network Coverage
 

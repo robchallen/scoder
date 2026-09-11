@@ -1697,6 +1697,113 @@ test("rstudio-preset-skips-xauthority-when-absent: no Xauthority bind or env var
 	}
 });
 
+// ### Test: rstudio-preset-passes-through-xdg-runtime-and-dbus
+// EM: See architecture/decision-records/0002-rstudio-x11-access.md — the
+// EM: reported "most menu items greyed out, only the window-manager close
+// EM: button quits" symptom. Passing these through is a well-motivated fix
+// EM: (RStudio Desktop is Electron/Chromium-based and commonly needs D-Bus
+// EM: for file dialogs and quit/session integration), not a verified one —
+// EM: this project has no real RStudio install or desktop D-Bus session to
+// EM: confirm the actual symptom against. This test covers only what's
+// EM: independently verifiable: that the values are passed through at all.
+test("rstudio-preset-passes-through-xdg-runtime-and-dbus: XDG_RUNTIME_DIR and DBUS_SESSION_BUS_ADDRESS are set inside the sandbox", async () => {
+	const repoDir = await createTempRepo();
+	tempRepos.push(repoDir);
+	const fakeBinDir = await createFakeToolDir("rstudio");
+
+	try {
+		const output = await runScoder(repoDir, ["--dry-run", "rstudio"], {
+			PATH: `${fakeBinDir}:${process.env.PATH}`,
+			XDG_RUNTIME_DIR: "/run/user/1000",
+			DBUS_SESSION_BUS_ADDRESS: "unix:path=/run/user/1000/bus",
+		});
+
+		expect(output).toContain("--setenv XDG_RUNTIME_DIR /run/user/1000");
+		expect(output).toContain(
+			"--setenv DBUS_SESSION_BUS_ADDRESS unix:path=/run/user/1000/bus",
+		);
+	} finally {
+		await Bun.spawn(["rm", "-rf", fakeBinDir]).exited;
+		await cleanupRepo(repoDir);
+	}
+});
+
+// EM: ### Tests for the rstudio preset's resolveArgs (.Rproj detection)
+// EM: RStudio Desktop does not inherit the launching process's cwd for its
+// EM: initial R session — reported directly: getwd() came back /home/scoder,
+// EM: not the project directory. See presets.ts's own comment on
+// EM: resolveArgs for why a .Rproj argument is the fix, and why the bare-
+// EM: directory fallback (used here, and in the no-.Rproj test below) is a
+// EM: documented RStudio CLI behaviour this project hasn't independently
+// EM: verified against a real install.
+
+// ### Test: rstudio-resolveargs-picks-rproj-file
+test("rstudio-resolveargs-picks-rproj-file: rstudio is launched with the project's .Rproj file", async () => {
+	const repoDir = await createTempRepo();
+	tempRepos.push(repoDir);
+	const fakeBinDir = await createFakeToolDir("rstudio");
+	await Bun.write(`${repoDir}/myproject.Rproj`, "Version: 1.0\n");
+
+	try {
+		const output = await runScoder(
+			repoDir,
+			["--dry-run", "--no-worktree", "rstudio"],
+			{ PATH: `${fakeBinDir}:${process.env.PATH}` },
+		);
+
+		expect(output).toContain(
+			`-- ${fakeBinDir}/rstudio ${SCODER_HOME}${repoDir}/myproject.Rproj`,
+		);
+	} finally {
+		await Bun.spawn(["rm", "-rf", fakeBinDir]).exited;
+		await cleanupRepo(repoDir);
+	}
+});
+
+// ### Test: rstudio-resolveargs-falls-back-to-project-dir
+test("rstudio-resolveargs-falls-back-to-project-dir: with no .Rproj file, rstudio is launched with the project directory", async () => {
+	const repoDir = await createTempRepo();
+	tempRepos.push(repoDir);
+	const fakeBinDir = await createFakeToolDir("rstudio");
+
+	try {
+		const output = await runScoder(
+			repoDir,
+			["--dry-run", "--no-worktree", "rstudio"],
+			{ PATH: `${fakeBinDir}:${process.env.PATH}` },
+		);
+
+		expect(output).toContain(
+			`-- ${fakeBinDir}/rstudio ${SCODER_HOME}${repoDir}\n`,
+		);
+	} finally {
+		await Bun.spawn(["rm", "-rf", fakeBinDir]).exited;
+		await cleanupRepo(repoDir);
+	}
+});
+
+// ### Test: rstudio-resolveargs-does-not-override-explicit-args
+test("rstudio-resolveargs-does-not-override-explicit-args: an explicit argument is left untouched even with a .Rproj file present", async () => {
+	const repoDir = await createTempRepo();
+	tempRepos.push(repoDir);
+	const fakeBinDir = await createFakeToolDir("rstudio");
+	await Bun.write(`${repoDir}/myproject.Rproj`, "Version: 1.0\n");
+
+	try {
+		const output = await runScoder(
+			repoDir,
+			["--dry-run", "--no-worktree", "rstudio", "somefile.R"],
+			{ PATH: `${fakeBinDir}:${process.env.PATH}` },
+		);
+
+		expect(output).toContain(`-- ${fakeBinDir}/rstudio somefile.R\n`);
+		expect(output).not.toContain(".Rproj");
+	} finally {
+		await Bun.spawn(["rm", "-rf", fakeBinDir]).exited;
+		await cleanupRepo(repoDir);
+	}
+});
+
 // ### Test: rstudio-x11-connectivity-end-to-end
 // EM: The one test that actually launches the sandbox rather than just
 // EM: inspecting --dry-run output — proves the preset's binds genuinely

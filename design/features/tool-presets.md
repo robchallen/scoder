@@ -74,6 +74,36 @@ inside RStudio's own embedded terminal, so this preset also includes pi's
 own config/data/cache binds — via a shared `piConfigBinds` helper, not a
 second, separately-maintained copy of the same list.
 
+Also passes `XDG_RUNTIME_DIR` and `DBUS_SESSION_BUS_ADDRESS` through when
+set on the host — reported: most menu items greyed out except cut/copy/
+paste, and only the window manager's own close button quits RStudio.
+RStudio Desktop is Electron/Chromium-based, and such apps commonly need
+D-Bus for native file dialogs and session/quit integration, degrading
+rather than crashing when it's unavailable, which matches the symptom.
+This is a well-motivated fix, not a verified one — this project has no
+real RStudio install or desktop D-Bus session to confirm the actual
+symptom against, unlike the X11 mechanics above. No extra bind is needed
+for the socket itself: confirmed directly that bwrap's `--ro-bind`
+recurses into a nested mount stacked on its source, so `/run/user/<uid>`
+— a separate tmpfs on a real systemd-managed desktop — is already
+reachable through the existing wholesale `--ro-bind /run /run`.
+
+RStudio Desktop also does not inherit the launching process's cwd for its
+initial R session — reported directly: `getwd()` came back `/home/scoder`,
+not the project directory, because RStudio's own default (with no
+argument) is to reopen its last project, or fall back to `$HOME`, which
+is always the case in a fresh sandbox. The preset's `resolveArgs` hook
+(`ToolPreset.resolveArgs` in `src/types.ts`, called once `sandboxProjDir`
+is known — after `configBinds` runs, so it needs its own hook) looks for
+a `*.Rproj` file at the project root and passes its sandbox-side path as
+the launch argument; with none found, it falls back to passing the
+project directory itself. Only applied when the user passed no argument
+of their own. The `.Rproj` case is RStudio's own documented, reliable way
+to choose a project; the bare-directory fallback is also documented
+RStudio CLI behaviour, but — like the D-Bus passthrough above — has not
+been independently verified against a real RStudio Desktop install in
+this project.
+
 [HAS_FEATURE](./sandbox-isolation.md)
 [HAS_FEATURE](./host-tool-binding.md)
 [HAS_FEATURE](./local-bin-resolution.md)

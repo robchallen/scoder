@@ -98,6 +98,17 @@ export async function buildBwrapCommand(
 		cmd.push("--ro-bind", "/run", "/run");
 	}
 
+	// EM: /opt is the FHS location for manually-installed, self-contained
+	// EM: software (IDEs, JDKs, browsers, most vendor-shipped dev tools) —
+	// EM: not under /usr, so none of the binds above reach it. It is also a
+	// EM: common target for /etc/alternatives entries (e.g.
+	// EM: /etc/alternatives/idea -> /opt/idea-IC/bin/idea.sh), so a tool
+	// EM: resolving correctly through the alternatives symlink can still fail
+	// EM: at the final hop if /opt itself was never mounted.
+	if (await dirExists("/opt")) {
+		cmd.push("--ro-bind", "/opt", "/opt");
+	}
+
 	// EM: The symlinks under /etc/alternatives (bound as part of /etc above)
 	// EM: are enough to *run* whichever alternative is currently selected, but
 	// EM: update-alternatives itself keeps its actual administrative state

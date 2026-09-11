@@ -26,7 +26,7 @@ tags: [test-script, validation]
 
 `tests/scoder.test.ts` is a self-contained integration test suite that creates
 temporary git repositories under `/tmp`, runs `scoder` against them using
-`/bin/bash` as the sandboxed command, and asserts expected behaviour. 77
+`/bin/bash` as the sandboxed command, and asserts expected behaviour. 78
 tests cover all sandbox mechanics.
 
 Cleanup runs in an `afterAll` hook. It removes the temp repos, their worktrees
@@ -618,6 +618,18 @@ binary runs this end-to-end without depending on a working
 `/dev/net/tun`. Self-skips if `update-alternatives` isn't installed, or the
 host has no registered alternatives to probe against — see
 [design/implementation/issues/update-alternatives-state-not-mounted.md](/design/implementation/issues/update-alternatives-state-not-mounted.md).
+
+### 78. opt-mounted
+[TESTED_BY](/tests/scoder.test.ts#testOptMounted)
+
+`ls /opt` run inside the sandbox produces the identical output to running
+it directly on the host, proving `/opt` is mounted and faithfully reflects
+the host's real content — not just "the bind flag is present in
+`--dry-run`". No fixture is written under `/opt` itself (root-owned host
+system state; this suite otherwise never mutates anything outside its own
+throwaway temp repos), and it reuses the same fake pasta shim as case 77.
+Self-skips if `/opt` does not exist on the host at all. See
+[design/implementation/issues/opt-not-mounted.md](/design/implementation/issues/opt-not-mounted.md).
 
 ## Current Network Coverage
 

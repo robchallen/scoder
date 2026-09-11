@@ -28,6 +28,13 @@ arbitrary host locations. bwrap gives us this without root.
 The sandbox shape:
 
 - `/usr`, `/bin`, `/lib`, `/lib64`, `/etc`, `/sys`, `/run` — ro-bind from host
+- `/opt` — ro-bind from host, if present. The FHS location for manually-
+  installed, self-contained software (IDEs, vendor-shipped JDKs, browsers),
+  outside `/usr` and so unreached by the bind above. Also a common
+  `/etc/alternatives` target (e.g. an IDE's launcher script), in which case
+  a tool could resolve correctly through the alternatives symlink chain and
+  still fail at the final hop without this. See
+  [design/implementation/issues/opt-not-mounted.md](/design/implementation/issues/opt-not-mounted.md).
 - `/var/lib/dpkg/alternatives`, `/var/lib/alternatives` — ro-bind from host,
   whichever exists. `/etc/alternatives` (covered by the `/etc` bind above)
   is enough to *run* whichever alternative is selected, but

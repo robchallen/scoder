@@ -2772,6 +2772,65 @@ test.skipIf(!alternativesUpdateAlternativesAvailable)(
 	},
 );
 
+// ### Test: opt-mounted
+// EM: See design/implementation/issues/opt-not-mounted.md. /opt is the FHS
+// EM: location for manually-installed, self-contained software — not under
+// EM: /usr, so none of the other system binds reach it, and it is a common
+// EM: /etc/alternatives target for exactly that kind of tool (an IDE, a
+// EM: vendor-shipped JDK, a browser). A tool resolving correctly through
+// EM: the alternatives symlink chain could still fail at the final hop if
+// EM: /opt itself was never mounted — this was the actual root cause behind
+// EM: the update-alternatives report above; both fixes landed together
+// EM: since they surfaced from the same investigation.
+//
+// EM: No test fixture is written under /opt — on a real host that's root-
+// EM: owned system state, and this suite otherwise never mutates anything
+// EM: outside its own throwaway temp repos. Instead this compares `ls /opt`
+// EM: run on the host directly against the same command run inside the
+// EM: sandbox (reusing the fake pasta shim, same reasoning as
+// EM: update-alternatives-state-mounted above) — a real content check, not
+// EM: just "the bind flag is present in --dry-run", but with no mutation.
+// EM: Self-skips if /opt does not exist on the host at all.
+const optExists = await dirExists("/opt");
+
+test.skipIf(!optExists)(
+	"opt-mounted: /opt is visible inside the sandbox and matches the host",
+	async () => {
+		const hostLsProc = Bun.spawn(["ls", "/opt"], {
+			stdout: "pipe",
+			stderr: "pipe",
+		});
+		await hostLsProc.exited;
+		const hostOutput = await new Response(hostLsProc.stdout).text();
+
+		const repoDir = await createTempRepo();
+		tempRepos.push(repoDir);
+		const shimDir = await createFakePastaShim(
+			`/tmp/scoder-opt-test-${Date.now()}.log`,
+		);
+
+		try {
+			const proc = Bun.spawn(
+				[SCODER_PATH, "-q", "--no-worktree", "/bin/bash", "-c", "ls /opt"],
+				{
+					cwd: repoDir,
+					env: { ...process.env, PATH: `${shimDir}:${process.env.PATH}` },
+					stdout: "pipe",
+					stderr: "pipe",
+				},
+			);
+			await proc.exited;
+
+			expect(proc.exitCode).toBe(0);
+			const output = await new Response(proc.stdout).text();
+			expect(output).toBe(hostOutput);
+		} finally {
+			await Bun.spawn(["rm", "-rf", shimDir]).exited;
+			await cleanupRepo(repoDir);
+		}
+	},
+);
+
 // EM: ### Tests for .agentports live-reload
 // EM: See design/implementation/plans/agentports.md. A fake pasta that
 // EM: mimics real pasta's daemonize-then-exit shape (writes its own pid to

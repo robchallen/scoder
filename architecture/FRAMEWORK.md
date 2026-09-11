@@ -52,7 +52,7 @@ src/
     └── paths.ts           # Host ↔ sandbox path translation (home remapping)
 
 tests/
-├── scoder.test.ts        # Integration test suite (75 tests as of v2.4.0)
+├── scoder.test.ts        # Integration test suite (77 tests as of v2.4.0)
 └── helpers/
     ├── pty-signal-harness.py  # Real-PTY driver for terminal-signal-forwarding tests (Bun/Node have no first-party PTY allocation)
     └── signal-diagnostic.py   # Fixture: registers signal handlers, logs each one received
@@ -79,7 +79,7 @@ tests/
    - Mark `AGENTS.md` as `--skip-worktree` via `git update-index`
    - This prevents the overlay from appearing as a dirty tree inside the sandbox
 10. **Build bwrap command:**
-   - System mounts (ro-bind: /usr, /bin, /lib, /etc, /sys, /run)
+   - System mounts (ro-bind: /usr, /bin, /lib, /etc, /sys, /run, and update-alternatives' /var/lib state)
    - Device, proc, tmpfs mounts
    - HOME as ephemeral tmpfs with selective config/data binds
    - Worktree or cwd bind

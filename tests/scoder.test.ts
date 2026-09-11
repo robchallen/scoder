@@ -2674,6 +2674,104 @@ test.skipIf(!python3Available)(
 	},
 );
 
+// ### Test: update-alternatives-state-mounted
+// EM: See design/implementation/issues/update-alternatives-state-not-mounted.md.
+// EM: The /etc/alternatives symlinks (bound as part of /etc) are enough to
+// EM: *run* whichever alternative is selected, but update-alternatives' own
+// EM: administrative state lives under /var/lib — unreachable before this
+// EM: fix, since nothing bound any part of /var. Reported as an
+// EM: alternatives-managed binary being "not found", though the binary
+// EM: itself always ran fine; only update-alternatives' own view of it was
+// EM: broken. Reuses createFakePastaShim (defined below, for the
+// EM: .agentports live-reload tests) so the real scoder binary can run this
+// EM: end-to-end, same reasoning as terminal-signals-forwarded-to-sandbox
+// EM: above: this environment's own lack of /dev/net/tun would make a real
+// EM: pasta attach non-deterministic here, when what's under test is a
+// EM: filesystem bind, not pasta itself.
+//
+// EM: Self-skips if the host has no registered alternatives at all to probe
+// EM: — asserts against the host's own real `update-alternatives --list`
+// EM: output rather than just "did not error", so a regression that mounted
+// EM: a stale or wrong path would still be caught.
+const alternativesStateDir = (await dirExists("/var/lib/dpkg/alternatives"))
+	? "/var/lib/dpkg/alternatives"
+	: (await dirExists("/var/lib/alternatives"))
+		? "/var/lib/alternatives"
+		: null;
+const alternativesUpdateAlternativesAvailable =
+	alternativesStateDir !== null &&
+	(await commandAvailable("update-alternatives"));
+
+async function firstRegisteredAlternative(
+	stateDir: string,
+): Promise<string | null> {
+	const proc = Bun.spawn(["ls", stateDir], { stdout: "pipe", stderr: "pipe" });
+	await proc.exited;
+	const names = (await new Response(proc.stdout).text())
+		.trim()
+		.split("\n")
+		.filter((n) => n.length > 0)
+		.sort();
+	return names[0] ?? null;
+}
+
+test.skipIf(!alternativesUpdateAlternativesAvailable)(
+	"update-alternatives-state-mounted: update-alternatives can list a registered alternative from inside the sandbox",
+	async () => {
+		if (!alternativesStateDir) {
+			throw new Error("unreachable: guarded by skipIf");
+		}
+		const alternativeName =
+			await firstRegisteredAlternative(alternativesStateDir);
+		if (!alternativeName) {
+			// Nothing registered on this host to probe against — same shape
+			// of self-skip as claudePresetTestable/sshTunnelTestable above,
+			// just decided at run time instead of module load time.
+			return;
+		}
+
+		const hostListProc = Bun.spawn(
+			["update-alternatives", "--list", alternativeName],
+			{ stdout: "pipe", stderr: "pipe" },
+		);
+		await hostListProc.exited;
+		const hostOutput = await new Response(hostListProc.stdout).text();
+
+		const repoDir = await createTempRepo();
+		tempRepos.push(repoDir);
+		const shimDir = await createFakePastaShim(
+			`/tmp/scoder-ua-test-${Date.now()}.log`,
+		);
+
+		try {
+			const proc = Bun.spawn(
+				[
+					SCODER_PATH,
+					"-q",
+					"--no-worktree",
+					"/bin/bash",
+					"-c",
+					`update-alternatives --list ${alternativeName}`,
+				],
+				{
+					cwd: repoDir,
+					env: { ...process.env, PATH: `${shimDir}:${process.env.PATH}` },
+					stdout: "pipe",
+					stderr: "pipe",
+				},
+			);
+			await proc.exited;
+
+			expect(proc.exitCode).toBe(0);
+			const output = await new Response(proc.stdout).text();
+			expect(output).toBe(hostOutput);
+		} finally {
+			await Bun.spawn(["rm", "-rf", shimDir]).exited;
+			await cleanupRepo(repoDir);
+		}
+	},
+);
+
 // EM: ### Tests for .agentports live-reload
 // EM: See design/implementation/plans/agentports.md. A fake pasta that
 // EM: mimics real pasta's daemonize-then-exit shape (writes its own pid to

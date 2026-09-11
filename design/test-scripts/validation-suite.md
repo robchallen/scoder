@@ -26,7 +26,7 @@ tags: [test-script, validation]
 
 `tests/scoder.test.ts` is a self-contained integration test suite that creates
 temporary git repositories under `/tmp`, runs `scoder` against them using
-`/bin/bash` as the sandboxed command, and asserts expected behaviour. 76
+`/bin/bash` as the sandboxed command, and asserts expected behaviour. 77
 tests cover all sandbox mechanics.
 
 Cleanup runs in an `afterAll` hook. It removes the temp repos, their worktrees
@@ -605,6 +605,19 @@ relative to $HOME" — wording that was reported as actually misread as "always
 use `/home/scoder/...`", including when passing a file path to a locally
 hosted MCP server running outside the sandbox on the real host filesystem,
 where `/home/scoder/...` does not exist.
+
+### 77. update-alternatives-state-mounted
+[TESTED_BY](/tests/scoder.test.ts#testUpdateAlternativesStateMounted)
+
+`update-alternatives --list <name>` run inside the sandbox produces the
+identical output to running it directly on the host — not just "does not
+error" — proving `/var/lib/dpkg/alternatives`/`/var/lib/alternatives` is
+mounted and faithfully reflects the host's real alternative state. Reuses
+the daemonize-then-exit fake pasta shim from case 75 so the real scoder
+binary runs this end-to-end without depending on a working
+`/dev/net/tun`. Self-skips if `update-alternatives` isn't installed, or the
+host has no registered alternatives to probe against — see
+[design/implementation/issues/update-alternatives-state-not-mounted.md](/design/implementation/issues/update-alternatives-state-not-mounted.md).
 
 ## Current Network Coverage
 

@@ -28,6 +28,13 @@ arbitrary host locations. bwrap gives us this without root.
 The sandbox shape:
 
 - `/usr`, `/bin`, `/lib`, `/lib64`, `/etc`, `/sys`, `/run` — ro-bind from host
+- `/var/lib/dpkg/alternatives`, `/var/lib/alternatives` — ro-bind from host,
+  whichever exists. `/etc/alternatives` (covered by the `/etc` bind above)
+  is enough to *run* whichever alternative is selected, but
+  `update-alternatives` itself keeps its administrative state (registered
+  choices, priorities, auto/manual mode) under `/var/lib`, which nothing
+  else mounts. See
+  [design/implementation/issues/update-alternatives-state-not-mounted.md](/design/implementation/issues/update-alternatives-state-not-mounted.md).
 - `/dev` — devtmpfs
 - `/proc` — procfs
 - `/tmp` — ephemeral tmpfs

@@ -98,6 +98,35 @@ export async function buildBwrapCommand(
 		cmd.push("--ro-bind", "/run", "/run");
 	}
 
+	// EM: The symlinks under /etc/alternatives (bound as part of /etc above)
+	// EM: are enough to *run* whichever alternative is currently selected, but
+	// EM: update-alternatives itself keeps its actual administrative state
+	// EM: (available choices, priorities, manual/auto mode) in /var/lib — not
+	// EM: reachable at all, since nothing binds /var. Confirmed directly: with
+	// EM: only /etc/alternatives, `java` runs fine but `update-alternatives
+	// EM: --list java` fails with "no alternatives for java", which is what
+	// EM: gets reported as an alternatives-managed tool being "not found" —
+	// EM: the binary was never the problem. See
+	// EM: design/implementation/issues/update-alternatives-state-not-mounted.md.
+	// EM: Both paths are checked, not just one: dpkg-based systems (Debian,
+	// EM: Ubuntu) use /var/lib/dpkg/alternatives; chkconfig-based ones (Fedora,
+	// EM: RHEL, and derivatives) use /var/lib/alternatives directly. Read-only,
+	// EM: like every other system path — a mutating update-alternatives command
+	// EM: still correctly fails with "Read-only file system", confirmed
+	// EM: directly, consistent with the rest of the sandbox being read-only
+	// EM: outside the project tree.
+	if (await dirExists("/var/lib/dpkg/alternatives")) {
+		cmd.push(
+			"--ro-bind",
+			"/var/lib/dpkg/alternatives",
+			"/var/lib/dpkg/alternatives",
+		);
+	}
+
+	if (await dirExists("/var/lib/alternatives")) {
+		cmd.push("--ro-bind", "/var/lib/alternatives", "/var/lib/alternatives");
+	}
+
 	// EM: Add device, proc, tmpfs mounts for sandbox filesystem
 	cmd.push(
 		"--dev-bind",

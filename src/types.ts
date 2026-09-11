@@ -17,6 +17,12 @@ export interface ToolPreset {
 export interface ToolBindSpec {
 	binds: BindMount[];
 	dirs: string[];
+	// Preset-specific env vars whose value cannot come from a blind host
+	// passthrough (builder.ts's fixed passThrough list) — either because it
+	// needs to point at a bind destination inside the sandbox rather than
+	// the host's own value (e.g. XAUTHORITY), or because it's only
+	// meaningful for the one preset that requested it, not every tool.
+	env?: Record<string, string>;
 }
 
 export interface BindMount {

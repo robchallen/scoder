@@ -26,7 +26,7 @@ tags: [test-script, validation]
 
 `tests/scoder.test.ts` is a self-contained integration test suite that creates
 temporary git repositories under `/tmp`, runs `scoder` against them using
-`/bin/bash` as the sandboxed command, and asserts expected behaviour. 76
+`/bin/bash` as the sandboxed command, and asserts expected behaviour. 81
 tests cover all sandbox mechanics.
 
 Cleanup runs in an `afterAll` hook. It removes the temp repos, their worktrees
@@ -605,6 +605,46 @@ relative to $HOME" — wording that was reported as actually misread as "always
 use `/home/scoder/...`", including when passing a file path to a locally
 hosted MCP server running outside the sandbox on the real host filesystem,
 where `/home/scoder/...` does not exist.
+
+### 77. rstudio-preset-binds-x11-and-config-dirs
+[TESTED_BY](/tests/scoder.test.ts#testRstudioPresetBindsX11AndConfigDirs)
+
+The `rstudio` preset binds `/tmp/.X11-unix` (when present on the host),
+passes `DISPLAY` through, and binds `~/.config/rstudio` and
+`~/.local/share/rstudio` read-write. See
+[0002-rstudio-x11-access](/architecture/decision-records/0002-rstudio-x11-access.md).
+
+### 78. rstudio-preset-includes-pi-config
+[TESTED_BY](/tests/scoder.test.ts#testRstudioPresetIncludesPiConfig)
+
+`pi` runs inside RStudio's own embedded terminal, so the `rstudio` preset
+also includes pi's data/cache binds — via a shared `piConfigBinds` helper
+both presets call, not a second, separately-maintained copy of the list.
+
+### 79. rstudio-preset-binds-xauthority-when-present
+[TESTED_BY](/tests/scoder.test.ts#testRstudioPresetBindsXauthorityWhenPresent)
+
+When the host X session uses cookie-based auth, the `Xauthority` file is
+bound read-only and `XAUTHORITY` is set to the sandbox-side path — not the
+host's own path, which would not resolve inside the sandbox.
+
+### 80. rstudio-preset-skips-xauthority-when-absent
+[TESTED_BY](/tests/scoder.test.ts#testRstudioPresetSkipsXauthorityWhenAbsent)
+
+No `Xauthority` bind or `XAUTHORITY` env var appears when the file doesn't
+exist (e.g. a no-auth X server, or none of the host's config resolved).
+
+### 81. rstudio-x11-connectivity-end-to-end
+[TESTED_BY](/tests/scoder.test.ts#testRstudioX11ConnectivityEndToEnd)
+
+A real X11 client, launched as the `rstudio` tool through the real scoder
+binary, genuinely connects to a real (disposable Xvfb) X server outside
+the sandbox — not just "the right-looking flags appear in `--dry-run`
+output that's never executed." Reuses the fake pasta shim established
+earlier in this suite. Self-skips if `Xvfb`/`xdpyinfo`/`xauth` aren't
+installed, or if a real `rstudio` is already installed on the
+test-running machine (so this test never shadows a genuine local
+installation, even temporarily).
 
 ## Current Network Coverage
 

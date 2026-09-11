@@ -39,7 +39,7 @@ src/
 │   ├── worktree.ts       # Git worktree lifecycle: create, reuse, prune, commit, diffstat
 │   └── protection.ts     # .agentreadonly parsing, AGENTS.md overlay, skip-worktree masking, snapshots, scratch symlink, .agentports read/append/bind
 ├── tools/
-│   └── presets.ts        # Per-tool config binds and validation for opencode/claude/copilot/pi
+│   └── presets.ts        # Per-tool config binds and validation for opencode/claude/copilot/pi/rstudio
 ├── sandbox/
 │   ├── builder.ts        # bwrap command construction: system mounts, binds, env vars, pasta
 │   ├── identity.ts       # passwd/group overlay so getpwuid() resolves to /home/scoder
@@ -52,7 +52,7 @@ src/
     └── paths.ts           # Host ↔ sandbox path translation (home remapping)
 
 tests/
-├── scoder.test.ts        # Integration test suite (75 tests as of v2.4.0)
+├── scoder.test.ts        # Integration test suite (81 tests as of v2.5.0)
 └── helpers/
     ├── pty-signal-harness.py  # Real-PTY driver for terminal-signal-forwarding tests (Bun/Node have no first-party PTY allocation)
     └── signal-diagnostic.py   # Fixture: registers signal handlers, logs each one received

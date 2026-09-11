@@ -166,6 +166,7 @@ async function main(): Promise<void> {
 	let toolDescription = toolName;
 	let toolBinds: BindMount[] = [];
 	let toolDirs: string[] = [];
+	let toolEnv: Record<string, string> | undefined;
 
 	// EM: realHome is needed for both preset binds and tool path translation
 	const realHome = getRealHome();
@@ -182,6 +183,7 @@ async function main(): Promise<void> {
 		const bindSpec = await preset.configBinds(realHome, SCODER_HOME);
 		toolBinds = bindSpec.binds;
 		toolDirs = bindSpec.dirs;
+		toolEnv = bindSpec.env;
 	}
 
 	// EM: Resolve the tool on the host, where it actually exists...
@@ -384,6 +386,7 @@ async function main(): Promise<void> {
 		toolDirs,
 		toolBin,
 		toolArgs,
+		toolEnv,
 		protectionConfig,
 	};
 

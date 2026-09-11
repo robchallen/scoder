@@ -1,4 +1,4 @@
-import type { BindMount, ToolPreset } from "../types.ts";
+import type { BindMount, ToolBindSpec, ToolPreset } from "../types.ts";
 import { error, warning } from "../utils/logger.ts";
 
 // EM: Tool preset system for opencode, claude, copilot, and pi
@@ -227,40 +227,7 @@ export const TOOL_PRESETS: Record<string, ToolPreset> = {
 	pi: {
 		description: "Pi Coding Agent",
 
-		configBinds: async (realHome, sandboxHome) => {
-			const binds: BindMount[] = [];
-			const dirs: string[] = [];
-
-			const piDir = `${realHome}/.pi/agent`;
-			if (await dirExists(piDir)) {
-				dirs.push(`${sandboxHome}/.pi/agent`);
-				binds.push({
-					type: "bind",
-					source: piDir,
-					dest: `${sandboxHome}/.pi/agent`,
-				});
-			}
-
-			const dataDir = `${realHome}/.local/share/pi`;
-			await ensureDir(dataDir);
-			dirs.push(`${sandboxHome}/.local/share/pi`);
-			binds.push({
-				type: "bind",
-				source: dataDir,
-				dest: `${sandboxHome}/.local/share/pi`,
-			});
-
-			const cacheDir = `${realHome}/.cache/pi`;
-			await ensureDir(cacheDir);
-			dirs.push(`${sandboxHome}/.cache/pi`);
-			binds.push({
-				type: "bind",
-				source: cacheDir,
-				dest: `${sandboxHome}/.cache/pi`,
-			});
-
-			return { binds, dirs };
-		},
+		configBinds: piConfigBinds,
 
 		validate: async () => {
 			const piExists = await commandExists("pi");
@@ -272,7 +239,148 @@ export const TOOL_PRESETS: Record<string, ToolPreset> = {
 			return true;
 		},
 	},
+
+	rstudio: {
+		description: "RStudio Desktop",
+
+		configBinds: async (realHome, sandboxHome) => {
+			const binds: BindMount[] = [];
+			const dirs: string[] = [];
+			const env: Record<string, string> = {};
+
+			// EM: RStudio Desktop is a GUI app — it needs a live connection to
+			// EM: the host's X server. Verified directly (see
+			// EM: architecture/decision-records/0002-rstudio-x11-access.md): an empty
+			// EM: --tmpfs /tmp sandbox has no /tmp/.X11-unix at all, and a
+			// EM: client fails with "unable to open display" until this socket
+			// EM: directory is bound in and DISPLAY is set; if the host X
+			// EM: session uses cookie-based auth (the common case for a real
+			// EM: desktop session), XAUTHORITY and its backing file are needed
+			// EM: too, or the client is refused with "Authorization required,
+			// EM: but no authorization protocol specified".
+			// EM:
+			// EM: This is a deliberate, accepted relaxation of the sandbox's
+			// EM: isolation, not an oversight: exposing the host's real X11
+			// EM: socket gives anything inside the sandbox the same access any
+			// EM: of the user's own desktop apps have to that X display,
+			// EM: including XTEST-based synthetic input injection into other
+			// EM: windows on it — verified directly to NOT be blocked by
+			// EM: X11's own "untrusted" auth mechanism (the same one `ssh -X`
+			// EM: relies on), so it is not a mitigation to lean on. Accepted
+			// EM: because the threat model here is accidents, not a dedicated
+			// EM: adversary — a VM or container is the right answer for the
+			// EM: latter, and is deliberately not what this is.
+			if (await dirExists("/tmp/.X11-unix")) {
+				binds.push({
+					type: "ro-bind",
+					source: "/tmp/.X11-unix",
+					dest: "/tmp/.X11-unix",
+				});
+			}
+
+			if (process.env.DISPLAY) {
+				env.DISPLAY = process.env.DISPLAY;
+			}
+
+			const xauthPath = process.env.XAUTHORITY || `${realHome}/.Xauthority`;
+			if (await fileExists(xauthPath)) {
+				const sandboxXauthPath = `${sandboxHome}/.Xauthority`;
+				binds.push({
+					type: "ro-bind",
+					source: xauthPath,
+					dest: sandboxXauthPath,
+				});
+				env.XAUTHORITY = sandboxXauthPath;
+			}
+
+			// RStudio writes here throughout a session (preferences, recent
+			// files, environment/history state) — same reasoning as Claude
+			// Code's primary .claude dir: a read-only bind makes it fail or
+			// silently lose state rather than degrade gracefully. Created if
+			// missing rather than warn-and-skip (unlike Claude's ~/.claude):
+			// RStudio's first run in practice *is* this sandboxed session,
+			// there is no meaningful "run it natively first" step to ask for.
+			const configDir = `${realHome}/.config/rstudio`;
+			await ensureDir(configDir);
+			dirs.push(`${sandboxHome}/.config/rstudio`);
+			binds.push({
+				type: "bind",
+				source: configDir,
+				dest: `${sandboxHome}/.config/rstudio`,
+			});
+
+			const dataDir = `${realHome}/.local/share/rstudio`;
+			await ensureDir(dataDir);
+			dirs.push(`${sandboxHome}/.local/share/rstudio`);
+			binds.push({
+				type: "bind",
+				source: dataDir,
+				dest: `${sandboxHome}/.local/share/rstudio`,
+			});
+
+			// pi runs inside RStudio's own embedded terminal — give it the
+			// exact same config/data/cache access it gets as scoder's own
+			// top-level tool, not a separate, drifting copy of the same list.
+			const piBindSpec = await piConfigBinds(realHome, sandboxHome);
+			binds.push(...piBindSpec.binds);
+			dirs.push(...piBindSpec.dirs);
+
+			return { binds, dirs, env };
+		},
+
+		validate: async () => {
+			const exists = await commandExists("rstudio");
+			if (!exists) {
+				error("rstudio not found in PATH");
+				error("Install: https://posit.co/download/rstudio-desktop/");
+				return false;
+			}
+			return true;
+		},
+	},
 };
+
+// ### piConfigBinds
+// Shared between the `pi` preset and `rstudio` (pi runs inside RStudio's
+// embedded terminal, and needs the identical access it would get as
+// scoder's own top-level tool — see the rstudio preset above).
+async function piConfigBinds(
+	realHome: string,
+	sandboxHome: string,
+): Promise<ToolBindSpec> {
+	const binds: BindMount[] = [];
+	const dirs: string[] = [];
+
+	const piDir = `${realHome}/.pi/agent`;
+	if (await dirExists(piDir)) {
+		dirs.push(`${sandboxHome}/.pi/agent`);
+		binds.push({
+			type: "bind",
+			source: piDir,
+			dest: `${sandboxHome}/.pi/agent`,
+		});
+	}
+
+	const dataDir = `${realHome}/.local/share/pi`;
+	await ensureDir(dataDir);
+	dirs.push(`${sandboxHome}/.local/share/pi`);
+	binds.push({
+		type: "bind",
+		source: dataDir,
+		dest: `${sandboxHome}/.local/share/pi`,
+	});
+
+	const cacheDir = `${realHome}/.cache/pi`;
+	await ensureDir(cacheDir);
+	dirs.push(`${sandboxHome}/.cache/pi`);
+	binds.push({
+		type: "bind",
+		source: cacheDir,
+		dest: `${sandboxHome}/.cache/pi`,
+	});
+
+	return { binds, dirs };
+}
 
 async function commandExists(cmd: string): Promise<boolean> {
 	try {

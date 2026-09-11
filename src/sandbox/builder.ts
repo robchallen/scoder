@@ -16,6 +16,7 @@ export interface SandboxConfig {
 	toolDirs: string[];
 	toolBin: string;
 	toolArgs: string[];
+	toolEnv?: Record<string, string>;
 	protectionConfig?: ProtectionConfig;
 }
 
@@ -37,6 +38,7 @@ export async function buildBwrapCommand(
 		toolDirs,
 		toolBin,
 		toolArgs,
+		toolEnv,
 		protectionConfig,
 	} = config;
 
@@ -197,6 +199,15 @@ export async function buildBwrapCommand(
 		"LANG",
 		process.env.LANG || "C.UTF-8",
 	);
+
+	// EM: Preset-specific env vars that can't come from the blind host
+	// EM: passthrough below — e.g. rstudio's XAUTHORITY, which must point at
+	// EM: the bind destination inside the sandbox, not the host's own path.
+	if (toolEnv) {
+		for (const [key, value] of Object.entries(toolEnv)) {
+			cmd.push("--setenv", key, value);
+		}
+	}
 
 	const passThrough = [
 		"EDITOR",

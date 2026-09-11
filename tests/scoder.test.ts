@@ -1573,6 +1573,223 @@ test.skipIf(!claudePresetTestable)(
 	},
 );
 
+// EM: ### Tests for the rstudio preset
+// EM: See architecture/decision-records/0002-rstudio-x11-access.md. Unlike the
+// EM: claude-preset tests above (skip-if-not-installed, since a fake claude
+// EM: binary wouldn't prove anything about claude's own behaviour), what's
+// EM: under test here is scoder's OWN bind/env computation in
+// EM: presets.ts — a fake `rstudio` executable is a faithful stand-in for
+// EM: that purpose, and keeps these tests deterministic on a machine
+// EM: without RStudio Desktop installed (effectively every CI/dev box).
+// EM: The dry-run tests below use a throwaway temp directory prepended to
+// EM: PATH rather than ~/.local/bin — dry-run never execs the target, so
+// EM: the fake binary's own sandbox-reachability is irrelevant, and this
+// EM: avoids touching the real home directory at all. Only the one real
+// EM: end-to-end test needs the fake binary to actually be reachable
+// EM: *inside* a running sandbox, so that one alone uses ~/.local/bin,
+// EM: mirroring local-bin-symlink-resolved's own precedent, with careful
+// EM: cleanup.
+
+async function createFakeToolDir(name: string): Promise<string> {
+	const dir = `/tmp/scoder-fake-tool-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
+	await Bun.spawn(["mkdir", "-p", dir]).exited;
+	await Bun.write(`${dir}/${name}`, "#!/bin/sh\ntrue\n");
+	await Bun.spawn(["chmod", "+x", `${dir}/${name}`]).exited;
+	return dir;
+}
+
+// ### Test: rstudio-preset-binds-x11-and-config-dirs
+test("rstudio-preset-binds-x11-and-config-dirs: binds the X11 socket, DISPLAY, and rstudio's own config/data dirs", async () => {
+	const repoDir = await createTempRepo();
+	tempRepos.push(repoDir);
+	const fakeBinDir = await createFakeToolDir("rstudio");
+
+	try {
+		const output = await runScoder(repoDir, ["--dry-run", "rstudio"], {
+			PATH: `${fakeBinDir}:${process.env.PATH}`,
+			DISPLAY: ":42",
+		});
+
+		if (await dirExists("/tmp/.X11-unix")) {
+			expect(output).toContain("--ro-bind /tmp/.X11-unix /tmp/.X11-unix");
+		}
+		expect(output).toContain("--setenv DISPLAY :42");
+
+		const configBind = `${process.env.HOME}/.config/rstudio ${SCODER_HOME}/.config/rstudio`;
+		expect(output).toContain(`--bind ${configBind}`);
+		expect(output).not.toContain(`--ro-bind ${configBind}`);
+
+		const dataBind = `${process.env.HOME}/.local/share/rstudio ${SCODER_HOME}/.local/share/rstudio`;
+		expect(output).toContain(`--bind ${dataBind}`);
+		expect(output).not.toContain(`--ro-bind ${dataBind}`);
+	} finally {
+		await Bun.spawn(["rm", "-rf", fakeBinDir]).exited;
+		await cleanupRepo(repoDir);
+	}
+});
+
+// ### Test: rstudio-preset-includes-pi-config
+test("rstudio-preset-includes-pi-config: pi's data/cache dirs are bound, same as pi's own top-level preset", async () => {
+	const repoDir = await createTempRepo();
+	tempRepos.push(repoDir);
+	const fakeBinDir = await createFakeToolDir("rstudio");
+
+	try {
+		const output = await runScoder(repoDir, ["--dry-run", "rstudio"], {
+			PATH: `${fakeBinDir}:${process.env.PATH}`,
+		});
+
+		expect(output).toContain(
+			`--bind ${process.env.HOME}/.local/share/pi ${SCODER_HOME}/.local/share/pi`,
+		);
+		expect(output).toContain(
+			`--bind ${process.env.HOME}/.cache/pi ${SCODER_HOME}/.cache/pi`,
+		);
+	} finally {
+		await Bun.spawn(["rm", "-rf", fakeBinDir]).exited;
+		await cleanupRepo(repoDir);
+	}
+});
+
+// ### Test: rstudio-preset-binds-xauthority-when-present
+test("rstudio-preset-binds-xauthority-when-present: binds the auth file and points XAUTHORITY at the sandbox copy, not the host path", async () => {
+	const repoDir = await createTempRepo();
+	tempRepos.push(repoDir);
+	const fakeBinDir = await createFakeToolDir("rstudio");
+	const fakeXauth = `/tmp/scoder-fake-xauth-${Date.now()}`;
+	await Bun.write(fakeXauth, "fake-cookie-data\n");
+
+	try {
+		const output = await runScoder(repoDir, ["--dry-run", "rstudio"], {
+			PATH: `${fakeBinDir}:${process.env.PATH}`,
+			XAUTHORITY: fakeXauth,
+		});
+
+		expect(output).toContain(
+			`--ro-bind ${fakeXauth} ${SCODER_HOME}/.Xauthority`,
+		);
+		expect(output).toContain(`--setenv XAUTHORITY ${SCODER_HOME}/.Xauthority`);
+		expect(output).not.toContain(`--setenv XAUTHORITY ${fakeXauth}`);
+	} finally {
+		await Bun.spawn(["rm", "-rf", fakeBinDir, fakeXauth]).exited;
+		await cleanupRepo(repoDir);
+	}
+});
+
+// ### Test: rstudio-preset-skips-xauthority-when-absent
+test("rstudio-preset-skips-xauthority-when-absent: no Xauthority bind or env var when the file doesn't exist", async () => {
+	const repoDir = await createTempRepo();
+	tempRepos.push(repoDir);
+	const fakeBinDir = await createFakeToolDir("rstudio");
+	const missingXauth = `/tmp/scoder-nonexistent-xauth-${Date.now()}`;
+
+	try {
+		const output = await runScoder(repoDir, ["--dry-run", "rstudio"], {
+			PATH: `${fakeBinDir}:${process.env.PATH}`,
+			XAUTHORITY: missingXauth,
+		});
+
+		expect(output).not.toContain(".Xauthority");
+		expect(output).not.toContain("XAUTHORITY");
+	} finally {
+		await Bun.spawn(["rm", "-rf", fakeBinDir]).exited;
+		await cleanupRepo(repoDir);
+	}
+});
+
+// ### Test: rstudio-x11-connectivity-end-to-end
+// EM: The one test that actually launches the sandbox rather than just
+// EM: inspecting --dry-run output — proves the preset's binds genuinely
+// EM: grant a working X11 connection, not just that the right-looking
+// EM: flags appear in a command line that's never executed. Uses the same
+// EM: daemonize-then-exit fake pasta shim established earlier in this
+// EM: suite (this environment's own missing /dev/net/tun makes a real
+// EM: pasta attach non-deterministic here, and what's under test is a
+// EM: filesystem/env bind, not pasta itself) plus a real, disposable Xvfb
+// EM: server standing in for "the host's X server" — verified manually
+// EM: against this exact setup before being committed here. Self-skips if
+// EM: Xvfb, xdpyinfo, or xauth aren't installed.
+// EM: The tool name looked up in TOOL_PRESETS must literally be "rstudio"
+// EM: for the preset (and so its X11 binds) to apply at all — there is no
+// EM: way to exercise this end-to-end without an executable named exactly
+// EM: that on PATH. Skipped (not just deprioritised) if a real rstudio is
+// EM: already installed on the test-running machine, so this test never
+// EM: shadows a genuine local installation, even temporarily.
+const x11TestToolsAvailable =
+	(await commandAvailable("Xvfb")) &&
+	(await commandAvailable("xdpyinfo")) &&
+	(await commandAvailable("xauth")) &&
+	!(await commandAvailable("rstudio"));
+
+test.skipIf(!x11TestToolsAvailable)(
+	"rstudio-x11-connectivity-end-to-end: a real X11 client inside the sandbox reaches a real X server outside it",
+	async () => {
+		const display = ":89";
+		const xauthPath = `/tmp/scoder-rstudio-e2e-xauth-${Date.now()}`;
+		await Bun.write(xauthPath, "");
+		await Bun.spawn([
+			"xauth",
+			"-f",
+			xauthPath,
+			"add",
+			display,
+			".",
+			// A fixed, throwaway 128-bit hex cookie — this Xvfb instance is
+			// created and destroyed within this one test, so there is nothing
+			// to protect by generating a fresh random cookie each run.
+			"a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4",
+		]).exited;
+
+		const xvfbProc = Bun.spawn(
+			["Xvfb", display, "-screen", "0", "1024x768x24", "-auth", xauthPath],
+			{ stdout: "ignore", stderr: "ignore" },
+		);
+		await new Promise((resolve) => setTimeout(resolve, 1500));
+
+		const repoDir = await createTempRepo();
+		tempRepos.push(repoDir);
+		const shimDir = await createFakePastaShim(
+			`/tmp/scoder-rstudio-e2e-${Date.now()}.log`,
+		);
+		// Must be named exactly "rstudio" — that literal string is the
+		// TOOL_PRESETS lookup key. Lives in ~/.local/bin (unlike the dry-run
+		// tests above) because this is the one test that actually launches
+		// the sandbox, so the exec target must be genuinely reachable
+		// inside it — mirrors local-bin-symlink-resolved's own precedent,
+		// with the same careful cleanup in `finally`.
+		const fakeRstudioPath = `${process.env.HOME}/.local/bin/rstudio`;
+
+		try {
+			await Bun.write(fakeRstudioPath, "#!/bin/bash\nexec xdpyinfo\n");
+			await Bun.spawn(["chmod", "+x", fakeRstudioPath]).exited;
+
+			const proc = Bun.spawn([SCODER_PATH, "-q", "--no-worktree", "rstudio"], {
+				cwd: repoDir,
+				env: {
+					...process.env,
+					PATH: `${shimDir}:${process.env.PATH}`,
+					DISPLAY: display,
+					XAUTHORITY: xauthPath,
+				},
+				stdout: "pipe",
+				stderr: "pipe",
+			});
+			await proc.exited;
+
+			const stdout = await new Response(proc.stdout).text();
+			expect(proc.exitCode).toBe(0);
+			expect(stdout).toContain(`name of display:    ${display}`);
+		} finally {
+			await Bun.spawn(["rm", "-rf", shimDir]).exited;
+			await Bun.spawn(["rm", "-f", fakeRstudioPath, xauthPath]).exited;
+			xvfbProc.kill(9);
+			await xvfbProc.exited;
+			await Bun.spawn(["rm", "-f", "/tmp/.X89-lock"]).exited;
+			await cleanupRepo(repoDir);
+		}
+	},
+);
+
 // EM: ### Tests for session commit and cleanup correctness
 // EM: Covers the four issues in design/implementation/issues/
 

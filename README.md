@@ -15,7 +15,23 @@ on a separate git branch via a worktree.
 | `claude` | Claude Code config bind-mount |
 | `copilot` | GitHub Copilot CLI config + data |
 | `pi` | Pi Coding Agent config + data |
+| `rstudio` | RStudio Desktop config + data, X11 access, and pi's own binds (see below) |
 | *(any)* | Generic sandbox |
+
+**`rstudio` is different from every other preset here**, deliberately: it
+binds the host's real X11 socket into the sandbox so RStudio Desktop's
+window can render at all, which gives anything running inside the same
+access to that X display any of your own desktop apps have — including
+the ability to inject synthetic keyboard/mouse input into *other* windows
+on it. Every other preset confines its tool to filesystem and network
+access scoder mediates directly; this one hands over a live channel scoder
+has no further control over once it's open. Accepted because the goal
+here is preventing accidents, not holding up against a dedicated
+adversary — see
+[0002-rstudio-x11-access](/architecture/decision-records/0002-rstudio-x11-access.md)
+for what was verified and why the alternatives (RStudio Server over HTTP,
+a nested VNC server, a VM) were rejected as heavier than this project's
+own weight class.
 
 ## How it works
 

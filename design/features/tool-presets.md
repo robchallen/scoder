@@ -8,8 +8,8 @@ tags: [feature, tools, configuration]
 
 ## Summary
 
-Built-in configuration presets for opencode, claude, copilot, and pi that
-provide tool-specific config/data directory bind mounts into the sandbox.
+Built-in configuration presets for opencode, claude, copilot, pi, and rstudio
+that provide tool-specific config/data directory bind mounts into the sandbox.
 
 ## Motivation
 
@@ -31,6 +31,7 @@ Each tool has an async function pair:
 | claude | ~/.claude.json, ~/.config/claude, ~/.local/share/claude | ~/.claude |
 | copilot | ~/.config/github-copilot, ~/.copilot | ~/.local/share/github-copilot |
 | pi | — | ~/.pi/agent, ~/.local/share/pi, ~/.cache/pi |
+| rstudio | — | ~/.config/rstudio, ~/.local/share/rstudio, plus pi's own binds (see below) |
 
 `~/.config/gh` is not preset-specific — it is bound read-only for every
 sandbox by `buildExtraBinds`, so any tool can use an authenticated `gh`.
@@ -54,6 +55,24 @@ reach the host and do not survive the session.
 native installer, which `~/.local/bin/claude` symlinks at. Without this bind
 that symlink dangles inside the sandbox and the tool cannot start. It is bound
 read-only so a sandboxed session cannot self-update the host installation.
+
+### rstudio
+
+RStudio Desktop is a GUI app, so this preset also binds `/tmp/.X11-unix`
+(the host's X11 socket directory) and passes `DISPLAY` through, plus
+`XAUTHORITY` and its backing file when the host X session uses cookie-based
+auth (bound to a sandbox-side path, not the host's own — `XAUTHORITY` is a
+filesystem path, unlike the plain passthrough env vars below, so it cannot
+come from the generic `passThrough` list in `builder.ts`; see
+`ToolBindSpec.env` in `src/types.ts`).
+
+This is a deliberate, accepted relaxation of the sandbox's isolation, not
+an oversight — see
+[0002-rstudio-x11-access](/architecture/decision-records/0002-rstudio-x11-access.md)
+for the full trade-off and what was verified before accepting it. `pi` runs
+inside RStudio's own embedded terminal, so this preset also includes pi's
+own config/data/cache binds — via a shared `piConfigBinds` helper, not a
+second, separately-maintained copy of the same list.
 
 [HAS_FEATURE](./sandbox-isolation.md)
 [HAS_FEATURE](./host-tool-binding.md)

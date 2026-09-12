@@ -308,6 +308,27 @@ export const TOOL_PRESETS: Record<string, ToolPreset> = {
 				env.DBUS_SESSION_BUS_ADDRESS = process.env.DBUS_SESSION_BUS_ADDRESS;
 			}
 
+			// EM: Reported: mcptools::mcp_session() (bridging RStudio's R console
+			// EM: to pi, e.g. via --ide) fails with "Socket directory
+			// EM: /run/user/<uid>/mcptools is a symlink; refusing to use it."
+			// EM: mcptools defaults its socket dir to $XDG_RUNTIME_DIR/mcptools —
+			// EM: /run/user/<uid> — which is read-only inside the sandbox
+			// EM: (--ro-bind, not --bind) regardless of what's already there on
+			// EM: the host: even with nothing at that path at all, mcptools'
+			// EM: own mkdir() would still fail there. Unconditional, not
+			// EM: gated on any host env var: this is a fixed, always-writable
+			// EM: location inside the sandbox (a fresh --tmpfs /tmp), not a
+			// EM: value passed through from the host, and it is set once here
+			// EM: for the whole sandbox — RStudio and pi (and anything pi
+			// EM: spawns, e.g. its own MCP server child process) all inherit
+			// EM: this same bwrap-level --setenv, whether pi is the primary
+			// EM: tool or rstudio is --ide's companion. Harmless if mcptools
+			// EM: is never used at all — an unused env var pointing at an
+			// EM: always-writable path. No new bind needed: mcptools creates
+			// EM: the directory itself (dir.create(..., recursive = TRUE)) the
+			// EM: first time either side needs it.
+			env.MCPTOOLS_SOCKET_DIR = "/tmp/mcptools";
+
 			const xauthPath = process.env.XAUTHORITY || `${realHome}/.Xauthority`;
 			if (await fileExists(xauthPath)) {
 				const sandboxXauthPath = `${sandboxHome}/.Xauthority`;

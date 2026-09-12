@@ -1728,6 +1728,33 @@ test("rstudio-preset-passes-through-xdg-runtime-and-dbus: XDG_RUNTIME_DIR and DB
 	}
 });
 
+// ### Test: rstudio-preset-sets-mcptools-socket-dir
+// EM: Reported: mcptools::mcp_session() (bridging RStudio's R console to
+// EM: pi) failed with "Socket directory /run/user/<uid>/mcptools is a
+// EM: symlink; refusing to use it." Root cause is structural, not just
+// EM: that one symlink: /run is read-only inside the sandbox
+// EM: (--ro-bind), so mcptools' own default ($XDG_RUNTIME_DIR/mcptools)
+// EM: can never be created there regardless of what's already at that
+// EM: path on the host. Unconditional (unlike the XDG_RUNTIME_DIR/D-Bus
+// EM: passthrough above) — a fixed, always-writable sandbox path, not a
+// EM: value read from the host.
+test("rstudio-preset-sets-mcptools-socket-dir: MCPTOOLS_SOCKET_DIR points at a fixed, writable sandbox path", async () => {
+	const repoDir = await createTempRepo();
+	tempRepos.push(repoDir);
+	const fakeBinDir = await createFakeToolDir("rstudio");
+
+	try {
+		const output = await runScoder(repoDir, ["--dry-run", "rstudio"], {
+			PATH: `${fakeBinDir}:${process.env.PATH}`,
+		});
+
+		expect(output).toContain("--setenv MCPTOOLS_SOCKET_DIR /tmp/mcptools");
+	} finally {
+		await Bun.spawn(["rm", "-rf", fakeBinDir]).exited;
+		await cleanupRepo(repoDir);
+	}
+});
+
 // EM: ### Tests for the rstudio preset's resolveArgs (.Rproj detection)
 // EM: RStudio Desktop does not inherit the launching process's cwd for its
 // EM: initial R session — reported directly: getwd() came back /home/scoder,

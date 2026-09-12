@@ -27,7 +27,7 @@ tags: [test-script, validation]
 
 `tests/scoder.test.ts` is a self-contained integration test suite that creates
 temporary git repositories under `/tmp`, runs `scoder` against them using
-`/bin/bash` as the sandboxed command, and asserts expected behaviour. 90
+`/bin/bash` as the sandboxed command, and asserts expected behaviour. 91
 tests cover all sandbox mechanics.
 
 Cleanup runs in an `afterAll` hook. It removes the temp repos, their worktrees
@@ -716,6 +716,18 @@ confirms scoder reports the primary tool's exit code, not the
 companion's. Reuses the fake pasta shim established earlier in this
 suite. Self-skips if a real `pi` or `rstudio` is already installed on the
 test-running machine, so it never shadows either.
+
+### 91. rstudio-preset-sets-mcptools-socket-dir
+[TESTED_BY](/tests/scoder.test.ts#testRstudioPresetSetsMcptoolsSocketDir)
+
+`MCPTOOLS_SOCKET_DIR` is set to a fixed, always-writable sandbox path
+(`/tmp/mcptools`), unconditionally — unlike the `XDG_RUNTIME_DIR`/D-Bus
+passthrough, not gated on any host env var. Fixes
+`mcptools::mcp_session()` failing with "Socket directory
+/run/user/<uid>/mcptools is a symlink; refusing to use it." — `/run` is
+read-only inside the sandbox, so `mcptools`' own default location can
+never be created there regardless of what's already at that path on the
+host.
 
 ## Current Network Coverage
 

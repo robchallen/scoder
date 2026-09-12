@@ -220,7 +220,11 @@ Since both run in the same sandbox, this is the shape that makes bridging
 an agent and an IDE via MCP (e.g. `pi` and RStudio via `btw`/`mcptools`)
 actually safe: both processes share one project, one filesystem view, one
 set of restrictions — nothing crosses the sandbox boundary at all, unlike
-connecting to an IDE running natively on the host.
+connecting to an IDE running natively on the host. The `rstudio` preset
+also sets `MCPTOOLS_SOCKET_DIR` to a writable sandbox path, so
+`mcptools::mcp_session()`/`mcp_server()` work out of the box — no project
+`.Rprofile` line needed (its own default location, `/run/user/<uid>`, is
+read-only inside the sandbox).
 
 ## Persistent host-loopback ports (an `.agentports` file)
 

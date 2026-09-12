@@ -88,6 +88,24 @@ recurses into a nested mount stacked on its source, so `/run/user/<uid>`
 — a separate tmpfs on a real systemd-managed desktop — is already
 reachable through the existing wholesale `--ro-bind /run /run`.
 
+Also sets `MCPTOOLS_SOCKET_DIR=/tmp/mcptools` unconditionally — reported:
+`mcptools::mcp_session()`, bridging RStudio's R console to `pi` (e.g. via
+`--ide`), failed with `Socket directory /run/user/<uid>/mcptools is a
+symlink; refusing to use it.` The real cause is structural, not just that
+one symlink: `mcptools` defaults its socket directory to
+`$XDG_RUNTIME_DIR/mcptools` (`/run/user/<uid>`), which is read-only
+inside the sandbox regardless of what's already there on the host — even
+with nothing at that path at all, `mcptools`' own `mkdir()` would still
+fail there. Unlike the D-Bus passthrough above, this isn't gated on any
+host env var: it's a fixed, always-writable sandbox path (`/tmp`, a fresh
+tmpfs), not a value read from the host, and it's set once for the whole
+sandbox — RStudio, `pi`, and anything `pi` spawns (e.g. its own MCP
+server child process) all inherit the same bwrap-level `--setenv`,
+whether `pi` is the primary tool or `rstudio` is `--ide`'s companion. No
+new bind needed: `mcptools` creates the directory itself the first time
+either side needs it. Harmless if `mcptools` is never used at all — an
+unused env var pointing at an always-writable path.
+
 RStudio Desktop also does not inherit the launching process's cwd for its
 initial R session — reported directly: `getwd()` came back `/home/scoder`,
 not the project directory, because RStudio's own default (with no

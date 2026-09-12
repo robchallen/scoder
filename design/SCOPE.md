@@ -23,7 +23,7 @@ localhost services by default.
 
 [HAS_FEATURE](./features/git-worktree-isolation.md) - Optional git worktree mode that isolates changes to a scoped branch in /tmp.
 
-[HAS_FEATURE](./features/tool-presets.md) - Built-in configuration presets for opencode, claude, copilot, and pi with tool-specific config/data binds.
+[HAS_FEATURE](./features/tool-presets.md) - Built-in configuration presets for opencode, claude, copilot, pi, and rstudio with tool-specific config/data binds.
 
 [HAS_FEATURE](./features/infrastructure-protection.md) - Default and user-configurable protection of critical files (.github/, .gitignore, lockfiles) via .agentreadonly.
 
@@ -48,6 +48,8 @@ localhost services by default.
 [HAS_FEATURE](./features/ssh-tunnel-access.md) - Opt-in `--allow-ssh user@host` opens a single pre-authenticated ssh connection outside the sandbox and multiplexes only that one connection in, with no key material or agent socket exposed.
 
 [HAS_FEATURE](./features/persistent-scratch.md) - A `scratch` symlink at the project root mirrors its target at that target's own real absolute path — a persistent, read-write area outside the project tree, with no flag and no config.
+
+[HAS_FEATURE](./features/ide-companion.md) - `--ide NAME` launches NAME (must have a registered preset) as a companion in the same sandbox: NAME in the background, the primary tool in the foreground, both must exit before scoder shuts down.
 
 From [ROADMAP.md](./legacy/ROADMAP.md), not yet in development:
 

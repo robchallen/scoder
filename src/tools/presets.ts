@@ -1,4 +1,5 @@
-import type { BindMount, ToolPreset } from "../types.ts";
+import { readdir } from "node:fs/promises";
+import type { BindMount, ToolBindSpec, ToolPreset } from "../types.ts";
 import { error, warning } from "../utils/logger.ts";
 
 // EM: Tool preset system for opencode, claude, copilot, and pi
@@ -227,40 +228,7 @@ export const TOOL_PRESETS: Record<string, ToolPreset> = {
 	pi: {
 		description: "Pi Coding Agent",
 
-		configBinds: async (realHome, sandboxHome) => {
-			const binds: BindMount[] = [];
-			const dirs: string[] = [];
-
-			const piDir = `${realHome}/.pi/agent`;
-			if (await dirExists(piDir)) {
-				dirs.push(`${sandboxHome}/.pi/agent`);
-				binds.push({
-					type: "bind",
-					source: piDir,
-					dest: `${sandboxHome}/.pi/agent`,
-				});
-			}
-
-			const dataDir = `${realHome}/.local/share/pi`;
-			await ensureDir(dataDir);
-			dirs.push(`${sandboxHome}/.local/share/pi`);
-			binds.push({
-				type: "bind",
-				source: dataDir,
-				dest: `${sandboxHome}/.local/share/pi`,
-			});
-
-			const cacheDir = `${realHome}/.cache/pi`;
-			await ensureDir(cacheDir);
-			dirs.push(`${sandboxHome}/.cache/pi`);
-			binds.push({
-				type: "bind",
-				source: cacheDir,
-				dest: `${sandboxHome}/.cache/pi`,
-			});
-
-			return { binds, dirs };
-		},
+		configBinds: piConfigBinds,
 
 		validate: async () => {
 			const piExists = await commandExists("pi");
@@ -272,7 +240,226 @@ export const TOOL_PRESETS: Record<string, ToolPreset> = {
 			return true;
 		},
 	},
+
+	rstudio: {
+		description: "RStudio Desktop",
+
+		configBinds: async (realHome, sandboxHome) => {
+			const binds: BindMount[] = [];
+			const dirs: string[] = [];
+			const env: Record<string, string> = {};
+
+			// EM: RStudio Desktop is a GUI app — it needs a live connection to
+			// EM: the host's X server. Verified directly (see
+			// EM: architecture/decision-records/0002-rstudio-x11-access.md): an empty
+			// EM: --tmpfs /tmp sandbox has no /tmp/.X11-unix at all, and a
+			// EM: client fails with "unable to open display" until this socket
+			// EM: directory is bound in and DISPLAY is set; if the host X
+			// EM: session uses cookie-based auth (the common case for a real
+			// EM: desktop session), XAUTHORITY and its backing file are needed
+			// EM: too, or the client is refused with "Authorization required,
+			// EM: but no authorization protocol specified".
+			// EM:
+			// EM: This is a deliberate, accepted relaxation of the sandbox's
+			// EM: isolation, not an oversight: exposing the host's real X11
+			// EM: socket gives anything inside the sandbox the same access any
+			// EM: of the user's own desktop apps have to that X display,
+			// EM: including XTEST-based synthetic input injection into other
+			// EM: windows on it — verified directly to NOT be blocked by
+			// EM: X11's own "untrusted" auth mechanism (the same one `ssh -X`
+			// EM: relies on), so it is not a mitigation to lean on. Accepted
+			// EM: because the threat model here is accidents, not a dedicated
+			// EM: adversary — a VM or container is the right answer for the
+			// EM: latter, and is deliberately not what this is.
+			if (await dirExists("/tmp/.X11-unix")) {
+				binds.push({
+					type: "ro-bind",
+					source: "/tmp/.X11-unix",
+					dest: "/tmp/.X11-unix",
+				});
+			}
+
+			if (process.env.DISPLAY) {
+				env.DISPLAY = process.env.DISPLAY;
+			}
+
+			// EM: Reported: most menu items greyed out except cut/copy/paste,
+			// EM: and only the window manager's own close button quits RStudio.
+			// EM: RStudio Desktop is Electron/Chromium-based (confirmed by the
+			// EM: "ozone/platform/x11" string in the original X11 error), and
+			// EM: Electron apps on Linux commonly use D-Bus / xdg-desktop-portal
+			// EM: for native file dialogs, single-instance activation, and
+			// EM: session/quit integration — degrading rather than crashing when
+			// EM: unavailable, which matches the symptom. Passing these through
+			// EM: is a reasonable, well-motivated fix, not a verified one: this
+			// EM: project has no real RStudio Desktop install or desktop D-Bus
+			// EM: session to confirm it against directly, unlike the X11
+			// EM: mechanics above. No extra bind needed for the socket itself —
+			// EM: confirmed directly that bwrap's --ro-bind recurses into a
+			// EM: nested mount stacked on its source (built one and tested it),
+			// EM: so /run/user/<uid> — a separate tmpfs on a real systemd-managed
+			// EM: desktop — is already reachable through the existing wholesale
+			// EM: --ro-bind /run /run once these env vars tell RStudio where to
+			// EM: look.
+			if (process.env.XDG_RUNTIME_DIR) {
+				env.XDG_RUNTIME_DIR = process.env.XDG_RUNTIME_DIR;
+			}
+			if (process.env.DBUS_SESSION_BUS_ADDRESS) {
+				env.DBUS_SESSION_BUS_ADDRESS = process.env.DBUS_SESSION_BUS_ADDRESS;
+			}
+
+			// EM: Reported: mcptools::mcp_session() (bridging RStudio's R console
+			// EM: to pi, e.g. via --ide) fails with "Socket directory
+			// EM: /run/user/<uid>/mcptools is a symlink; refusing to use it."
+			// EM: mcptools defaults its socket dir to $XDG_RUNTIME_DIR/mcptools —
+			// EM: /run/user/<uid> — which is read-only inside the sandbox
+			// EM: (--ro-bind, not --bind) regardless of what's already there on
+			// EM: the host: even with nothing at that path at all, mcptools'
+			// EM: own mkdir() would still fail there. Unconditional, not
+			// EM: gated on any host env var: this is a fixed, always-writable
+			// EM: location inside the sandbox (a fresh --tmpfs /tmp), not a
+			// EM: value passed through from the host, and it is set once here
+			// EM: for the whole sandbox — RStudio and pi (and anything pi
+			// EM: spawns, e.g. its own MCP server child process) all inherit
+			// EM: this same bwrap-level --setenv, whether pi is the primary
+			// EM: tool or rstudio is --ide's companion. Harmless if mcptools
+			// EM: is never used at all — an unused env var pointing at an
+			// EM: always-writable path. No new bind needed: mcptools creates
+			// EM: the directory itself (dir.create(..., recursive = TRUE)) the
+			// EM: first time either side needs it.
+			env.MCPTOOLS_SOCKET_DIR = "/tmp/mcptools";
+
+			const xauthPath = process.env.XAUTHORITY || `${realHome}/.Xauthority`;
+			if (await fileExists(xauthPath)) {
+				const sandboxXauthPath = `${sandboxHome}/.Xauthority`;
+				binds.push({
+					type: "ro-bind",
+					source: xauthPath,
+					dest: sandboxXauthPath,
+				});
+				env.XAUTHORITY = sandboxXauthPath;
+			}
+
+			// RStudio writes here throughout a session (preferences, recent
+			// files, environment/history state) — same reasoning as Claude
+			// Code's primary .claude dir: a read-only bind makes it fail or
+			// silently lose state rather than degrade gracefully. Created if
+			// missing rather than warn-and-skip (unlike Claude's ~/.claude):
+			// RStudio's first run in practice *is* this sandboxed session,
+			// there is no meaningful "run it natively first" step to ask for.
+			const configDir = `${realHome}/.config/rstudio`;
+			await ensureDir(configDir);
+			dirs.push(`${sandboxHome}/.config/rstudio`);
+			binds.push({
+				type: "bind",
+				source: configDir,
+				dest: `${sandboxHome}/.config/rstudio`,
+			});
+
+			const dataDir = `${realHome}/.local/share/rstudio`;
+			await ensureDir(dataDir);
+			dirs.push(`${sandboxHome}/.local/share/rstudio`);
+			binds.push({
+				type: "bind",
+				source: dataDir,
+				dest: `${sandboxHome}/.local/share/rstudio`,
+			});
+
+			// pi runs inside RStudio's own embedded terminal — give it the
+			// exact same config/data/cache access it gets as scoder's own
+			// top-level tool, not a separate, drifting copy of the same list.
+			const piBindSpec = await piConfigBinds(realHome, sandboxHome);
+			binds.push(...piBindSpec.binds);
+			dirs.push(...piBindSpec.dirs);
+
+			return { binds, dirs, env };
+		},
+
+		validate: async () => {
+			const exists = await commandExists("rstudio");
+			if (!exists) {
+				error("rstudio not found in PATH");
+				error("Install: https://posit.co/download/rstudio-desktop/");
+				return false;
+			}
+			return true;
+		},
+
+		// EM: RStudio Desktop does not inherit the launching process's cwd for
+		// EM: its initial R session — with no argument it reopens whatever
+		// EM: project it last had open, or falls back to $HOME, which in a
+		// EM: fresh sandbox is always the case. Passing a .Rproj file
+		// EM: explicitly is RStudio's own documented, reliable way to choose a
+		// EM: project. A bare directory argument is also documented to work
+		// EM: as a fallback when there's no .Rproj — used here, but not
+		// EM: independently verified against a real RStudio Desktop install
+		// EM: in this project, unlike the X11 mechanics in configBinds above.
+		resolveArgs: async (hostProjectDir, sandboxProjectDir) => {
+			let entries: string[];
+			try {
+				entries = await readdir(hostProjectDir);
+			} catch {
+				return [sandboxProjectDir];
+			}
+
+			const rprojFiles = entries
+				.filter((name) => name.endsWith(".Rproj"))
+				.sort();
+
+			if (rprojFiles.length === 0) {
+				return [sandboxProjectDir];
+			}
+			if (rprojFiles.length > 1) {
+				warning(
+					`Multiple .Rproj files found in ${hostProjectDir}; using ${rprojFiles[0]}`,
+				);
+			}
+			return [`${sandboxProjectDir}/${rprojFiles[0]}`];
+		},
+	},
 };
+
+// ### piConfigBinds
+// Shared between the `pi` preset and `rstudio` (pi runs inside RStudio's
+// embedded terminal, and needs the identical access it would get as
+// scoder's own top-level tool — see the rstudio preset above).
+async function piConfigBinds(
+	realHome: string,
+	sandboxHome: string,
+): Promise<ToolBindSpec> {
+	const binds: BindMount[] = [];
+	const dirs: string[] = [];
+
+	const piDir = `${realHome}/.pi/agent`;
+	if (await dirExists(piDir)) {
+		dirs.push(`${sandboxHome}/.pi/agent`);
+		binds.push({
+			type: "bind",
+			source: piDir,
+			dest: `${sandboxHome}/.pi/agent`,
+		});
+	}
+
+	const dataDir = `${realHome}/.local/share/pi`;
+	await ensureDir(dataDir);
+	dirs.push(`${sandboxHome}/.local/share/pi`);
+	binds.push({
+		type: "bind",
+		source: dataDir,
+		dest: `${sandboxHome}/.local/share/pi`,
+	});
+
+	const cacheDir = `${realHome}/.cache/pi`;
+	await ensureDir(cacheDir);
+	dirs.push(`${sandboxHome}/.cache/pi`);
+	binds.push({
+		type: "bind",
+		source: cacheDir,
+		dest: `${sandboxHome}/.cache/pi`,
+	});
+
+	return { binds, dirs };
+}
 
 async function commandExists(cmd: string): Promise<boolean> {
 	try {

@@ -21,12 +21,13 @@ tags: [test-script, validation]
 [HAS_FEATURE](../features/direct-mode.md)
 [HAS_FEATURE](../features/ssh-tunnel-access.md)
 [HAS_FEATURE](../features/persistent-scratch.md)
+[HAS_FEATURE](../features/ide-companion.md)
 
 ## Summary
 
 `tests/scoder.test.ts` is a self-contained integration test suite that creates
 temporary git repositories under `/tmp`, runs `scoder` against them using
-`/bin/bash` as the sandboxed command, and asserts expected behaviour. 78
+`/bin/bash` as the sandboxed command, and asserts expected behaviour. 93
 tests cover all sandbox mechanics.
 
 Cleanup runs in an `afterAll` hook. It removes the temp repos, their worktrees
@@ -630,6 +631,128 @@ system state; this suite otherwise never mutates anything outside its own
 throwaway temp repos), and it reuses the same fake pasta shim as case 77.
 Self-skips if `/opt` does not exist on the host at all. See
 [design/implementation/issues/opt-not-mounted.md](/design/implementation/issues/opt-not-mounted.md).
+
+### 79. rstudio-preset-binds-x11-and-config-dirs
+[TESTED_BY](/tests/scoder.test.ts#testRstudioPresetBindsX11AndConfigDirs)
+
+The `rstudio` preset binds `/tmp/.X11-unix` (when present on the host),
+passes `DISPLAY` through, and binds `~/.config/rstudio` and
+`~/.local/share/rstudio` read-write. See
+[0002-rstudio-x11-access](/architecture/decision-records/0002-rstudio-x11-access.md).
+
+### 80. rstudio-preset-includes-pi-config
+[TESTED_BY](/tests/scoder.test.ts#testRstudioPresetIncludesPiConfig)
+
+`pi` runs inside RStudio's own embedded terminal, so the `rstudio` preset
+also includes pi's data/cache binds — via a shared `piConfigBinds` helper
+both presets call, not a second, separately-maintained copy of the list.
+
+### 81. rstudio-preset-binds-xauthority-when-present
+[TESTED_BY](/tests/scoder.test.ts#testRstudioPresetBindsXauthorityWhenPresent)
+
+When the host X session uses cookie-based auth, the `Xauthority` file is
+bound read-only and `XAUTHORITY` is set to the sandbox-side path — not the
+host's own path, which would not resolve inside the sandbox.
+
+### 82. rstudio-preset-skips-xauthority-when-absent
+[TESTED_BY](/tests/scoder.test.ts#testRstudioPresetSkipsXauthorityWhenAbsent)
+
+No `Xauthority` bind or `XAUTHORITY` env var appears when the file doesn't
+exist (e.g. a no-auth X server, or none of the host's config resolved).
+
+### 83. rstudio-x11-connectivity-end-to-end
+[TESTED_BY](/tests/scoder.test.ts#testRstudioX11ConnectivityEndToEnd)
+
+A real X11 client, launched as the `rstudio` tool through the real scoder
+binary, genuinely connects to a real (disposable Xvfb) X server outside
+the sandbox — not just "the right-looking flags appear in `--dry-run`
+output that's never executed." Reuses the fake pasta shim established
+earlier in this suite. Self-skips if `Xvfb`/`xdpyinfo`/`xauth` aren't
+installed, or if a real `rstudio` is already installed on the
+test-running machine (so this test never shadows a genuine local
+installation, even temporarily).
+
+### 84. rstudio-preset-passes-through-xdg-runtime-and-dbus
+[TESTED_BY](/tests/scoder.test.ts#testRstudioPresetPassesThroughXdgRuntimeAndDbus)
+
+`XDG_RUNTIME_DIR` and `DBUS_SESSION_BUS_ADDRESS` are set inside the
+sandbox when present on the host — the (unverified, well-motivated) fix
+for RStudio's reported greyed-out menus. See
+[0002-rstudio-x11-access](/architecture/decision-records/0002-rstudio-x11-access.md).
+
+### 85. rstudio-resolveargs-picks-rproj-file
+[TESTED_BY](/tests/scoder.test.ts#testRstudioResolveargsPicksRprojFile)
+
+With a `.Rproj` file at the project root and no explicit argument,
+`rstudio` is launched with that file's sandbox-side path — fixes RStudio
+starting with `getwd()` at `/home/scoder` rather than the project.
+
+### 86. rstudio-resolveargs-falls-back-to-project-dir
+[TESTED_BY](/tests/scoder.test.ts#testRstudioResolveargsFallsBackToProjectDir)
+
+With no `.Rproj` file, `rstudio` is launched with the project directory
+itself.
+
+### 87. rstudio-resolveargs-does-not-override-explicit-args
+[TESTED_BY](/tests/scoder.test.ts#testRstudioResolveargsDoesNotOverrideExplicitArgs)
+
+An explicit argument (e.g. a specific file to open) is left untouched,
+even when a `.Rproj` file is present.
+
+### 88. ide-flag-merges-companion-binds
+[TESTED_BY](/tests/scoder.test.ts#testIdeFlagMergesCompanionBinds)
+
+`--ide` merges the companion's own binds (`rstudio`'s X11 access) into
+the one sandbox alongside the primary tool's own — deduplicated: an entry
+both presets independently contribute (`pi`'s own binds, since `rstudio`
+includes them so `pi` also works from its embedded terminal) appears
+once, not twice. See
+[ide-companion](/design/features/ide-companion.md).
+
+### 89. ide-flag-works-before-or-after-tool-name
+[TESTED_BY](/tests/scoder.test.ts#testIdeFlagWorksBeforeOrAfterToolName)
+
+`--ide rstudio` is recognised whether it appears before or after the
+primary tool's own name (`scoder --ide rstudio pi` and
+`scoder pi --ide rstudio` are equivalent) — every other scoder flag only
+parses before the tool name.
+
+### 90. ide-must-differ-from-primary-tool
+[TESTED_BY](/tests/scoder.test.ts#testIdeMustDifferFromPrimaryTool)
+
+`--ide` naming the same tool as the primary fails with a clear error.
+
+### 91. ide-requires-registered-preset
+[TESTED_BY](/tests/scoder.test.ts#testIdeRequiresRegisteredPreset)
+
+`--ide` naming a tool with no registered preset fails with a clear error,
+rather than silently launching it with no binds (and so, for a GUI IDE,
+failing silently in its own background job).
+
+### 92. ide-companion-background-then-primary-foreground-both-must-exit
+[TESTED_BY](/tests/scoder.test.ts#testIdeCompanionBackgroundThenPrimaryForegroundBothMustExit)
+
+The one real end-to-end case: the primary tool exits immediately, but
+scoder does not return until the companion's own background job (an
+artificial delay) has also finished, and that job's side effect (a
+marker file) is visible afterward — proving it ran to completion, not
+just that the wrapper script looks right in `--dry-run` output. Also
+confirms scoder reports the primary tool's exit code, not the
+companion's. Reuses the fake pasta shim established earlier in this
+suite. Self-skips if a real `pi` or `rstudio` is already installed on the
+test-running machine, so it never shadows either.
+
+### 93. rstudio-preset-sets-mcptools-socket-dir
+[TESTED_BY](/tests/scoder.test.ts#testRstudioPresetSetsMcptoolsSocketDir)
+
+`MCPTOOLS_SOCKET_DIR` is set to a fixed, always-writable sandbox path
+(`/tmp/mcptools`), unconditionally — unlike the `XDG_RUNTIME_DIR`/D-Bus
+passthrough, not gated on any host env var. Fixes
+`mcptools::mcp_session()` failing with "Socket directory
+/run/user/<uid>/mcptools is a symlink; refusing to use it." — `/run` is
+read-only inside the sandbox, so `mcptools`' own default location can
+never be created there regardless of what's already at that path on the
+host.
 
 ## Current Network Coverage
 

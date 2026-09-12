@@ -39,9 +39,9 @@ src/
 │   ├── worktree.ts       # Git worktree lifecycle: create, reuse, prune, commit, diffstat
 │   └── protection.ts     # .agentreadonly parsing, AGENTS.md overlay, skip-worktree masking, snapshots, scratch symlink, .agentports read/append/bind
 ├── tools/
-│   └── presets.ts        # Per-tool config binds and validation for opencode/claude/copilot/pi
+│   └── presets.ts        # Per-tool config binds and validation for opencode/claude/copilot/pi/rstudio
 ├── sandbox/
-│   ├── builder.ts        # bwrap command construction: system mounts, binds, env vars, pasta
+│   ├── builder.ts        # bwrap command construction: system mounts, binds, env vars, pasta; --ide companion background/foreground wrapper
 │   ├── identity.ts       # passwd/group overlay so getpwuid() resolves to /home/scoder
 │   ├── launch.ts         # two-stage launch: bwrap blocks, pasta attaches, tool releases; forwards terminal signals (SIGWINCH/SIGINT/SIGQUIT/SIGTSTP) into the sandbox; live-reload watcher for .agentports
 │   ├── pasta.ts          # network sidecar: attach to the sandbox netns, teardown
@@ -52,7 +52,7 @@ src/
     └── paths.ts           # Host ↔ sandbox path translation (home remapping)
 
 tests/
-├── scoder.test.ts        # Integration test suite (78 tests as of v2.4.0)
+├── scoder.test.ts        # Integration test suite (93 tests as of v2.5.0)
 └── helpers/
     ├── pty-signal-harness.py  # Real-PTY driver for terminal-signal-forwarding tests (Bun/Node have no first-party PTY allocation)
     └── signal-diagnostic.py   # Fixture: registers signal handlers, logs each one received
@@ -65,7 +65,7 @@ tests/
 3. **Early validation** — bwrap exists, pasta exists, userns works (AppArmor diagnostic if it fails)
 4. **`.agentports`** — read the project's `.agentports` file for host-loopback ports to forward; probe `127.0.0.1:11434` (or `SCODER_LLM_PORT`) and append a hit additively (skipped under `--dry-run`)
 5. **Special modes** — `--configure-apparmor`, `--install-dependencies` exit early
-6. **Tool selection** — resolve preset, validate tool exists, get config binds, translate the host tool path into the sandbox namespace
+6. **Tool selection** — resolve preset, validate tool exists, get config binds, translate the host tool path into the sandbox namespace; if `--ide NAME` was given, the same for NAME's own preset, with binds/dirs/env merged (deduplicated) into the one sandbox
 7. **If worktree mode:**
    - Create/reuse/prune git worktree at `/tmp/scoder/<project-path>`
    - Check for stale worktree directories (reboot recovery)
@@ -86,8 +86,8 @@ tests/
    - Protection overlays (ro-bind over rw bind)
    - Environment variables (clearenv + selective setenv)
    - pasta network layer
-11. **Pre-flight the exec target** — a `$HOME`-installed tool whose directory is not among the command's bind destinations cannot run; fail with a diagnostic rather than a bare `execvp` error
-12. **Execute** — `bwrap ... pasta ... <tool> <args>`, while scoder's own
+11. **Pre-flight the exec target(s)** — a `$HOME`-installed tool whose directory is not among the command's bind destinations cannot run; fail with a diagnostic rather than a bare `execvp` error. Checked for both the primary tool and (if given) the `--ide` companion.
+12. **Execute** — `bwrap ... pasta ... <tool> <args>` (or, with `--ide NAME`, a shell wrapper that backgrounds NAME and foregrounds `<tool>`, waiting for both before exiting with `<tool>`'s own exit code — see `wrapWithIdeBackground`), while scoder's own
     process forwards SIGWINCH/SIGINT/SIGQUIT/SIGTSTP into the sandbox for the
     life of the session (`--new-session` otherwise fully detaches the
     sandboxed process from the controlling terminal these are delivered
@@ -111,3 +111,4 @@ tests/
 [HAS_FEATURE](../design/features/local-bin-resolution.md)
 [HAS_FEATURE](../design/features/ssh-tunnel-access.md)
 [HAS_FEATURE](../design/features/persistent-scratch.md)
+[HAS_FEATURE](../design/features/ide-companion.md)

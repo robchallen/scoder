@@ -15,7 +15,29 @@ on a separate git branch via a worktree.
 | `claude` | Claude Code config bind-mount |
 | `copilot` | GitHub Copilot CLI config + data |
 | `pi` | Pi Coding Agent config + data |
+| `rstudio` | RStudio Desktop config + data, X11 access, and pi's own binds (see below) |
 | *(any)* | Generic sandbox |
+
+**`rstudio` is different from every other preset here**, deliberately: it
+binds the host's real X11 socket into the sandbox so RStudio Desktop's
+window can render at all, which gives anything running inside the same
+access to that X display any of your own desktop apps have — including
+the ability to inject synthetic keyboard/mouse input into *other* windows
+on it. Every other preset confines its tool to filesystem and network
+access scoder mediates directly; this one hands over a live channel scoder
+has no further control over once it's open. Accepted because the goal
+here is preventing accidents, not holding up against a dedicated
+adversary — see
+[0002-rstudio-x11-access](/architecture/decision-records/0002-rstudio-x11-access.md)
+for what was verified and why the alternatives (RStudio Server over HTTP,
+a nested VNC server, a VM) were rejected as heavier than this project's
+own weight class.
+
+If a `*.Rproj` file exists at the project root, `rstudio` opens it
+automatically (RStudio Desktop doesn't otherwise pick up the sandbox's
+working directory on its own); with none found, it opens the project
+directory itself. Passing your own argument (e.g. a specific file)
+always overrides this.
 
 ## How it works
 
@@ -175,6 +197,34 @@ testing against a local server.
 You must have connected to the target at least once before, outside scoder:
 the master connection uses `BatchMode`, so it will not prompt to accept an
 unfamiliar host key.
+
+## A companion IDE (`--ide`)
+
+`--ide NAME` launches `NAME` (must have a registered preset — currently
+just `rstudio`, following the same pattern as other tool presets) as a
+companion alongside the primary tool, both inside the *same* sandbox:
+
+```bash
+scoder pi --ide rstudio     # rstudio in the background, pi in the foreground
+```
+
+`NAME` runs in the background, the primary tool in the foreground
+(connected to your terminal, same as running it alone), and both must
+exit before scoder shuts down — closing the primary tool alone leaves the
+IDE running and scoder still waiting; closing the IDE alone leaves the
+primary tool running as normal. `--ide` works either before or after the
+primary tool's name (`scoder --ide rstudio pi` and `scoder pi --ide
+rstudio` are equivalent).
+
+Since both run in the same sandbox, this is the shape that makes bridging
+an agent and an IDE via MCP (e.g. `pi` and RStudio via `btw`/`mcptools`)
+actually safe: both processes share one project, one filesystem view, one
+set of restrictions — nothing crosses the sandbox boundary at all, unlike
+connecting to an IDE running natively on the host. The `rstudio` preset
+also sets `MCPTOOLS_SOCKET_DIR` to a writable sandbox path, so
+`mcptools::mcp_session()`/`mcp_server()` work out of the box — no project
+`.Rprofile` line needed (its own default location, `/run/user/<uid>`, is
+read-only inside the sandbox).
 
 ## Persistent host-loopback ports (an `.agentports` file)
 

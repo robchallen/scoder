@@ -164,6 +164,11 @@ async function main(): Promise<void> {
 		process.exit(1);
 	}
 
+	if (options.ide && options.ide === toolName) {
+		error("--ide must be different from the primary tool");
+		process.exit(1);
+	}
+
 	let toolDescription = toolName;
 	let toolBinds: BindMount[] = [];
 	let toolDirs: string[] = [];
@@ -187,6 +192,47 @@ async function main(): Promise<void> {
 		toolEnv = bindSpec.env;
 	}
 
+	// EM: --ide: a companion IDE (must have a registered preset — an
+	// EM: unregistered tool has no way to get the binds it would need, e.g.
+	// EM: X11 access, and would just fail silently in the background) whose
+	// EM: binds/dirs/env are merged into the one sandbox alongside the
+	// EM: primary tool's own. See design/features/ide-companion.md.
+	const idePreset = options.ide ? TOOL_PRESETS[options.ide] : undefined;
+	let hostIdeBin: string | null = null;
+	let ideBin: string | undefined;
+	let ideArgs: string[] = [];
+
+	if (options.ide) {
+		if (!idePreset) {
+			error(`no preset registered for --ide ${options.ide}`);
+			error("Only tools with a registered preset can be a companion IDE");
+			process.exit(1);
+		}
+
+		const ideValid = await idePreset.validate();
+		if (!ideValid) {
+			process.exit(1);
+		}
+
+		// EM: Deduplicated, not just concatenated: an IDE preset can itself
+		// EM: include another tool's own binds (rstudio includes pi's, since
+		// EM: pi can also run in its embedded terminal), so the exact same
+		// EM: entry can legitimately come from both the primary tool's own
+		// EM: preset and the IDE's — harmless to bwrap either way (a repeated
+		// EM: bind is a no-op), but a clean merge is worth it over leaving
+		// EM: literal duplicate --dir/--bind flags in the built command.
+		const ideBindSpec = await idePreset.configBinds(realHome, SCODER_HOME);
+		toolBinds = dedupeBinds([...toolBinds, ...ideBindSpec.binds]);
+		toolDirs = [...new Set([...toolDirs, ...ideBindSpec.dirs])];
+		toolEnv = { ...toolEnv, ...ideBindSpec.env };
+
+		hostIdeBin = await which(options.ide);
+		if (!hostIdeBin) {
+			error(`${options.ide} not found in PATH`);
+			process.exit(1);
+		}
+	}
+
 	// EM: Resolve the tool on the host, where it actually exists...
 	const hostToolBin = await which(toolName);
 	if (!hostToolBin) {
@@ -199,6 +245,9 @@ async function main(): Promise<void> {
 	// EM: /home/scoder, so a host path under $HOME does not exist inside it.
 	const homePrefixes = await resolveHomePrefixes();
 	const toolBin = toSandboxPath(hostToolBin, homePrefixes);
+	if (hostIdeBin) {
+		ideBin = toSandboxPath(hostIdeBin, homePrefixes);
+	}
 
 	let worktreeInfo: GitWorktreeInfo | null = null;
 	let protectionConfig: ProtectionConfig | undefined;
@@ -318,6 +367,15 @@ async function main(): Promise<void> {
 		toolArgs = await preset.resolveArgs(hostProjectDir, sandboxProjDir);
 	}
 
+	// EM: Same reasoning, for the companion IDE's own argv.
+	if (idePreset?.resolveArgs) {
+		const hostProjectDir =
+			options.worktree && worktreeInfo
+				? worktreeInfo.worktreeDir
+				: process.cwd();
+		ideArgs = await idePreset.resolveArgs(hostProjectDir, sandboxProjDir);
+	}
+
 	// EM: Independent of worktree vs. direct mode, so set up once here rather
 	// EM: than duplicated into both branches above.
 	if (options.sshTarget) {
@@ -399,31 +457,41 @@ async function main(): Promise<void> {
 		toolBin,
 		toolArgs,
 		toolEnv,
+		ideBin,
+		ideArgs,
 		protectionConfig,
 	};
 
 	const bwrapCmd = await buildBwrapCommand(config);
 
-	// EM: Pre-flight the exec target. A tool installed under $HOME only works if
-	// EM: its directory is bound into the sandbox; without this check the failure
-	// EM: surfaces as a bare "execvp: No such file or directory" from pasta.
-	if (
-		toolBin !== hostToolBin &&
-		!isUnderAny(toolBin, collectBindDests(bwrapCmd))
-	) {
-		const report = options.dryRun ? warning : error;
-		const hostToolDir = hostToolBin.slice(0, hostToolBin.lastIndexOf("/"));
-		report(
-			`${toolName} is installed at ${hostToolBin}, under your home directory`,
+	// EM: Pre-flight the exec target(s). A tool installed under $HOME only
+	// EM: works if its directory is bound into the sandbox; without this check
+	// EM: the failure surfaces as a bare "execvp: No such file or directory"
+	// EM: from pasta — for --ide, that would otherwise show up as the IDE
+	// EM: silently failing in its background job, with no diagnostic at all.
+	const bindDests = collectBindDests(bwrapCmd);
+	const toolReachable = checkExecTargetReachable(
+		toolName,
+		toolBin,
+		hostToolBin,
+		bindDests,
+		realHome,
+		options.dryRun,
+	);
+	if (!toolReachable && !options.dryRun) {
+		process.exit(1);
+	}
+
+	if (options.ide && ideBin && hostIdeBin) {
+		const ideReachable = checkExecTargetReachable(
+			options.ide,
+			ideBin,
+			hostIdeBin,
+			bindDests,
+			realHome,
+			options.dryRun,
 		);
-		report(
-			"The sandbox uses an ephemeral home, and that directory is not bound into it",
-		);
-		report(
-			`Fix: install ${toolName} system-wide, or bind its directory by adding`,
-		);
-		report(`     ${hostToolDir.replace(realHome, "$HOME")}/ to .agentreadonly`);
-		if (!options.dryRun) {
+		if (!ideReachable && !options.dryRun) {
 			process.exit(1);
 		}
 	}
@@ -588,6 +656,51 @@ function printBwrapCommand(cmd: string[]): void {
 	}
 
 	console.log("");
+}
+
+// ### checkExecTargetReachable
+// Shared between the primary tool and (if present) the --ide companion:
+// a $HOME-installed binary only resolves inside the sandbox if its
+// directory is among the command's bind destinations. Reports the same
+// diagnostic either way, naming whichever tool actually has the problem.
+function checkExecTargetReachable(
+	name: string,
+	sandboxBin: string,
+	hostBin: string,
+	bindDests: string[],
+	realHome: string,
+	dryRun: boolean,
+): boolean {
+	if (sandboxBin === hostBin || isUnderAny(sandboxBin, bindDests)) {
+		return true;
+	}
+
+	const report = dryRun ? warning : error;
+	const hostDir = hostBin.slice(0, hostBin.lastIndexOf("/"));
+	report(`${name} is installed at ${hostBin}, under your home directory`);
+	report(
+		"The sandbox uses an ephemeral home, and that directory is not bound into it",
+	);
+	report(`Fix: install ${name} system-wide, or bind its directory by adding`);
+	report(`     ${hostDir.replace(realHome, "$HOME")}/ to .agentreadonly`);
+	return false;
+}
+
+// Two binds are the same entry if type, source, and dest all match — the
+// only way a duplicate can arise here (a preset shared between the primary
+// tool and an --ide companion, e.g. piConfigBinds) produces an exact
+// duplicate, not a near-miss, so this is deliberately simple rather than a
+// general-purpose overlap check.
+function dedupeBinds(binds: BindMount[]): BindMount[] {
+	const seen = new Set<string>();
+	return binds.filter((bind) => {
+		const key = `${bind.type}\0${bind.source}\0${bind.dest}`;
+		if (seen.has(key)) {
+			return false;
+		}
+		seen.add(key);
+		return true;
+	});
 }
 
 async function which(cmd: string): Promise<string | null> {

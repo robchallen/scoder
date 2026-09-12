@@ -21,12 +21,13 @@ tags: [test-script, validation]
 [HAS_FEATURE](../features/direct-mode.md)
 [HAS_FEATURE](../features/ssh-tunnel-access.md)
 [HAS_FEATURE](../features/persistent-scratch.md)
+[HAS_FEATURE](../features/ide-companion.md)
 
 ## Summary
 
 `tests/scoder.test.ts` is a self-contained integration test suite that creates
 temporary git repositories under `/tmp`, runs `scoder` against them using
-`/bin/bash` as the sandboxed command, and asserts expected behaviour. 85
+`/bin/bash` as the sandboxed command, and asserts expected behaviour. 90
 tests cover all sandbox mechanics.
 
 Cleanup runs in an `afterAll` hook. It removes the temp repos, their worktrees
@@ -672,6 +673,49 @@ itself.
 
 An explicit argument (e.g. a specific file to open) is left untouched,
 even when a `.Rproj` file is present.
+
+### 86. ide-flag-merges-companion-binds
+[TESTED_BY](/tests/scoder.test.ts#testIdeFlagMergesCompanionBinds)
+
+`--ide` merges the companion's own binds (`rstudio`'s X11 access) into
+the one sandbox alongside the primary tool's own — deduplicated: an entry
+both presets independently contribute (`pi`'s own binds, since `rstudio`
+includes them so `pi` also works from its embedded terminal) appears
+once, not twice. See
+[ide-companion](/design/features/ide-companion.md).
+
+### 87. ide-flag-works-before-or-after-tool-name
+[TESTED_BY](/tests/scoder.test.ts#testIdeFlagWorksBeforeOrAfterToolName)
+
+`--ide rstudio` is recognised whether it appears before or after the
+primary tool's own name (`scoder --ide rstudio pi` and
+`scoder pi --ide rstudio` are equivalent) — every other scoder flag only
+parses before the tool name.
+
+### 88. ide-must-differ-from-primary-tool
+[TESTED_BY](/tests/scoder.test.ts#testIdeMustDifferFromPrimaryTool)
+
+`--ide` naming the same tool as the primary fails with a clear error.
+
+### 89. ide-requires-registered-preset
+[TESTED_BY](/tests/scoder.test.ts#testIdeRequiresRegisteredPreset)
+
+`--ide` naming a tool with no registered preset fails with a clear error,
+rather than silently launching it with no binds (and so, for a GUI IDE,
+failing silently in its own background job).
+
+### 90. ide-companion-background-then-primary-foreground-both-must-exit
+[TESTED_BY](/tests/scoder.test.ts#testIdeCompanionBackgroundThenPrimaryForegroundBothMustExit)
+
+The one real end-to-end case: the primary tool exits immediately, but
+scoder does not return until the companion's own background job (an
+artificial delay) has also finished, and that job's side effect (a
+marker file) is visible afterward — proving it ran to completion, not
+just that the wrapper script looks right in `--dry-run` output. Also
+confirms scoder reports the primary tool's exit code, not the
+companion's. Reuses the fake pasta shim established earlier in this
+suite. Self-skips if a real `pi` or `rstudio` is already installed on the
+test-running machine, so it never shadows either.
 
 ## Current Network Coverage
 

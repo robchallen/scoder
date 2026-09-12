@@ -6,6 +6,7 @@ export interface ScoderOptions {
 	installDependencies: boolean;
 	worktree: boolean;
 	sshTarget: string | null;
+	ide: string | null;
 }
 
 export interface ToolPreset {

@@ -49,6 +49,8 @@ localhost services by default.
 
 [HAS_FEATURE](./features/persistent-scratch.md) - A `scratch` symlink at the project root mirrors its target at that target's own real absolute path — a persistent, read-write area outside the project tree, with no flag and no config.
 
+[HAS_FEATURE](./features/ide-companion.md) - `--ide NAME` launches NAME (must have a registered preset) as a companion in the same sandbox: NAME in the background, the primary tool in the foreground, both must exit before scoder shuts down.
+
 From [ROADMAP.md](./legacy/ROADMAP.md), not yet in development:
 
 - **Additional AI tool presets** — as new coding assistants emerge, add presets following the existing convention.

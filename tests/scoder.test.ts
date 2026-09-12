@@ -1897,6 +1897,207 @@ test.skipIf(!x11TestToolsAvailable)(
 	},
 );
 
+// EM: ### Tests for --ide (companion IDE alongside the primary tool)
+// EM: See design/features/ide-companion.md. Uses fake pi/rstudio binaries
+// EM: (same reasoning as the rstudio-preset dry-run tests above — what's
+// EM: under test is scoder's own orchestration, not either real tool's
+// EM: behaviour) except for the one real end-to-end test, which needs
+// EM: genuinely separate foreground/background processes and so needs
+// EM: ~/.local/bin, guarded against shadowing a real local install of
+// EM: either tool.
+
+// ### Test: ide-flag-merges-companion-binds
+test("ide-flag-merges-companion-binds: --ide merges the companion's binds into the one sandbox, deduplicated", async () => {
+	const repoDir = await createTempRepo();
+	tempRepos.push(repoDir);
+	const piDir = await createFakeToolDir("pi");
+	const rstudioDir = await createFakeToolDir("rstudio");
+
+	try {
+		const output = await runScoder(
+			repoDir,
+			["--dry-run", "--no-worktree", "pi", "--ide", "rstudio"],
+			{ PATH: `${piDir}:${rstudioDir}:${process.env.PATH}` },
+		);
+
+		expect(output).toContain("--ro-bind /tmp/.X11-unix /tmp/.X11-unix");
+
+		const piDataBind = `--bind ${process.env.HOME}/.local/share/pi ${SCODER_HOME}/.local/share/pi`;
+		expect(output).toContain(piDataBind);
+		// pi's own preset and rstudio's (which also includes pi's binds, so
+		// pi works from RStudio's embedded terminal too) both contribute
+		// this exact entry — must appear once, not twice.
+		expect(output.split(piDataBind).length - 1).toBe(1);
+	} finally {
+		await Bun.spawn(["rm", "-rf", piDir, rstudioDir]).exited;
+		await cleanupRepo(repoDir);
+	}
+});
+
+// ### Test: ide-flag-works-before-or-after-tool-name
+test("ide-flag-works-before-or-after-tool-name: --ide is recognised whether it comes before or after the tool name", async () => {
+	const repoDir = await createTempRepo();
+	tempRepos.push(repoDir);
+	const piDir = await createFakeToolDir("pi");
+	const rstudioDir = await createFakeToolDir("rstudio");
+	const env = { PATH: `${piDir}:${rstudioDir}:${process.env.PATH}` };
+
+	try {
+		const idAfter = await runScoder(
+			repoDir,
+			["--dry-run", "--no-worktree", "pi", "--ide", "rstudio"],
+			env,
+		);
+		const idBefore = await runScoder(
+			repoDir,
+			["--dry-run", "--ide", "rstudio", "--no-worktree", "pi"],
+			env,
+		);
+
+		// Not a full-output comparison — each run's temp file names (the
+		// local-bin snapshot, the AGENTS.md overlay, ...) are freshly
+		// randomised, so the two outputs are never byte-identical even for
+		// the same flags. What --ide's position must not change is whether
+		// the companion's own binds and the background/foreground wrapper
+		// are present at all.
+		for (const output of [idAfter, idBefore]) {
+			expect(output).toContain("--ro-bind /tmp/.X11-unix /tmp/.X11-unix");
+			expect(output).toContain("IDE_PID=$!");
+		}
+	} finally {
+		await Bun.spawn(["rm", "-rf", piDir, rstudioDir]).exited;
+		await cleanupRepo(repoDir);
+	}
+});
+
+// ### Test: ide-must-differ-from-primary-tool
+test("ide-must-differ-from-primary-tool: --ide naming the same tool as the primary fails clearly", async () => {
+	const repoDir = await createTempRepo();
+	tempRepos.push(repoDir);
+	const rstudioDir = await createFakeToolDir("rstudio");
+
+	try {
+		const proc = await Bun.spawn(
+			[
+				SCODER_PATH,
+				"-q",
+				"--dry-run",
+				"--no-worktree",
+				"rstudio",
+				"--ide",
+				"rstudio",
+			],
+			{
+				env: { ...process.env, PATH: `${rstudioDir}:${process.env.PATH}` },
+				stdout: "pipe",
+				stderr: "pipe",
+			},
+		);
+		await proc.exited;
+
+		expect(proc.exitCode).not.toBe(0);
+		const stderr = await new Response(proc.stderr).text();
+		expect(stderr).toContain("--ide must be different from the primary tool");
+	} finally {
+		await Bun.spawn(["rm", "-rf", rstudioDir]).exited;
+		await cleanupRepo(repoDir);
+	}
+});
+
+// ### Test: ide-requires-registered-preset
+test("ide-requires-registered-preset: --ide naming a tool with no preset fails clearly", async () => {
+	const repoDir = await createTempRepo();
+	tempRepos.push(repoDir);
+	const piDir = await createFakeToolDir("pi");
+
+	try {
+		const proc = await Bun.spawn(
+			[
+				SCODER_PATH,
+				"-q",
+				"--dry-run",
+				"--no-worktree",
+				"pi",
+				"--ide",
+				"not-a-registered-preset",
+			],
+			{
+				env: { ...process.env, PATH: `${piDir}:${process.env.PATH}` },
+				stdout: "pipe",
+				stderr: "pipe",
+			},
+		);
+		await proc.exited;
+
+		expect(proc.exitCode).not.toBe(0);
+		const stderr = await new Response(proc.stderr).text();
+		expect(stderr).toContain(
+			"no preset registered for --ide not-a-registered-preset",
+		);
+	} finally {
+		await Bun.spawn(["rm", "-rf", piDir]).exited;
+		await cleanupRepo(repoDir);
+	}
+});
+
+// ### Test: ide-companion-background-then-primary-foreground-both-must-exit
+// EM: The one real end-to-end test — proves the actual runtime property,
+// EM: not just that the wrapper script looks right in --dry-run output:
+// EM: the primary tool exits immediately, but scoder does not return until
+// EM: the companion's own background job (an artificial sleep) has also
+// EM: finished, and that job's own side effect (a marker file) is visible
+// EM: afterward, proving it ran to completion rather than being cut short.
+// EM: Also confirms scoder's own exit code is the primary tool's, not the
+// EM: companion's. Guarded against shadowing a real local pi/rstudio
+// EM: install, same reasoning as the rstudio-x11-connectivity test above.
+const ideE2eToolsAvailable =
+	!(await commandAvailable("rstudio")) && !(await commandAvailable("pi"));
+
+test.skipIf(!ideE2eToolsAvailable)(
+	"ide-companion-background-then-primary-foreground-both-must-exit: scoder waits for both, reports the primary's exit code",
+	async () => {
+		const repoDir = await createTempRepo();
+		tempRepos.push(repoDir);
+		const shimDir = await createFakePastaShim(
+			`/tmp/scoder-ide-e2e-${Date.now()}.log`,
+		);
+		const fakeRstudioPath = `${process.env.HOME}/.local/bin/rstudio`;
+		const fakePiPath = `${process.env.HOME}/.local/bin/pi`;
+
+		try {
+			await Bun.write(
+				fakeRstudioPath,
+				"#!/bin/bash\nsleep 2\ntouch ide-finished-marker\nexit 0\n",
+			);
+			await Bun.write(fakePiPath, "#!/bin/bash\necho pi-ran\nexit 7\n");
+			await Bun.spawn(["chmod", "+x", fakeRstudioPath, fakePiPath]).exited;
+
+			const start = Date.now();
+			const proc = Bun.spawn(
+				[SCODER_PATH, "-q", "--no-worktree", "pi", "--ide", "rstudio"],
+				{
+					cwd: repoDir,
+					env: { ...process.env, PATH: `${shimDir}:${process.env.PATH}` },
+					stdout: "pipe",
+					stderr: "pipe",
+				},
+			);
+			await proc.exited;
+			const elapsedMs = Date.now() - start;
+
+			const stdout = await new Response(proc.stdout).text();
+			expect(stdout).toContain("pi-ran");
+			expect(proc.exitCode).toBe(7);
+			expect(elapsedMs).toBeGreaterThanOrEqual(1900);
+			expect(await fileExists(`${repoDir}/ide-finished-marker`)).toBe(true);
+		} finally {
+			await Bun.spawn(["rm", "-rf", shimDir]).exited;
+			await Bun.spawn(["rm", "-f", fakeRstudioPath, fakePiPath]).exited;
+			await cleanupRepo(repoDir);
+		}
+	},
+);
+
 // EM: ### Tests for session commit and cleanup correctness
 // EM: Covers the four issues in design/implementation/issues/
 

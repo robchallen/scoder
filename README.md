@@ -198,6 +198,30 @@ You must have connected to the target at least once before, outside scoder:
 the master connection uses `BatchMode`, so it will not prompt to accept an
 unfamiliar host key.
 
+## A companion IDE (`--ide`)
+
+`--ide NAME` launches `NAME` (must have a registered preset — currently
+just `rstudio`, following the same pattern as other tool presets) as a
+companion alongside the primary tool, both inside the *same* sandbox:
+
+```bash
+scoder pi --ide rstudio     # rstudio in the background, pi in the foreground
+```
+
+`NAME` runs in the background, the primary tool in the foreground
+(connected to your terminal, same as running it alone), and both must
+exit before scoder shuts down — closing the primary tool alone leaves the
+IDE running and scoder still waiting; closing the IDE alone leaves the
+primary tool running as normal. `--ide` works either before or after the
+primary tool's name (`scoder --ide rstudio pi` and `scoder pi --ide
+rstudio` are equivalent).
+
+Since both run in the same sandbox, this is the shape that makes bridging
+an agent and an IDE via MCP (e.g. `pi` and RStudio via `btw`/`mcptools`)
+actually safe: both processes share one project, one filesystem view, one
+set of restrictions — nothing crosses the sandbox boundary at all, unlike
+connecting to an IDE running natively on the host.
+
 ## Persistent host-loopback ports (an `.agentports` file)
 
 A file named `.agentports` at the project root lists host-loopback ports

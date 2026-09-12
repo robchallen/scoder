@@ -17,6 +17,11 @@ export interface SandboxConfig {
 	toolBin: string;
 	toolArgs: string[];
 	toolEnv?: Record<string, string>;
+	// EM: --ide: a companion IDE launched in the background, alongside the
+	// EM: primary tool in the foreground, inside the same sandbox. See
+	// EM: design/features/ide-companion.md and wrapWithIdeBackground below.
+	ideBin?: string;
+	ideArgs?: string[];
 	protectionConfig?: ProtectionConfig;
 }
 
@@ -39,6 +44,8 @@ export async function buildBwrapCommand(
 		toolBin,
 		toolArgs,
 		toolEnv,
+		ideBin,
+		ideArgs,
 		protectionConfig,
 	} = config;
 
@@ -280,9 +287,73 @@ export async function buildBwrapCommand(
 	// EM: `--` marks end-of-options, so a tool path beginning with `-` cannot be
 	// EM: mistaken for a bwrap flag. Previously this separated pasta's options
 	// EM: from the command; bwrap accepts it in the same role.
-	cmd.push("--", toolBin, ...toolArgs);
+	if (ideBin) {
+		cmd.push(
+			"--",
+			...wrapWithIdeBackground(toolBin, toolArgs, ideBin, ideArgs ?? []),
+		);
+	} else {
+		cmd.push("--", toolBin, ...toolArgs);
+	}
 
 	return cmd;
+}
+
+// ### wrapWithIdeBackground
+// [IMPLEMENTS](/design/features/ide-companion.md)
+// Runs the companion IDE detached in the background and the primary tool
+// in the foreground, in the same process group inside the sandbox — bwrap
+// (and so scoder) does not return until BOTH have exited: confirmed
+// directly that a backgrounded job in a non-interactive `bash -c` script
+// shares the script's own process group (no separate job-control group,
+// since that only applies to an interactive shell), so
+// installSignalForwarding's existing process-group kill() already reaches
+// both without any change there.
+//
+// The IDE's own stdout/stderr are redirected to a log file rather than left
+// attached to the terminal — an Electron/GUI app's own console chatter
+// would otherwise interleave with the primary tool's interactive session.
+//
+// Args are passed as positional parameters ("$@"), never interpolated into
+// the script string, matching wrapWithFdShim's own convention: a tool
+// argument containing spaces or shell metacharacters must never be
+// reparsed as shell syntax. IDE_ARGC is how the one flat argv is split
+// back into "the IDE's own argv" and "the primary tool's own argv" without
+// a sentinel value that some real argument could theoretically collide
+// with.
+export function wrapWithIdeBackground(
+	toolBin: string,
+	toolArgs: string[],
+	ideBin: string,
+	ideArgs: string[],
+): string[] {
+	// biome-ignore-start lint/suspicious/noTemplateCurlyInString: this is a
+	// literal bash "${...}" reference in a generated shell script, not a
+	// forgotten JS template placeholder — this is a plain string, not a
+	// template literal, so JS never interpolates it.
+	const script =
+		'IDE_LOG="$1"; shift; ' +
+		'IDE_ARGC="$1"; shift; ' +
+		"IDE_ARGV=(); " +
+		'for ((i=0; i<IDE_ARGC; i++)); do IDE_ARGV+=("$1"); shift; done; ' +
+		'"${IDE_ARGV[@]}" >"$IDE_LOG" 2>&1 & ' +
+		"IDE_PID=$!; " +
+		'"$@"; STATUS=$?; ' +
+		'wait "$IDE_PID"; ' +
+		'exit "$STATUS"';
+	// biome-ignore-end lint/suspicious/noTemplateCurlyInString: see above
+	return [
+		"bash",
+		"-c",
+		script,
+		"_",
+		"/tmp/scoder-ide.log",
+		(1 + ideArgs.length).toString(),
+		ideBin,
+		...ideArgs,
+		toolBin,
+		...toolArgs,
+	];
 }
 
 // ### wrapWithFdShim

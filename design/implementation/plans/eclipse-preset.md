@@ -1,6 +1,6 @@
 ---
 target-version: 2.6.0
-status: draft
+status: ready
 tags: [plan, ide, eclipse, sandbox]
 ---
 
@@ -401,20 +401,28 @@ plumbing gap noted above.
 
 ### `src/tools/presets.ts`
 
-New `eclipse` preset:
+**Implemented** — see `src/tools/presets.ts`'s `eclipse` preset,
+`resolveEclipseLayout`, and the surrounding helpers, plus the follow-on
+commit to this plan doc for the exact final shape. In brief:
 - `configBinds`: X11/XAUTHORITY/XDG_RUNTIME_DIR/DBUS_SESSION_BUS_ADDRESS
   binds and env, by direct analogy with `rstudio`'s own (Decision 3);
   `ensureDir`+bind the persisted workspace directory; locate the host's
   Eclipse installation (needed regardless, to resolve where `plugins/`
   is) and inject the vendored plugin jar there, read-only. Also compute
-  the expected `~/.eclipse/<app>_<version>_<hash>/` path (Decision 5 —
-  `<app>`/`<version>` read from the install's `.eclipseproduct` marker,
-  `<hash>` from the install directory's own canonical/absolute path,
-  matching `getInstallDirHash()` exactly) and check whether it already
-  exists on the host: if so, bind it into the sandbox at the identical
-  mirrored path, read-write, and record "no `-configuration` flag
-  needed"; if not, `ensureDir`+bind a scoder-managed fallback directory
-  and record its path for use as an explicit `-configuration <dir>`.
+  the expected `~/.eclipse/<app>_<version>_<hash>/` directory (Decision
+  5) and check whether one already exists on the host: if so, bind it
+  into the sandbox at the identical mirrored path, read-write, and
+  record "no `-configuration` flag needed"; if not, `ensureDir`+bind a
+  scoder-managed fallback directory (keyed by the hash alone) and record
+  its path for use as an explicit `-configuration <dir>`. **Deviation
+  from the sketch above**: rather than reconstructing the full
+  `<app>_<version>_<hash>` name from the install's `.eclipseproduct`
+  marker, the implementation matches on the hash suffix alone (any
+  `~/.eclipse/*_<hash>` entry) — the hash is the only part actually
+  load-bearing for correctness (it's what ties the directory to this
+  specific install path); getting an app id or version string wrong
+  would otherwise risk missing a real, existing directory for no good
+  reason. `.eclipseproduct` is never read.
 - `prepareCommand`: returns the headless-import invocation
   (`<eclipse-bin> -nosplash -clean [-configuration <fallback config
   dir>] -application com.seeq.eclipse.importprojects.headlessimport
@@ -425,9 +433,17 @@ New `eclipse` preset:
 - The interactive launch's own args always begin with `[-configuration
   <fallback config dir>] -data <persisted workspace>` — same
   conditional-inclusion rule as the prepare step, so both agree — with
-  any user-supplied arguments appended after.
-- `validate`: `commandExists("eclipse")` — same shape as every other
-  preset.
+  any user-supplied arguments appended after. This needed `resolveArgs`
+  to change from "only called when the user gave no args" to "always
+  called, existing args passed in" — a real, if small, change to
+  `ToolPreset`'s own contract (`src/types.ts`), not something eclipse
+  alone could work around; `rstudio`'s own `resolveArgs` was updated to
+  preserve its exact prior behaviour under the new contract.
+- `validate`: `commandExists("eclipse")`, plus a re-check of the vendored
+  jar's sha256 against the pinned value on every run (`verifyEclipseJar`)
+  — not in the original sketch, added since the jar is injected into a
+  real install's own trusted `plugins/` dir and is worth not just
+  trusting blindly at a fixed repo path.
 
 ### Vendored asset
 

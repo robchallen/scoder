@@ -354,6 +354,45 @@ happened to construct — and when a fix starts accumulating special cases,
 it's worth stepping back and asking whether the underlying assumption is
 the actual problem.
 
+### The sixth bug: the fifth fix picked the wrong file as its template, self-inflicted by the fourth
+
+Real-world use of the fifth fix reported losing every plugin the user
+had actually installed beyond the base Eclipse Platform — a genuine
+regression, traced to a self-inflicted cause: the fourth bug's fix (since
+reverted) had `configHostDir` pointing at
+`~/.eclipse/<hash>/configuration` for a while, and the *old*
+bundles.info-editing code (also since removed) wrote directly into
+*that* path — creating
+`~/.eclipse/<hash>/configuration/org.eclipse.equinox.simpleconfigurator/bundles.info`
+on the real host filesystem **for the first time**, since nothing
+existed there yet. Because nothing existed there yet, that write's own
+base content came from `<install>/configuration`'s bare shipped default
+(the only thing available to copy from at the time) — not the user's
+real, current bundle list, which only ever lived in the *real*,
+un-nested `~/.eclipse/<hash>/org.eclipse.equinox.simpleconfigurator/bundles.info`.
+
+The fifth fix's own candidate list (see `buildEclipseBundlesInfoContent`
+above) checked the nested path *first* — meaning it picked up this
+stale, scoder-created file as its "base template" instead of the real
+one, silently dropping every plugin the user had actually installed.
+
+Fixed by reordering the candidates: the un-nested path
+(`${configHostDir}/org.eclipse.equinox.simpleconfigurator/bundles.info`)
+is tried first, the nested one second (now understood to likely be
+scoder's own leftover debris rather than a genuine Equinox artifact —
+worth deleting by hand on a machine that hit this), then the install's
+own shipped default last. Confirmed directly with a fake install
+reproducing both files at once (the un-nested one carrying an extra
+"installed" plugin entry, the nested one bare) — the scoder-private
+bundles.info now correctly includes the extra plugin.
+
+This is also a reminder that "the fourth bug's fix" and "the fifth bug's
+fix" were not independent: the fourth bug's own fix, despite being later
+reverted in code, had already left a real, persistent side effect on a
+real machine — a caution for any future fix in this area that writes to
+a real, user-owned path, even briefly during development: reverting the
+code doesn't revert what it already wrote to a real disk.
+
 ## Design
 
 1. **Vendor the plugin jar in scoder's own repo**, pinned by its exact

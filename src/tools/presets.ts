@@ -336,10 +336,22 @@ const ECLIPSE_SIMPLECONFIGURATOR_CONFIG_URL_PROP =
 // (2) real-world use found the user's actual ~/.eclipse/<hash> directory
 // has bundles.info at *two* plausible locations at once
 // (.../configuration/org.eclipse.equinox.simpleconfigurator/bundles.info
-// *and* .../org.eclipse.equinox.simpleconfigurator/bundles.info directly)
-// — which one Equinox's own default resolution actually treats as
-// canonical was never conclusively pinned down, and this sidesteps the
-// question entirely rather than guessing.
+// *and* .../org.eclipse.equinox.simpleconfigurator/bundles.info directly).
+// The former turned out not to be a genuine native Eclipse artifact at
+// all: a since-reverted earlier version of this preset briefly used
+// configHostDir = ~/.eclipse/<hash>/configuration (see "The fourth bug"
+// in eclipse-preset.md) and, while that was live, its own
+// bundles.info-writing code created exactly this nested path for the
+// first time, seeding it from the *install's own bare shipped default*
+// (since nothing existed there yet to read as a base) — a real, if
+// accidental, side effect on a real machine. Reading that file back as a
+// "base template" silently dropped every plugin the user had actually
+// installed beyond the base Platform, which lived only in the real,
+// un-nested location. So the un-nested path is tried first here, not the
+// nested one — the opposite of what "The fourth bug" argued for, and the
+// nested one is now believed to be scoder's own leftover debris rather
+// than anything Equinox created natively (worth deleting by hand on a
+// machine that hit this).
 //
 // Confirmed directly, through the real `eclipse` binary, exactly as
 // scoder invokes it: passing `-vmargs
@@ -350,16 +362,16 @@ const ECLIPSE_SIMPLECONFIGURATOR_CONFIG_URL_PROP =
 // not just this one plugin's own line — confirmed separately that a
 // partial one fails with "Unresolved requirement: Require-Bundle:
 // org.eclipse.ui" — so this reads whichever real bundles.info is found
-// first (trying both locations from the ambiguity above, then the
-// install's own shipped default) purely as a *template* to build our own
-// complete copy from.
+// first (the un-nested location, then the nested one, then the install's
+// own shipped default) purely as a *template* to build our own complete
+// copy from.
 async function buildEclipseBundlesInfoContent(
 	hostInstallDir: string,
 	configHostDir: string,
 ): Promise<string | null> {
 	const candidates = [
-		`${configHostDir}/configuration/org.eclipse.equinox.simpleconfigurator/bundles.info`,
 		`${configHostDir}/org.eclipse.equinox.simpleconfigurator/bundles.info`,
+		`${configHostDir}/configuration/org.eclipse.equinox.simpleconfigurator/bundles.info`,
 		`${hostInstallDir}/configuration/org.eclipse.equinox.simpleconfigurator/bundles.info`,
 	];
 

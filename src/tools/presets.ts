@@ -249,7 +249,15 @@ async function resolveEclipseLayout(
 		}
 
 		if (reuseDirName) {
-			configHostDir = `${eclipseUserDir}/${reuseDirName}`;
+			// EM: The per-user directory itself is not the configuration
+			// EM: area — Equinox's own computeDefaultUserAreaLocation()
+			// EM: appends one more "configuration" segment (see the
+			// EM: "~/.eclipse/<hash> fallback" section above: "...falls
+			// EM: back to <user.home>/.eclipse/<app>_<version>_<hash>
+			// EM: /configuration"). A real-world bug: this was missing
+			// EM: that segment, so bundles.info ended up one level too
+			// EM: shallow to ever be found.
+			configHostDir = `${eclipseUserDir}/${reuseDirName}/configuration`;
 			reuseHostConfig = true;
 			configUnderHome = true;
 		} else {

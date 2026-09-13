@@ -182,9 +182,9 @@ rejected and what was verified against a real Eclipse install, is
   common case on a personal machine — a real bug, found and fixed after
   real-world use, since an earlier version skipped straight to the next
   check and silently used an empty fallback instead); else the host's
-  existing `~/.eclipse/<app>_<version>_<hash>/` directory, if one exists
-  (bound at the identical mirrored sandbox path — the hash is a pure
-  function of the install directory's own path, and scoder mounts
+  existing `~/.eclipse/<app>_<version>_<hash>/configuration` directory, if
+  one exists (bound at the identical mirrored sandbox path — the hash is
+  a pure function of the install directory's own path, and scoder mounts
   `/opt`-style install paths unchanged between host and sandbox, so the
   same hash applies in both places); falling back to a scoder-managed
   directory, keyed by that same hash, only when neither real directory

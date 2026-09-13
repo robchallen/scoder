@@ -261,16 +261,46 @@ install reproducing the exact hash: correctly matched and bound, with
 the existing (fake) custom-installed plugin's own `bundles.info` entry
 still preserved alongside the newly-appended one.
 
-Three bugs, all in the same area, is worth naming honestly rather than
-looking past: none of them were found by this investigation's own
-headless testing (which never had a `~/.eclipse/<hash>` directory, real
-or fake, with a *genuine* platform-suffixed name to test against) — all
-three were caught by the very first real-world use against a real
-install. The lesson carried forward, not just noted here: this specific
-mechanism (matching an existing, externally-named directory on the host)
-is exactly the kind of thing worth testing against the messiest real
-example available, not the cleanest one this investigation happened to
-construct.
+### The fourth bug: the reused directory itself isn't the configuration area
+
+Immediately after the third fix, the user pointed out the vendored jar's
+bind still looked wrong — expecting something under a `plugins/`
+directory nested inside the reused `~/.eclipse/<hash>` directory. That
+specific expectation turned out not to be quite right (see below), but
+chasing it surfaced a real, independent bug: `configHostDir` for the
+reused case was set to `~/.eclipse/<hash>` **directly** — but this
+investigation's own earlier, source-cited finding (see "The
+`~/.eclipse/<hash>` fallback" above) already says the actual location is
+one level deeper: `<user.home>/.eclipse/<app>_<version>_<hash>/`
+**`configuration`**. The implementation had simply dropped that trailing
+segment, disagreeing with its own citation — `bundles.info` was ending
+up at `~/.eclipse/<hash>/org.eclipse.equinox.simpleconfigurator/...`
+instead of `~/.eclipse/<hash>/configuration/org.eclipse.equinox.simpleconfigurator/...`,
+one level too shallow for Equinox to ever find it.
+
+Fixed by appending the missing `/configuration` segment. This does
+**not** mean the jar needs to move to a `plugins/` directory anywhere
+under `~/.eclipse/<hash>/` — the bundles.info mechanism (see "The
+plugin-injection bug" above) was independently verified end-to-end
+against a real headless Eclipse run, and doesn't care where the jar
+physically sits as long as `bundles.info`'s own `file:` reference points
+at it correctly; the jar staying at its own fixed, always-creatable
+sandbox path is unaffected by this fix. Confirmed directly: with the
+missing segment restored, `bundles.info` lands at the correct,
+Equinox-expected path, in a fake install reproducing the user's own real
+directory name (including a negative hash, exercising the sign-hedge
+from the third bug's fix).
+
+Four bugs, all in the same small area, is worth naming honestly rather
+than looking past: none of them were found by this investigation's own
+headless testing (which never reused a real, externally-named
+`~/.eclipse/<hash>` directory end-to-end) — all four were caught by real
+use against a real install. The lesson carried forward, not just noted
+here: this specific mechanism (locating and reusing an existing,
+externally-named directory on the host, at the exact path Equinox itself
+expects) is exactly the kind of thing worth testing against the messiest
+real example available, not the cleanest one this investigation happened
+to construct.
 
 ## Design
 
@@ -579,9 +609,11 @@ fix" above). In brief:
   itself would (Decision 5): first, is `<install-dir>/configuration`
   itself writable by the current user (`isWritableDir`) — if so, bind it
   onto itself, read-write, and record "no `-configuration` flag needed";
-  else, does the expected `~/.eclipse/<app>_<version>_<hash>/` directory
-  already exist on the host — if so, bind *that* in at the identical
-  mirrored path, read-write, same "no flag needed" record; else,
+  else, does the expected `~/.eclipse/<app>_<version>_<hash>/configuration`
+  directory already exist on the host (the extra `/configuration` segment
+  is itself the fourth bug below, found after an earlier version of this
+  omitted it) — if so, bind *that* in at the identical mirrored path,
+  read-write, same "no flag needed" record; else,
   `ensureDir`+bind a scoder-managed fallback directory (keyed by the hash
   alone) and record its path for use as an explicit `-configuration
   <dir>`. **A real bug, found and fixed after real-world use**: an

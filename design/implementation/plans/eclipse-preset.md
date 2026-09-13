@@ -278,29 +278,81 @@ up at `~/.eclipse/<hash>/org.eclipse.equinox.simpleconfigurator/...`
 instead of `~/.eclipse/<hash>/configuration/org.eclipse.equinox.simpleconfigurator/...`,
 one level too shallow for Equinox to ever find it.
 
-Fixed by appending the missing `/configuration` segment. This does
-**not** mean the jar needs to move to a `plugins/` directory anywhere
-under `~/.eclipse/<hash>/` — the bundles.info mechanism (see "The
-plugin-injection bug" above) was independently verified end-to-end
-against a real headless Eclipse run, and doesn't care where the jar
-physically sits as long as `bundles.info`'s own `file:` reference points
-at it correctly; the jar staying at its own fixed, always-creatable
-sandbox path is unaffected by this fix. Confirmed directly: with the
-missing segment restored, `bundles.info` lands at the correct,
-Equinox-expected path, in a fake install reproducing the user's own real
-directory name (including a negative hash, exercising the sign-hedge
-from the third bug's fix).
+Fixed, at the time, by appending the missing `/configuration` segment —
+later reverted (see "The fifth bug" below), once real-world testing
+turned up something that made the exact sub-path moot for the purpose
+that motivated this fix in the first place: the user's own real machine
+turned out to have bundles.info at *both*
+`~/.eclipse/<hash>/configuration/org.eclipse.equinox.simpleconfigurator/bundles.info`
+*and* `~/.eclipse/<hash>/org.eclipse.equinox.simpleconfigurator/bundles.info`
+at once — which one Equinox's own default resolution actually treats as
+canonical was never conclusively pinned down. Binding the *whole*
+`~/.eclipse/<hash>` directory (not narrowed to a `configuration/`
+subpath) is a safe superset regardless of which sub-location matters for
+Equinox's own instance-preferences/bundle-cache resolution (Decision 5) —
+and, as of the fifth bug's fix, no longer matters at all for plugin
+registration, which now never reads or writes anything under this
+directory in the first place.
 
-Four bugs, all in the same small area, is worth naming honestly rather
-than looking past: none of them were found by this investigation's own
-headless testing (which never reused a real, externally-named
-`~/.eclipse/<hash>` directory end-to-end) — all four were caught by real
-use against a real install. The lesson carried forward, not just noted
-here: this specific mechanism (locating and reusing an existing,
-externally-named directory on the host, at the exact path Equinox itself
-expects) is exactly the kind of thing worth testing against the messiest
-real example available, not the cleanest one this investigation happened
-to construct.
+### The fifth bug: don't touch the real bundles.info at all
+
+Chasing the fourth bug surfaced the deeper problem: *any* location
+picked for editing a real bundles.info runs into the same fundamental
+issue — a value written into a file that's read both natively and inside
+the sandbox can only ever be correct in one of those two contexts, since
+`$HOME` genuinely has two different spellings (the real one natively,
+`/home/scoder` inside the sandbox), and this project deliberately never
+exposes the real one inside the sandbox anywhere else. Writing the
+sandbox-only jar path into a file the user's own native Eclipse might
+also read, permanently, was flagged as "a problem" by real-world use,
+even though it had already been confirmed benign (an unresolvable
+bundle entry is silently skipped, no crash, no effect on anything else) —
+rightly: benign isn't the same as good hygiene, and a real fix was
+findable.
+
+The fix, confirmed directly through the real `eclipse` binary, exactly
+as scoder invokes it: Equinox's simpleconfigurator reads its bundle list
+from wherever the system property
+`org.eclipse.equinox.simpleconfigurator.configUrl` points, and this is
+overridable per-launch via a **`-vmargs`** argument
+(`-vmargs -Dorg.eclipse.equinox.simpleconfigurator.configUrl=file:<path>`)
+— confirmed this correctly redirects Equinox to a completely separate
+file, with the *real* one (checked before and after) byte-for-byte
+untouched. `-vmargs` has to be the trailing section of the whole command
+line (confirmed: everything after it goes to the JVM, not Eclipse's own
+framework), so it's appended *after* `-import ...`/`existingArgs`, not
+prepended alongside `-data`/`-configuration`.
+
+This means scoder now builds its own, entirely separate,
+scoder-private `bundles.info` on every launch — a plain temp file (same
+one-shot-per-launch convention as `.agentreadonly`'s overlay, `resolv.conf`,
+etc.), read from whichever real bundles.info is found first (trying both
+locations from the fourth bug's ambiguity, then the install's own shipped
+default, purely as a *template*), with this plugin's own line appended,
+bound in read-only alongside the vendored jar (both at fixed,
+always-creatable sandbox paths). **The real bundles.info, wherever it
+actually lives, is never read for anything but that one-time template
+copy, and never written to at all.** The `~/.eclipse/<hash>` vs.
+`<install>/configuration` question from Decision 5 is now *only* about
+where Equinox's own instance preferences and bundle cache live — plugin
+registration doesn't care which one is in play, or which of the two real
+bundles.info locations the fourth bug found is canonical.
+
+Five bugs, all in the same small area, is worth naming honestly rather
+than looking past — four of them stemming from the same root cause
+(assuming a single, home-relative absolute path can be written once and
+read correctly from both inside and outside the sandbox) before landing
+on the fix that sidesteps the assumption entirely rather than working
+around it piecemeal. None were found by this investigation's own headless
+testing (which never reused a real, externally-named `~/.eclipse/<hash>`
+directory end-to-end); all five were caught by real use against a real
+install. The lesson carried forward, not just noted here: this specific
+mechanism (locating and reusing an existing, externally-named directory
+on the host) is exactly the kind of thing worth testing against the
+messiest real example available, not the cleanest one this investigation
+happened to construct — and when a fix starts accumulating special cases,
+it's worth stepping back and asking whether the underlying assumption is
+the actual problem.
 
 ## Design
 
@@ -313,11 +365,17 @@ to construct.
    to change at all. The `eclipse` preset's `configBinds` binds it
    read-only at a fixed, always-creatable sandbox path
    (`/home/scoder/.local/share/scoder-eclipse-plugin/`, never under any
-   read-only system bind) and registers it with Equinox by editing
-   `bundles.info` inside the writable `-configuration` area — **not** by
-   injecting it into `<eclipse-install>/plugins/`, which real-world use
-   proved cannot work (see "The plugin-injection bug, and the real fix"
-   above).
+   read-only system bind) and registers it with Equinox via a completely
+   separate, scoder-private `bundles.info` (built fresh every launch from
+   whichever real one is found, purely as a base template, then bound in
+   alongside the jar) — pointed at via a trailing `-vmargs
+   -Dorg.eclipse.equinox.simpleconfigurator.configUrl=file:<path>`
+   argument, not by editing any real bundles.info at all. **Not** by
+   injecting the jar into `<eclipse-install>/plugins/` (real-world use
+   proved that cannot work — see "The plugin-injection bug, and the real
+   fix" above) — and, after further real-world use, **not** by editing
+   the real, reused `-configuration` directory's own `bundles.info`
+   either (see "The fifth bug" above).
 2. **A second, separate writable location for Eclipse's own runtime
    state** (the `-configuration` area, plus the p2 agent area, which
    needs nothing special since it already defaults to `$HOME`/`/home/scoder`,
@@ -599,29 +657,34 @@ fix" above). In brief:
   binds and env, by direct analogy with `rstudio`'s own (Decision 3);
   `ensureDir`+bind the persisted workspace directory; locate the host's
   Eclipse installation (needed regardless, to resolve where `plugins/`
-  is, and as the base bundle-list source for the fallback config case)
-  and bind the vendored plugin jar read-only at a fixed, always-creatable
-  sandbox path, then register it with Equinox by editing `bundles.info`
-  inside the writable configuration area (`ensureEclipseBundlesInfo`) —
-  **not** by injecting it into the install's own `plugins/`, which
-  real-world use proved doesn't work. Also resolve the actual
-  configuration directory to use, checking in the same order Equinox
-  itself would (Decision 5): first, is `<install-dir>/configuration`
-  itself writable by the current user (`isWritableDir`) — if so, bind it
-  onto itself, read-write, and record "no `-configuration` flag needed";
-  else, does the expected `~/.eclipse/<app>_<version>_<hash>/configuration`
-  directory already exist on the host (the extra `/configuration` segment
-  is itself the fourth bug below, found after an earlier version of this
-  omitted it) — if so, bind *that* in at the identical mirrored path,
-  read-write, same "no flag needed" record; else,
-  `ensureDir`+bind a scoder-managed fallback directory (keyed by the hash
-  alone) and record its path for use as an explicit `-configuration
-  <dir>`. **A real bug, found and fixed after real-world use**: an
-  earlier version of this implementation skipped the first check
-  entirely, going straight to the `~/.eclipse/<hash>` one — silently
-  using the (empty) fallback directory instead of a personal-machine
-  user's own real, already-populated Eclipse configuration. See "The
-  second bug" above. **Deviation from the sketch
+  is, and as one of the base bundle-list template sources) and bind the
+  vendored plugin jar read-only at a fixed, always-creatable sandbox
+  path. Register it with Equinox via a completely separate,
+  scoder-private `bundles.info` (`buildEclipseBundlesInfoContent` +
+  `writeTempFile`), bound in read-only alongside the jar, pointed at via
+  a trailing `-vmargs -D...configUrl=file:<path>` argument added by
+  `prepareCommand`/`resolveArgs` — **not** by injecting the jar into the
+  install's own `plugins/` (real-world use proved that doesn't work), and
+  **not** by editing any real bundles.info at all (real-world use proved
+  *that* doesn't work well either — see "The fifth bug" above). Also
+  resolve the actual configuration directory to use for `-configuration`
+  purposes, checking in the same order Equinox itself would (Decision
+  5): first, is `<install-dir>/configuration` itself writable by the
+  current user (`isWritableDir`) — if so, bind it onto itself, read-write,
+  and record "no `-configuration` flag needed"; else, does a matching
+  `~/.eclipse/<app>_<version>_<hash>/` directory already exist on the
+  host — if so, bind *that whole directory* in at the identical mirrored
+  path, read-write, same "no flag needed" record (bound as a whole, not
+  narrowed to a `configuration/` subpath — see "The fourth bug" and "The
+  fifth bug" above for why the exact internal sub-structure turned out
+  not to matter); else, `ensureDir`+bind a scoder-managed fallback
+  directory (keyed by the hash alone) and record its path for use as an
+  explicit `-configuration <dir>`. **A real bug, found and fixed after
+  real-world use**: an earlier version of this implementation skipped
+  the first check entirely, going straight to the `~/.eclipse/<hash>`
+  one — silently using the (empty) fallback directory instead of a
+  personal-machine user's own real, already-populated Eclipse
+  configuration. See "The second bug" above. **Deviation from the sketch
   above**: rather than reconstructing the full directory name from the
   install's `.eclipseproduct` marker, the implementation matches on the
   hash alone, as its own underscore-delimited segment anywhere in the
@@ -636,13 +699,20 @@ fix" above). In brief:
   (`<eclipse-bin> -nosplash -clean [-configuration <fallback config
   dir>] -application com.seeq.eclipse.importprojects.headlessimport
   -data <persisted workspace> -import <sandboxProjDir> -import <dep1>
-  -import <dep2> ...` — the `-configuration` flag included only in the
-  fallback case; one `-import` for `sandboxProjDir`, then one more for
-  each entry in `dependencyDirs`).
+  -import <dep2> ... -vmargs -D...configUrl=file:<scoder bundles.info>`
+  — the `-configuration` flag included only in the fallback case; one
+  `-import` for `sandboxProjDir`, then one more for each entry in
+  `dependencyDirs`; `-vmargs ...` always trailing, and only added at all
+  when a base bundles.info template was actually found to build the
+  scoder-private one from).
 - The interactive launch's own args always begin with `[-configuration
-  <fallback config dir>] -data <persisted workspace>` — same
-  conditional-inclusion rule as the prepare step, so both agree — with
-  any user-supplied arguments appended after. This needed `resolveArgs`
+  <fallback config dir>] -data <persisted workspace>` and always end
+  with the same trailing `-vmargs -D...configUrl=...` (same
+  conditional-inclusion rule as the prepare step, so both agree — Equinox
+  loads the identical bundle set either way) — with any user-supplied
+  arguments in between, appended after the fixed prefix but before
+  `-vmargs`, since `-vmargs` must stay the trailing section of the whole
+  command line. This needed `resolveArgs`
   to change from "only called when the user gave no args" to "always
   called, existing args passed in" — a real, if small, change to
   `ToolPreset`'s own contract (`src/types.ts`), not something eclipse

@@ -580,8 +580,10 @@ async function buildExtraBinds(
 
 	const m2Dir = `${realHome}/.m2`;
 	if (await dirExists(m2Dir)) {
+		// This kind of has to be read write if maven is to work
+		// a bit like node_modules
 		binds.push({
-			type: "ro-bind",
+			type: "bind",
 			source: m2Dir,
 			dest: `${sandboxHome}/.m2`,
 		});

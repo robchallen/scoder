@@ -169,10 +169,20 @@ rejected and what was verified against a real Eclipse install, is
   real use (bwrap needs to *create* a destination node for a file that
   doesn't already exist there, which fails once the parent has already
   been mounted read-only by builder.ts's own wholesale system binds).
-  Instead the plugin is registered with Equinox by editing `bundles.info`
-  directly — plain host-side file I/O inside the writable configuration
-  area, no bwrap trick needed. See eclipse-preset.md's "The
-  plugin-injection bug, and the real fix". `configBinds` also binds a
+  The plugin is registered with Equinox via a completely separate,
+  scoder-private `bundles.info` — built fresh every launch (from
+  whichever real one is found, purely as a base template) and bound in
+  read-only alongside the jar — pointed at via a trailing `-vmargs
+  -Dorg.eclipse.equinox.simpleconfigurator.configUrl=file:<path>`
+  argument. **Not** by editing any real bundles.info directly: an earlier
+  version did exactly that, which real-world use flagged as a real
+  hygiene problem (a value written into a file read both natively and
+  in-sandbox can only ever be valid in one of those two contexts, since
+  `$HOME` has two different spellings) — confirmed directly against the
+  real `eclipse` binary that pointing the `configUrl` system property at
+  a separate file works identically, with the real bundles.info
+  untouched either way. See eclipse-preset.md's "The plugin-injection
+  bug, and the real fix" and "The fifth bug". `configBinds` also binds a
   persisted, project-scoped workspace directory
   (`~/.local/share/scoder-eclipse-workspaces/<project>`, read-write) and
   Eclipse's own runtime configuration area: **reusing whichever real,
@@ -182,13 +192,16 @@ rejected and what was verified against a real Eclipse install, is
   common case on a personal machine — a real bug, found and fixed after
   real-world use, since an earlier version skipped straight to the next
   check and silently used an empty fallback instead); else the host's
-  existing `~/.eclipse/<app>_<version>_<hash>/configuration` directory, if
-  one exists (bound at the identical mirrored sandbox path — the hash is
-  a pure function of the install directory's own path, and scoder mounts
-  `/opt`-style install paths unchanged between host and sandbox, so the
-  same hash applies in both places); falling back to a scoder-managed
-  directory, keyed by that same hash, only when neither real directory
-  exists.
+  existing `~/.eclipse/<app>_<version>_<hash>/` directory, if one exists
+  (bound in *whole*, not narrowed to a `configuration/` subpath — a real
+  install turned out to have bundles.info at two plausible nested
+  locations at once, and binding the whole directory sidesteps needing
+  to know which one matters — at the identical mirrored sandbox path;
+  the hash is a pure function of the install directory's own path, and
+  scoder mounts `/opt`-style install paths unchanged between host and
+  sandbox, so the same hash applies in both places); falling back to a
+  scoder-managed directory, keyed by that same hash, only when neither
+  real directory exists.
 - `prepareCommand` runs the vendored plugin's headless-import application
   inside the sandbox, before the interactive launch, importing the main
   project and every `.agentreadonly` `$HOME/...` dependency as its own

@@ -249,18 +249,19 @@ async function resolveEclipseLayout(
 		}
 
 		if (reuseDirName) {
-			// EM: The per-user directory itself is not the configuration
-			// EM: area — Equinox's own computeDefaultUserAreaLocation()
-			// EM: appends one more "configuration" segment (see the
-			// EM: "~/.eclipse/<hash> fallback" section above: "...falls
-			// EM: back to <user.home>/.eclipse/<app>_<version>_<hash>
-			// EM: /configuration"). A real-world bug: this was missing
-			// EM: that segment, so bundles.info ended up one level too
-			// EM: shallow to ever be found.
-			configHostDir = `${eclipseUserDir}/${reuseDirName}/configuration`;
+			configHostDir = `${eclipseUserDir}/${reuseDirName}`;
 			reuseHostConfig = true;
 			configUnderHome = true;
 		} else {
+			// EM: Reaching this is worth a loud diagnostic, not a quiet
+			// EM: fallback: it means neither the install's own
+			// EM: configuration nor a matching ~/.eclipse/<hash> was
+			// EM: usable, so the sandboxed session is about to get a
+			// EM: totally fresh, empty configuration area instead of the
+			// EM: user's real one.
+			warning(
+				"eclipse: no writable <install>/configuration or matching ~/.eclipse/<hash> found — falling back to an empty, scoder-managed configuration",
+			);
 			// EM: Keyed by the install's own hash, not by project —
 			// EM: matching Eclipse's real granularity (this is per-install
 			// EM: runtime state, not per-project), and so shared correctly
@@ -296,67 +297,88 @@ function eclipseConfigArgs(layout: EclipseLayout): string[] {
 		: ["-configuration", layout.configSandboxDir];
 }
 
-// ### ensureEclipseBundlesInfo
-// Registers the vendored plugin with Equinox's simpleconfigurator by
-// editing `bundles.info` directly, entirely on the host side (plain file
-// I/O, no bwrap involved) — NOT by injecting the jar into the install's
-// own plugins/ dir, which was tried first and confirmed broken: a real
-// installer-owned install's plugins/ directory is genuinely read-only
-// (not just made so by scoder), and bwrap's --ro-bind needs to *create* a
-// destination node for a file that doesn't already exist there, which
-// fails with exactly the reported "Read-only file system" once the
-// parent has already been mounted read-only (by builder.ts's own
-// wholesale /opt bind, applied well before any preset's own binds run).
-// The earlier "verified" claim in eclipse-preset.md tested a subtly
-// different scenario — binding a new source *over an already-existing*
-// destination file — not creating a brand-new one; corrected there.
-//
-// bundles.info is Equinox's own definitive bundle list (modern Eclipse
-// installs use org.eclipse.equinox.simpleconfigurator, not a long
-// per-bundle osgi.bundles= line) — confirmed directly, headlessly, no GTK
-// needed: an empty/partial bundles.info in the configuration area does
-// NOT fall back to merging with the install's own default list (an
-// earlier attempt with *only* this plugin's own line in an otherwise
-// empty bundles.info failed with "Unresolved requirement: Require-Bundle:
-// org.eclipse.ui" — org.eclipse.ui and the rest of the normal bundle set
-// were simply never loaded). So the full base list has to be present in
-// whichever bundles.info Equinox actually reads, not just our own
-// addition to it.
-//
-// The referenced jar path is a sandbox-only path (see configBinds), so
-// when reusing the user's own real ~/.eclipse/<hash> directory (Decision
-// 5), this writes that same sandbox-only reference into their real,
-// native config. Confirmed directly this is benign: a bundles.info entry
-// whose location doesn't resolve is silently skipped by Equinox (no
-// error, no effect on any other bundle) — it would only matter if the
-// user ran this exact plugin's own application natively, which isn't a
-// real workflow. Left in place rather than cleaned up afterward: there's
-// no reliable "scoder is done with this install" signal to clean up on,
-// and every future scoder launch rewrites this same entry idempotently
-// anyway.
-async function ensureEclipseBundlesInfo(
-	configHostDir: string,
-	hostInstallDir: string,
-	sandboxJarPath: string,
-): Promise<void> {
-	const bundlesInfoDir = `${configHostDir}/org.eclipse.equinox.simpleconfigurator`;
-	const bundlesInfoPath = `${bundlesInfoDir}/bundles.info`;
+// EM: The sandbox path both the vendored jar and its own, scoder-private
+// EM: bundles.info live under — a fixed, always-creatable location (under
+// EM: /home/scoder, fresh tmpfs), used identically by configBinds,
+// EM: prepareCommand and resolveArgs. prepareCommand/resolveArgs don't
+// EM: receive sandboxHome as a parameter (unlike configBinds), so this is
+// EM: the same literal value hardcoded the same way builder.ts/index.ts
+// EM: already do (SCODER_HOME), not something derived per-call.
+const ECLIPSE_SANDBOX_HOME = "/home/scoder";
+const ECLIPSE_SANDBOX_PLUGIN_DIR = `${ECLIPSE_SANDBOX_HOME}/.local/share/scoder-eclipse-plugin`;
+const ECLIPSE_SANDBOX_JAR_PATH = `${ECLIPSE_SANDBOX_PLUGIN_DIR}/${ECLIPSE_JAR_NAME}`;
+const ECLIPSE_SANDBOX_BUNDLES_INFO_PATH = `${ECLIPSE_SANDBOX_PLUGIN_DIR}/bundles.info`;
+// EM: Equinox reads its actual bundle list from whatever bundles.info this
+// EM: system property points at — confirmed directly, through the real
+// EM: `eclipse` binary (`-vmargs -D<this>=file:<path>`), that pointing it
+// EM: at a completely separate file works exactly like pointing it at the
+// EM: real one, and the *real* bundles.info (checked before and after)
+// EM: is untouched either way.
+const ECLIPSE_SIMPLECONFIGURATOR_CONFIG_URL_PROP =
+	"org.eclipse.equinox.simpleconfigurator.configUrl";
 
-	let baseContent: string;
-	if (await fileExists(bundlesInfoPath)) {
-		baseContent = await Bun.file(bundlesInfoPath).text();
-	} else {
-		const installDefault = `${hostInstallDir}/configuration/org.eclipse.equinox.simpleconfigurator/bundles.info`;
-		if (!(await fileExists(installDefault))) {
-			warning(
-				"eclipse: no bundles.info found (install or reused config dir) — plugin auto-import will not be available",
-			);
-			return;
+// ### buildEclipseBundlesInfo
+// Registers the vendored plugin with Equinox's simpleconfigurator by
+// building a complete, scoder-private bundles.info — NOT by editing the
+// real one (whether the reused ~/.eclipse/<hash> or <install>/configuration
+// directory's own), and NOT by injecting the jar into the install's own
+// plugins/ dir (tried first, confirmed broken: bwrap's --ro-bind needs to
+// *create* a destination node for a file that doesn't already exist
+// there, which fails once the parent has already been mounted read-only
+// by builder.ts's own wholesale /opt bind — see eclipse-preset.md).
+//
+// Two real problems with editing the real bundles.info directly (an
+// earlier version of this code did exactly that) prompted this: (1) the
+// jar's own sandbox-only path, once written into the user's *real,
+// native* file, is meaningless outside a scoder session — benign
+// (Equinox silently skips an unresolvable bundle entry) but still a
+// stray, permanent artifact in the user's own config for no good reason;
+// (2) real-world use found the user's actual ~/.eclipse/<hash> directory
+// has bundles.info at *two* plausible locations at once
+// (.../configuration/org.eclipse.equinox.simpleconfigurator/bundles.info
+// *and* .../org.eclipse.equinox.simpleconfigurator/bundles.info directly)
+// — which one Equinox's own default resolution actually treats as
+// canonical was never conclusively pinned down, and this sidesteps the
+// question entirely rather than guessing.
+//
+// Confirmed directly, through the real `eclipse` binary, exactly as
+// scoder invokes it: passing `-vmargs
+// -Dorg.eclipse.equinox.simpleconfigurator.configUrl=file:<path>`
+// overrides which bundles.info Equinox reads for *this one launch*,
+// without touching the real one at all (checked before and after: byte
+// for byte identical). bundles.info still needs to be a *complete* list,
+// not just this one plugin's own line — confirmed separately that a
+// partial one fails with "Unresolved requirement: Require-Bundle:
+// org.eclipse.ui" — so this reads whichever real bundles.info is found
+// first (trying both locations from the ambiguity above, then the
+// install's own shipped default) purely as a *template* to build our own
+// complete copy from.
+async function buildEclipseBundlesInfoContent(
+	hostInstallDir: string,
+	configHostDir: string,
+): Promise<string | null> {
+	const candidates = [
+		`${configHostDir}/configuration/org.eclipse.equinox.simpleconfigurator/bundles.info`,
+		`${configHostDir}/org.eclipse.equinox.simpleconfigurator/bundles.info`,
+		`${hostInstallDir}/configuration/org.eclipse.equinox.simpleconfigurator/bundles.info`,
+	];
+
+	let baseContent: string | null = null;
+	for (const candidate of candidates) {
+		if (await fileExists(candidate)) {
+			baseContent = await Bun.file(candidate).text();
+			break;
 		}
-		baseContent = await Bun.file(installDefault).text();
 	}
 
-	const ourLine = `${ECLIPSE_JAR_SYMBOLIC_NAME},${ECLIPSE_JAR_BUNDLE_VERSION},file:${sandboxJarPath},4,true`;
+	if (baseContent === null) {
+		warning(
+			"eclipse: no bundles.info found (install or reused config dir) — plugin auto-import will not be available",
+		);
+		return null;
+	}
+
+	const ourLine = `${ECLIPSE_JAR_SYMBOLIC_NAME},${ECLIPSE_JAR_BUNDLE_VERSION},file:${ECLIPSE_SANDBOX_JAR_PATH},4,true`;
 	const lines = baseContent
 		.split("\n")
 		.filter(
@@ -365,16 +387,48 @@ async function ensureEclipseBundlesInfo(
 		);
 	lines.push(ourLine);
 
-	await ensureDir(bundlesInfoDir);
-	await Bun.write(bundlesInfoPath, `${lines.join("\n")}\n`);
+	return `${lines.join("\n")}\n`;
+}
+
+// ### writeTempFile
+// Same one-shot-temp-file convention as protection.ts's own createTempFile
+// (not exported from there, so mirrored locally rather than reached
+// across modules) — a fresh /tmp file per launch, bound in read-only, no
+// explicit cleanup afterward (relies on /tmp being ephemeral, same as
+// every other scoder-*.XXXXXX temp file).
+async function writeTempFile(prefix: string, content: string): Promise<string> {
+	const proc = Bun.spawn(["mktemp", `/tmp/${prefix}.XXXXXX`], {
+		stdout: "pipe",
+		stderr: "pipe",
+	});
+	await proc.exited;
+	if (proc.exitCode !== 0) {
+		throw new Error("Failed to create temp file");
+	}
+	const path = (await new Response(proc.stdout).text()).trim();
+	await Bun.write(path, content);
+	return path;
+}
+
+// ### eclipseVmArgs
+// -vmargs must be the trailing section of the whole command line —
+// confirmed directly against the real eclipse binary: everything after it
+// goes to the JVM, not Eclipse's own framework. Used by both
+// prepareCommand and the interactive launch (resolveArgs), so both agree
+// on which bundles.info Equinox actually reads.
+function eclipseVmArgs(): string[] {
+	return [
+		"-vmargs",
+		`-D${ECLIPSE_SIMPLECONFIGURATOR_CONFIG_URL_PROP}=file:${ECLIPSE_SANDBOX_BUNDLES_INFO_PATH}`,
+	];
 }
 
 // ### verifyEclipseJar
-// The vendored jar gets injected into a real Eclipse install's own plugins/
-// dir (see the eclipse preset's configBinds) — worth confirming its bytes
-// still match the pinned, hand-verified sha256 before trusting it, rather
-// than assuming a file at a fixed repo path was never modified or
-// corrupted since vendoring.
+// The vendored jar gets bound into every sandboxed Eclipse launch and
+// registered with Equinox (see buildEclipseBundlesInfoContent) — worth
+// confirming its bytes still match the pinned, hand-verified sha256
+// before trusting it, rather than assuming a file at a fixed repo path
+// was never modified or corrupted since vendoring.
 async function verifyEclipseJar(): Promise<boolean> {
 	try {
 		const bytes = await Bun.file(ECLIPSE_JAR_PATH).arrayBuffer();
@@ -852,11 +906,11 @@ export const TOOL_PRESETS: Record<string, ToolPreset> = {
 			// EM: path that's always freely creatable (under /home/scoder,
 			// EM: fresh tmpfs — never under any wholesale read-only system
 			// EM: bind) — NOT injected into the install's own plugins/ dir,
-			// EM: which genuinely cannot work: see ensureEclipseBundlesInfo's
-			// EM: own comment for why, and what registers it with Equinox
-			// EM: instead. Its sha256 is re-checked in validate()
-			// EM: (verifyEclipseJar) — see assets/eclipse/PROVENANCE.md.
-			const sandboxJarPath = `${sandboxHome}/.local/share/scoder-eclipse-plugin/${ECLIPSE_JAR_NAME}`;
+			// EM: which genuinely cannot work: see
+			// EM: buildEclipseBundlesInfoContent's own comment for why, and
+			// EM: what registers it with Equinox instead. Its sha256 is
+			// EM: re-checked in validate() (verifyEclipseJar) — see
+			// EM: assets/eclipse/PROVENANCE.md.
 			pushIntermediateDirs(
 				dirs,
 				sandboxHome,
@@ -865,13 +919,31 @@ export const TOOL_PRESETS: Record<string, ToolPreset> = {
 			binds.push({
 				type: "ro-bind",
 				source: ECLIPSE_JAR_PATH,
-				dest: sandboxJarPath,
+				dest: ECLIPSE_SANDBOX_JAR_PATH,
 			});
-			await ensureEclipseBundlesInfo(
-				layout.configHostDir,
+
+			// EM: A scoder-private bundles.info, never the real one (see
+			// EM: buildEclipseBundlesInfoContent) — bound in the same way as
+			// EM: the jar itself, at a fixed, always-creatable sandbox path.
+			// EM: Regenerated fresh every launch (a plain temp file, same
+			// EM: convention as protection.ts's own one-shot temp binds), so
+			// EM: it always reflects the current base bundle list plus this
+			// EM: plugin, never gets stale.
+			const bundlesInfoContent = await buildEclipseBundlesInfoContent(
 				layout.hostInstallDir,
-				sandboxJarPath,
+				layout.configHostDir,
 			);
+			if (bundlesInfoContent) {
+				const bundlesInfoHostPath = await writeTempFile(
+					"scoder-eclipse-bundles",
+					bundlesInfoContent,
+				);
+				binds.push({
+					type: "ro-bind",
+					source: bundlesInfoHostPath,
+					dest: ECLIPSE_SANDBOX_BUNDLES_INFO_PATH,
+				});
+			}
 
 			const projDir = await getProjDir(process.cwd());
 			pushIntermediateDirs(
@@ -923,6 +995,19 @@ export const TOOL_PRESETS: Record<string, ToolPreset> = {
 				return null;
 			}
 
+			// EM: bundles.info is only actually bound in configBinds when a
+			// EM: base list was found to build it from (see
+			// EM: buildEclipseBundlesInfoContent) — recomputed here too
+			// EM: (cheap: a handful of file existence/read checks) so this
+			// EM: never points -vmargs at a file that was never bound,
+			// EM: mirroring how resolveEclipseLayout itself is
+			// EM: independently recomputed by every hook rather than
+			// EM: threaded through as shared state.
+			const bundlesInfoContent = await buildEclipseBundlesInfoContent(
+				layout.hostInstallDir,
+				layout.configHostDir,
+			);
+
 			const args = [
 				"-nosplash",
 				"-clean",
@@ -934,6 +1019,7 @@ export const TOOL_PRESETS: Record<string, ToolPreset> = {
 				"-import",
 				sandboxProjectDir,
 				...dependencyDirs.flatMap((dir) => ["-import", dir]),
+				...(bundlesInfoContent ? eclipseVmArgs() : []),
 			];
 
 			return { bin: layout.sandboxEclipseBin, args };
@@ -943,18 +1029,33 @@ export const TOOL_PRESETS: Record<string, ToolPreset> = {
 		// EM: prepended, whatever the user passed — the workspace/config
 		// EM: paths are intrinsically tied to project identity, not
 		// EM: something a user would reasonably want to override. See
-		// EM: Design point 6 in eclipse-preset.md.
+		// EM: Design point 6 in eclipse-preset.md. -vmargs is the one
+		// EM: exception to "prepended": it must stay the trailing section
+		// EM: of the whole command line (everything after it is passed to
+		// EM: the JVM, not to Eclipse's own framework — confirmed directly
+		// EM: against the real eclipse binary), so it comes after
+		// EM: existingArgs, not before.
 		resolveArgs: async (hostProjectDir, _sandboxProjectDir, existingArgs) => {
 			const layout = await resolveEclipseLayout(hostProjectDir);
 			if (!layout) {
 				return existingArgs;
 			}
 
+			// EM: See the identical check in prepareCommand — only add
+			// EM: -vmargs when configBinds actually had a base bundles.info
+			// EM: to build the scoder-private one from, and so actually
+			// EM: bound it in.
+			const bundlesInfoContent = await buildEclipseBundlesInfoContent(
+				layout.hostInstallDir,
+				layout.configHostDir,
+			);
+
 			return [
 				...eclipseConfigArgs(layout),
 				"-data",
 				layout.workspaceSandboxDir,
 				...existingArgs,
+				...(bundlesInfoContent ? eclipseVmArgs() : []),
 			];
 		},
 

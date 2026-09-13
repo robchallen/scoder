@@ -196,6 +196,49 @@ Confirmed directly, headlessly (no GTK needed for any of this):
   clean up on), and self-healing anyway: every future scoder launch
   rewrites the same entry idempotently.
 
+### The second bug: skipping Equinox's own *first* choice
+
+Real-world use again surfaced a real gap, this time not a broken
+mechanism but a wrong implementation of an already-correct design: the
+sandboxed Eclipse launched into what looked like a totally fresh,
+unconfigured state — no real preferences, no previously-installed
+plugins, nothing familiar — on a machine where the user's own account
+already owns `/opt/eclipse` outright and their native Eclipse writes
+straight into `<install>/configuration` itself, never needing the
+`~/.eclipse/<hash>` fallback at all. The code, though, only ever checked
+`~/.eclipse/<hash>` (finding nothing, since none was ever created) and
+fell straight through to the scoder-managed fallback — silently using an
+empty, brand-new directory instead of the user's real one, even though
+Decision 5's own written design (and the Equinox source it's based on)
+says to check `<install>/configuration` itself *first*, before ever
+considering `~/.eclipse/<hash>`. The implementation simply never wrote
+that first check.
+
+Fixed by adding it: `resolveEclipseLayout` now checks whether
+`<install>/configuration` both exists and is writable by the current
+user (`isWritableDir`, a plain `access(W_OK)` against the real host
+filesystem) *before* looking at `~/.eclipse/<hash>` at all. If so, that
+directory is bound onto itself with a plain `--bind` (read-write),
+overriding the wholesale/defensive install-dir `--ro-bind` that already
+covers it — confirmed directly this composes correctly: binding an
+*already-existing* directory read-write over an already-read-only parent
+works (unlike creating a new file there, the plugin-injection bug above),
+and the override correctly carries the *real* directory's own existing
+content, not an empty one. No `-configuration` flag is passed in this
+case either, exactly as for the `~/.eclipse/<hash>` case — both are now
+just the two forms "a real, already-existing host directory is being
+reused directly," covered by the same `reuseHostConfig` flag.
+
+**A smaller, defensive fix alongside it**: the hash-suffix match against
+`~/.eclipse/` entries now also tries the raw (possibly negative) hash
+string, not just its absolute value — a hedge against the "Equinox forces
+this non-negative" detail in this doc's own source citation being
+slightly off, rather than silently missing a real directory over a sign
+mismatch. Not confirmed either way to have been the actual cause of
+anything (the missing first-choice check above was reproduced and fixed
+independently of this), but cheap enough to add defensively while in this
+code anyway.
+
 ## Design
 
 1. **Vendor the plugin jar in scoder's own repo**, pinned by its exact
@@ -217,19 +260,24 @@ Confirmed directly, headlessly (no GTK needed for any of this):
    needs nothing special since it already defaults to `$HOME`/`/home/scoder`,
    itself always writable) — not the same thing as the plugin's own install
    directory. Rather than always inventing a scoder-specific location,
-   **prefer discovering and reusing whatever `~/.eclipse/<app>_<version>_<hash>/`
-   directory the user's own real, native Eclipse usage has already created
-   on the host** (see "The `~/.eclipse/<hash>` fallback" in Verified
-   Groundwork): since that hash is computed purely from the install
-   directory's own path, and scoder already mounts `/opt`-style install
-   paths unchanged between host and sandbox, the same directory name
-   applies in both places. If found, bind-mount it into the sandbox at the
-   identical mirrored path and pass no `-configuration` at all, letting
-   Eclipse's own default resolution find it — this means no divergence
-   between the user's sandboxed and native Eclipse configuration. Only
-   when no such host directory exists (first-ever run, or an install the
-   user's account can already write to directly) does scoder fall back to
-   an explicit, scoder-managed `-configuration <dir>`.
+   **prefer reusing whichever real, already-existing host directory
+   Equinox's own default resolution would use, in the same order it
+   checks them** (see Decision 5): first `<install-dir>/configuration`
+   itself, if the current user can already write to it directly (the
+   common case on a personal machine); else whatever
+   `~/.eclipse/<app>_<version>_<hash>/` directory the user's own real,
+   native Eclipse usage has already created on the host (see "The
+   `~/.eclipse/<hash>` fallback" in Verified Groundwork) — since that hash
+   is computed purely from the install directory's own path, and scoder
+   already mounts `/opt`-style install paths unchanged between host and
+   sandbox, the same directory name applies in both places. Either way,
+   bind-mount it into the sandbox at the identical mirrored path and pass
+   no `-configuration` at all, letting Eclipse's own default resolution
+   find it — this means no divergence between the user's sandboxed and
+   native Eclipse configuration. Only when neither real directory exists
+   (first-ever run anywhere, and the install directory itself isn't
+   writable) does scoder fall back to an explicit, scoder-managed
+   `-configuration <dir>`.
 3. **A persistent, project-scoped workspace directory**, the same shape
    as `rstudio`'s own `~/.config/rstudio`/`~/.local/share/rstudio`:
    `~/.local/share/scoder-eclipse-workspaces/<projDir>` on the host,
@@ -415,19 +463,31 @@ already binds `/opt`-style install paths at their identical real absolute
 location both inside and outside the sandbox, so for a typical
 `/opt`-installed Eclipse the hash — and therefore the fallback directory
 name — is the same in both contexts. So instead of always forcing a
-scoder-specific location, the prepare step first checks whether
-`~/.eclipse/<app>_<version>_<hash>/` already exists on the host (built up
-from the user's own prior native usage). If it does, scoder bind-mounts
-that exact directory into the sandbox at the mirrored path and passes no
-`-configuration` flag at all — Eclipse's own default resolution finds it
-natively, and the sandboxed and native configurations are the *same*
-directory, not merely similarly-shaped ones. Only when no such directory
-exists yet (first-ever run anywhere, or an install the user's account
-can write to directly, so no fallback was ever needed) does scoder
-create and pass an explicit, scoder-managed `-configuration <dir>` —
-confirmed directly to correctly redirect every file that would otherwise
-be written into the install's own `configuration/` directory, for that
-fallback case.
+scoder-specific location, this now mirrors Equinox's *own* two-step
+check, in the same order, rather than jumping straight to the second
+step (a real gap in an earlier version of this implementation, found and
+fixed after real-world use — see "The second bug" below):
+
+1. **Is `<install-dir>/configuration` itself writable by the current
+   user?** Common on a personal machine (installed without `sudo`, or
+   `chown`'d to themselves) — if so, that's exactly what their own native
+   Eclipse already uses, not a fallback at all. scoder binds it onto
+   itself, read-write (overriding the wholesale/defensive read-only
+   install-dir bind that already covers it), and passes no
+   `-configuration` flag — Eclipse's own default resolution finds it,
+   identically to a native run.
+2. **Else, does `~/.eclipse/<app>_<version>_<hash>/` already exist on the
+   host** (built up from the user's own prior native usage, on a machine
+   where step 1 doesn't apply — e.g. a shared, `sudo`-installed
+   instance)? If so, scoder bind-mounts that exact directory into the
+   sandbox at the mirrored path, again with no `-configuration` flag —
+   the sandboxed and native configurations are the *same* directory, not
+   merely similarly-shaped ones.
+3. **Else** (first-ever run anywhere, and the install directory itself
+   isn't writable), scoder creates and passes an explicit, scoder-managed
+   `-configuration <dir>` — confirmed directly to correctly redirect
+   every file that would otherwise be written into the install's own
+   `configuration/` directory, for that fallback case.
 
 One thing this could not fully explain: a full Eclipse headless-import
 run against a genuinely `--ro-bind`-mounted install did not itself
@@ -481,13 +541,22 @@ fix" above). In brief:
   sandbox path, then register it with Equinox by editing `bundles.info`
   inside the writable configuration area (`ensureEclipseBundlesInfo`) —
   **not** by injecting it into the install's own `plugins/`, which
-  real-world use proved doesn't work. Also compute the expected
-  `~/.eclipse/<app>_<version>_<hash>/` directory (Decision 5) and check
-  whether one already exists on the host: if so, bind it into the
-  sandbox at the identical mirrored path, read-write, and record "no
-  `-configuration` flag needed"; if not, `ensureDir`+bind a scoder-managed
-  fallback directory (keyed by the hash alone) and record its path for
-  use as an explicit `-configuration <dir>`. **Deviation from the sketch
+  real-world use proved doesn't work. Also resolve the actual
+  configuration directory to use, checking in the same order Equinox
+  itself would (Decision 5): first, is `<install-dir>/configuration`
+  itself writable by the current user (`isWritableDir`) — if so, bind it
+  onto itself, read-write, and record "no `-configuration` flag needed";
+  else, does the expected `~/.eclipse/<app>_<version>_<hash>/` directory
+  already exist on the host — if so, bind *that* in at the identical
+  mirrored path, read-write, same "no flag needed" record; else,
+  `ensureDir`+bind a scoder-managed fallback directory (keyed by the hash
+  alone) and record its path for use as an explicit `-configuration
+  <dir>`. **A real bug, found and fixed after real-world use**: an
+  earlier version of this implementation skipped the first check
+  entirely, going straight to the `~/.eclipse/<hash>` one — silently
+  using the (empty) fallback directory instead of a personal-machine
+  user's own real, already-populated Eclipse configuration. See "The
+  second bug" above. **Deviation from the sketch
   above**: rather than reconstructing the full `<app>_<version>_<hash>`
   name from the install's `.eclipseproduct` marker, the implementation
   matches on the hash suffix alone (any `~/.eclipse/*_<hash>` entry) —

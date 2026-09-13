@@ -175,13 +175,20 @@ rejected and what was verified against a real Eclipse install, is
   plugin-injection bug, and the real fix". `configBinds` also binds a
   persisted, project-scoped workspace directory
   (`~/.local/share/scoder-eclipse-workspaces/<project>`, read-write) and
-  Eclipse's own runtime configuration area: **reusing the host's existing
-  `~/.eclipse/<app>_<version>_<hash>/` directory when one exists** (bound
-  at the identical mirrored sandbox path — the hash is a pure function of
-  the install directory's own path, and scoder mounts `/opt`-style
-  install paths unchanged between host and sandbox, so the same hash
-  applies in both places), falling back to a scoder-managed directory,
-  keyed by that same hash, only when no host directory exists yet.
+  Eclipse's own runtime configuration area: **reusing whichever real,
+  already-existing host directory Equinox's own default resolution would
+  use, checked in the same order**: first `<install-dir>/configuration`
+  itself, if the current user can already write to it directly (the
+  common case on a personal machine — a real bug, found and fixed after
+  real-world use, since an earlier version skipped straight to the next
+  check and silently used an empty fallback instead); else the host's
+  existing `~/.eclipse/<app>_<version>_<hash>/` directory, if one exists
+  (bound at the identical mirrored sandbox path — the hash is a pure
+  function of the install directory's own path, and scoder mounts
+  `/opt`-style install paths unchanged between host and sandbox, so the
+  same hash applies in both places); falling back to a scoder-managed
+  directory, keyed by that same hash, only when neither real directory
+  exists.
 - `prepareCommand` runs the vendored plugin's headless-import application
   inside the sandbox, before the interactive launch, importing the main
   project and every `.agentreadonly` `$HOME/...` dependency as its own

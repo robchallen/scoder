@@ -1,5 +1,10 @@
 import { createHash } from "node:crypto";
-import { readdir, realpath } from "node:fs/promises";
+import {
+	access,
+	constants as fsConstants,
+	readdir,
+	realpath,
+} from "node:fs/promises";
 import { dirname } from "node:path";
 import { getProjDir } from "../git/worktree.ts";
 import type { BindMount, ToolBindSpec, ToolPreset } from "../types.ts";
@@ -34,6 +39,22 @@ async function ensureDir(path: string): Promise<void> {
 	await Bun.spawn(["mkdir", "-p", path]);
 }
 
+// EM: Mirrors Equinox's own StorageUtil.canWrite() closely enough for our
+// EM: purposes (see eclipse-preset.md's "~/.eclipse/<hash> fallback"
+// EM: section): a plain access(W_OK) check on the host correctly detects
+// EM: a directory the current user genuinely cannot write to, which is
+// EM: all resolveEclipseLayout needs — this runs on the HOST filesystem,
+// EM: checking the real, current user's own permissions, before any
+// EM: sandbox exists to complicate it.
+async function isWritableDir(path: string): Promise<boolean> {
+	try {
+		await access(path, fsConstants.W_OK);
+		return true;
+	} catch {
+		return false;
+	}
+}
+
 // EM: ### Eclipse preset support
 // EM: See design/implementation/plans/eclipse-preset.md for the full
 // EM: investigation this is built on. Kept together, ahead of TOOL_PRESETS,
@@ -65,12 +86,22 @@ interface EclipseLayout {
 	workspaceSandboxDir: string;
 	configHostDir: string;
 	configSandboxDir: string;
-	// EM: True once an existing ~/.eclipse/<app>_<version>_<hash> directory
-	// EM: was found on the host — see Decision 5 in eclipse-preset.md. When
-	// EM: true, no -configuration flag is passed at all: it's bound in at
-	// EM: the identical mirrored path, and Eclipse's own default resolution
-	// EM: finds it exactly the way it would outside the sandbox.
+	// EM: True once a real, already-existing host configuration directory
+	// EM: is being reused directly — either <install>/configuration itself
+	// EM: (when the user's own account can already write to it) or the
+	// EM: per-user ~/.eclipse/<app>_<version>_<hash> fallback (see Decision
+	// EM: 5 in eclipse-preset.md, which mirrors Equinox's own two-step
+	// EM: default resolution in that order). When true, no -configuration
+	// EM: flag is passed at all: it's bound in at the identical mirrored
+	// EM: path, and Eclipse's own default resolution finds it exactly the
+	// EM: way it would outside the sandbox.
 	reuseHostConfig: boolean;
+	// EM: Whether configHostDir sits under $HOME — decides whether the
+	// EM: bind destination needs pushIntermediateDirs' --dir scaffolding
+	// EM: (a fresh tmpfs path does) or already exists as part of the
+	// EM: wholesale/defensive install-dir bind (an <install>/configuration
+	// EM: path does, so no --dir entries are needed or correct for it).
+	configUnderHome: boolean;
 }
 
 // ### javaStringHashCode
@@ -149,45 +180,83 @@ async function resolveEclipseLayout(
 	await ensureDir(workspaceHostDir);
 	const workspaceSandboxDir = toSandboxPath(workspaceHostDir, homePrefixes);
 
-	// EM: Equinox's own getInstallDirHash() hashes the install dir's
-	// EM: *canonical* path, falling back to the absolute path only if that
-	// EM: can't be resolved — mirrored here for the same reason: this hash
-	// EM: has to land on the exact directory name a real, native Eclipse
-	// EM: run against this same install would use.
-	let canonicalInstallDir: string;
-	try {
-		canonicalInstallDir = await realpath(hostInstallDir);
-	} catch {
-		canonicalInstallDir = hostInstallDir;
-	}
-	const hashStr = Math.abs(javaStringHashCode(canonicalInstallDir)).toString();
-
-	// EM: Matched by hash suffix alone, not by reconstructing the full
-	// EM: <app>_<version>_<hash> name from .eclipseproduct — the hash is
-	// EM: the only part that's actually load-bearing for correctness (it's
-	// EM: what ties the directory to this specific install path); getting
-	// EM: an app id or version string wrong would otherwise risk missing a
-	// EM: real, existing directory for no good reason.
-	const eclipseUserDir = `${realHome}/.eclipse`;
-	let reuseDirName: string | null = null;
-	if (await dirExists(eclipseUserDir)) {
-		const entries = await readdir(eclipseUserDir);
-		reuseDirName = entries.find((name) => name.endsWith(`_${hashStr}`)) ?? null;
-	}
-
 	let configHostDir: string;
 	let reuseHostConfig: boolean;
-	if (reuseDirName) {
-		configHostDir = `${eclipseUserDir}/${reuseDirName}`;
+	let configUnderHome: boolean;
+
+	// EM: Mirrors Equinox's own default resolution algorithm exactly, in
+	// EM: the same order (see eclipse-preset.md's "~/.eclipse/<hash>
+	// EM: fallback" section): try <install>/configuration itself first —
+	// EM: this is the common case on a personal machine where the user's
+	// EM: own account can already write there (installed without sudo, or
+	// EM: chown'd to themselves), and it's what their own native Eclipse
+	// EM: actually uses, not a fallback. A previous version of this preset
+	// EM: skipped straight to the ~/.eclipse/<hash> check below, which is
+	// EM: only Equinox's *second* choice — real-world use surfaced this
+	// EM: gap directly: a user whose native Eclipse writes straight into
+	// EM: <install>/configuration has no ~/.eclipse/<hash> directory at
+	// EM: all to find.
+	const installOwnConfigDir = `${hostInstallDir}/configuration`;
+	if (
+		(await dirExists(installOwnConfigDir)) &&
+		(await isWritableDir(installOwnConfigDir))
+	) {
+		configHostDir = installOwnConfigDir;
 		reuseHostConfig = true;
+		configUnderHome = false;
 	} else {
-		// EM: Keyed by the install's own hash, not by project — matching
-		// EM: Eclipse's real granularity (this is per-install runtime state,
-		// EM: not per-project), and so shared correctly across every scoder
-		// EM: project that happens to use the same Eclipse install.
-		configHostDir = `${realHome}/.local/share/scoder-eclipse-config/${hashStr}`;
-		await ensureDir(configHostDir);
-		reuseHostConfig = false;
+		// EM: Equinox's own getInstallDirHash() hashes the install dir's
+		// EM: *canonical* path, falling back to the absolute path only if
+		// EM: that can't be resolved — mirrored here for the same reason:
+		// EM: this hash has to land on the exact directory name a real,
+		// EM: native Eclipse run against this same install would use.
+		let canonicalInstallDir: string;
+		try {
+			canonicalInstallDir = await realpath(hostInstallDir);
+		} catch {
+			canonicalInstallDir = hostInstallDir;
+		}
+		const rawHash = javaStringHashCode(canonicalInstallDir);
+		// EM: Matched against both the raw (possibly negative) and the
+		// EM: absolute-value hash string — eclipse-preset.md's own source
+		// EM: citation says Equinox forces this non-negative, but matching
+		// EM: both is a cheap hedge against that citation being slightly
+		// EM: off, rather than silently missing a real directory over a
+		// EM: sign mismatch.
+		const hashCandidates = [Math.abs(rawHash).toString(), rawHash.toString()];
+
+		// EM: Matched by hash suffix alone, not by reconstructing the full
+		// EM: <app>_<version>_<hash> name from .eclipseproduct — the hash
+		// EM: is the only part that's actually load-bearing for
+		// EM: correctness (it's what ties the directory to this specific
+		// EM: install path); getting an app id or version string wrong
+		// EM: would otherwise risk missing a real, existing directory for
+		// EM: no good reason.
+		const eclipseUserDir = `${realHome}/.eclipse`;
+		let reuseDirName: string | null = null;
+		if (await dirExists(eclipseUserDir)) {
+			const entries = await readdir(eclipseUserDir);
+			reuseDirName =
+				entries.find((name) =>
+					hashCandidates.some((hash) => name.endsWith(`_${hash}`)),
+				) ?? null;
+		}
+
+		if (reuseDirName) {
+			configHostDir = `${eclipseUserDir}/${reuseDirName}`;
+			reuseHostConfig = true;
+			configUnderHome = true;
+		} else {
+			// EM: Keyed by the install's own hash, not by project —
+			// EM: matching Eclipse's real granularity (this is per-install
+			// EM: runtime state, not per-project), and so shared correctly
+			// EM: across every scoder project that happens to use the
+			// EM: same Eclipse install.
+			configHostDir = `${realHome}/.local/share/scoder-eclipse-config/${hashCandidates[0]}`;
+			await ensureDir(configHostDir);
+			reuseHostConfig = false;
+			configUnderHome = true;
+		}
 	}
 	const configSandboxDir = toSandboxPath(configHostDir, homePrefixes);
 
@@ -200,6 +269,7 @@ async function resolveEclipseLayout(
 		configHostDir,
 		configSandboxDir,
 		reuseHostConfig,
+		configUnderHome,
 	};
 }
 
@@ -801,18 +871,17 @@ export const TOOL_PRESETS: Record<string, ToolPreset> = {
 				dest: layout.workspaceSandboxDir,
 			});
 
-			if (layout.reuseHostConfig) {
+			// EM: Only a $HOME-relative configHostDir needs --dir scaffolding
+			// EM: (a fresh tmpfs path, nothing exists there yet). When
+			// EM: reusing <install>/configuration itself, that path already
+			// EM: exists as part of the wholesale/defensive install-dir
+			// EM: bind above — no --dir entries needed, and none would even
+			// EM: be correct (it isn't under sandboxHome at all).
+			if (layout.configUnderHome) {
 				pushIntermediateDirs(
 					dirs,
 					sandboxHome,
 					layout.configHostDir.slice(realHome.length + 1),
-				);
-			} else {
-				const hashPart = layout.configHostDir.split("/").pop() ?? "";
-				pushIntermediateDirs(
-					dirs,
-					sandboxHome,
-					`.local/share/scoder-eclipse-config/${hashPart}`,
 				);
 			}
 			binds.push({

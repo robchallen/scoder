@@ -162,27 +162,37 @@ rejected and what was verified against a real Eclipse install, is
 `design/implementation/plans/eclipse-preset.md`. In short:
 
 - `configBinds` locates the host's Eclipse install (resolving `which
-  eclipse` through any symlinks) and injects a vendored, pinned plugin jar
-  (`seeq12/eclipse-import-projects-plugin`, `assets/eclipse/`) into its
-  `plugins/` directory read-only — even though the install itself is
-  otherwise read-only, a more specific `--ro-bind` after a wholesale one
-  still lands correctly. It also binds a persisted, project-scoped
-  workspace directory (`~/.local/share/scoder-eclipse-workspaces/<project>`,
-  read-write) and Eclipse's own runtime configuration area: **reusing the
-  host's existing `~/.eclipse/<app>_<version>_<hash>/` directory when one
-  exists** (bound at the identical mirrored sandbox path — the hash is a
-  pure function of the install directory's own path, and scoder mounts
-  `/opt`-style install paths unchanged between host and sandbox, so the
-  same hash applies in both places), falling back to a scoder-managed
-  directory, keyed by that same hash, only when no host directory exists
-  yet.
+  eclipse` through any symlinks) and binds a vendored, pinned plugin jar
+  (`seeq12/eclipse-import-projects-plugin`, `assets/eclipse/`) read-only
+  at a fixed, always-creatable sandbox path — **not** inside the install's
+  own `plugins/` directory: that was tried first and confirmed broken in
+  real use (bwrap needs to *create* a destination node for a file that
+  doesn't already exist there, which fails once the parent has already
+  been mounted read-only by builder.ts's own wholesale system binds).
+  Instead the plugin is registered with Equinox by editing `bundles.info`
+  directly — plain host-side file I/O inside the writable configuration
+  area, no bwrap trick needed. See eclipse-preset.md's "The
+  plugin-injection bug, and the real fix". `configBinds` also binds a
+  persisted, project-scoped workspace directory
+  (`~/.local/share/scoder-eclipse-workspaces/<project>`, read-write) and
+  Eclipse's own runtime configuration area: **reusing the host's existing
+  `~/.eclipse/<app>_<version>_<hash>/` directory when one exists** (bound
+  at the identical mirrored sandbox path — the hash is a pure function of
+  the install directory's own path, and scoder mounts `/opt`-style
+  install paths unchanged between host and sandbox, so the same hash
+  applies in both places), falling back to a scoder-managed directory,
+  keyed by that same hash, only when no host directory exists yet.
 - `prepareCommand` runs the vendored plugin's headless-import application
   inside the sandbox, before the interactive launch, importing the main
   project and every `.agentreadonly` `$HOME/...` dependency as its own
   project — solving "a Java project references other local projects that
   also need to be workspace projects" without a manual step. Safe to
   re-run on every launch: the plugin's own code already branches on
-  `project.isOpen()` to import vs. refresh.
+  `project.isOpen()` to import vs. refresh. Both the primary preset's own
+  `prepareCommand` and the `--ide` companion's own run, in that order, if
+  either or both define one — `pi --ide eclipse` (eclipse's actual
+  intended use case) needs eclipse's own step to run even though it's
+  the companion, not the primary tool.
 - `resolveArgs` always prepends `-data <workspace>` (and `-configuration
   <dir>`, only in the fallback case) to the interactive launch, whatever
   args the user passed — these are intrinsically tied to project identity,

@@ -80,7 +80,7 @@ actually run:
 | The plugin has a genuine **headless** mode (`-application com.seeq.eclipse.importprojects.headlessimport`) that needs no display | **Yes** — ran it with no `DISPLAY`, no X server, no GTK libraries present on this host at all (confirmed separately: plain interactive Eclipse crashes immediately in this same environment with `libgtk-3.so.0: cannot open shared object file`) — the headless application never touches SWT/GTK and completed cleanly. |
 | The plugin's compiled `1.4.0.jar` actually works against this modern (4.39, Feb 2026) Eclipse, not just the 2012–2015 releases its own README claims testing against | **Yes** — the bundle loaded and reported `ACTIVE` in the OSGi console, and the import genuinely ran (see next row). Its own README's compatibility claim was outdated but the artifact still works. |
 | A real project is genuinely imported and persisted, not just processed in-memory | **Yes** — ran the headless import against a fresh workspace with the `-import <dir>` flag: log showed `Searching for projects in ...` then `Importing project fake-project ...`; the workspace's `.metadata/.plugins/org.eclipse.core.resources/.projects/fake-project/.location` file was created, containing exactly the expected binary/URI content. A **second, separate process invocation** against the same workspace directory correctly reported `Refreshing project fake-project` (not `Importing`) and self-recovered from an "unsaved changes" warning left by the first run — confirming genuine, correct persistence across independent launches, not an in-memory artifact of one process. |
-| A vendored file can be injected into an arbitrary nested path inside an otherwise fully **read-only**-mounted directory tree via bwrap, without needing the real install to already contain it or be writable at all | **Yes** — confirmed directly: `--ro-bind <real Eclipse install> /opt/fake` then a second, more specific `--ro-bind <vendored jar> /opt/fake/plugins/<jar>` — the injected file appeared correctly, all 230 pre-existing files in the same directory were still visible and untouched, and the tree remained genuinely read-only (`touch` inside it failed with `Read-only file system`). |
+| A vendored file can be injected into an arbitrary nested path inside an otherwise fully **read-only**-mounted directory tree via bwrap, without needing the real install to already contain it or be writable at all | **No — this specific claim was wrong, corrected after real-world use.** The original test bound a new *source* onto an already-*existing* destination file (the jar had already been copied into that fixture's `plugins/` by earlier manual testing) — a genuinely different, easier case than *creating* a brand-new destination node. Against a real, never-touched install, this fails exactly as reported: `bwrap: Can't create file at <install>/plugins/<jar>: Read-only file system`. bwrap needs to create the destination node before the bind can land there, and by the time a preset's own binds run, `builder.ts`'s wholesale `/opt` (or `/usr`, etc.) bind has already made that parent directory read-only — pushing a more specific bind *later in the same array* doesn't undo that. See "The plugin-injection bug, and the real fix" below for what replaced this. |
 | The plugin's own doc examples are internally inconsistent about the exact flag name (`-import` vs `-importProject`) | **Real risk, confirmed the hard way** — the repo's current README says the flag was renamed to `-importProject` in `2.0.0`, and its own "Headless" section example still uses the old `-import`. The actual compiled `1.4.0.jar` (extracted and inspected directly with `javap`) uses `-import` — the `master` branch source (`-importProject`, plus a `-importPreferences` feature) is *ahead of* the released jar, not what it contains. Using the README's newer syntax against the actual shipped jar silently does nothing (no error, no log entry, exit code 0) — this is exactly what happened on the first attempt, and it does not fail loudly. |
 | An explicit `-configuration <dir>` flag redirects Equinox's own writable state (OSGi bundle cache, `org.eclipse.core.runtime`, `org.eclipse.equinox.app`, `config.ini`) away from a read-only install, without relying on Eclipse's own automatic per-user fallback area | **Yes** — confirmed directly: ran the prepare step against an install bound genuinely read-only (`--ro-bind`, not just a permissions test), with `-configuration <writable-dir>` pointing elsewhere; every file that had previously been written into the install's own (writable, in that earlier test) `configuration/` directory was instead written to the specified directory, correctly, with the install tree remaining untouched. |
 | A single `-import <dir>` recursively finds **every** `.project` file under that directory, however deeply nested, and multiple separate `-import` flags in one invocation each import independently | **Yes** — confirmed directly: three separately-mounted directories (a main project, a flat dependency, and a dependency with its `.project` three levels deep) were all imported correctly in one headless-import run, each logged individually (`Searching for projects in ...` / `Importing project ...`), and all three ended up registered in the workspace. |
@@ -140,6 +140,62 @@ fallback), there's nothing to reuse, and scoder does need to create
 somewhere writable and persist it — but that's now the fallback case, not
 the default design.
 
+### The plugin-injection bug, and the real fix
+
+Real-world use of the implemented preset hit exactly what the corrected
+row above now says it should: `bwrap: Can't create file at
+/opt/eclipse/plugins/com.seeq.eclipse.importprojects_1.4.0.jar: Read-only
+file system`. The fix is not a bwrap ordering trick — it's to stop trying
+to put the jar under the install's own `plugins/` directory at all.
+
+Modern Eclipse installs (this one included) don't load their bundle set
+from a long `osgi.bundles=` list in `config.ini` the way older ones did —
+`config.ini` lists just the OSGi framework itself plus
+`org.eclipse.equinox.simpleconfigurator`, which then reads the *real*
+bundle list from `bundles.info`
+(`<configuration-area>/org.eclipse.equinox.simpleconfigurator/bundles.info`),
+one line per bundle: `<symbolic-name>,<version>,<location>,<start-level>,<auto-start>`.
+Confirmed directly, headlessly (no GTK needed for any of this):
+
+- `<location>` accepts an **absolute `file:` URL**, not just a path
+  relative to the install — so the vendored jar can live anywhere
+  reachable inside the sandbox, not just under the read-only install.
+- `bundles.info` lives inside the **writable** `-configuration` area —
+  either the reused host directory or the scoder-managed fallback, both
+  already bound read-write — so editing it is plain host-side file I/O,
+  no bwrap trick needed at all.
+- Handing Equinox a `bundles.info` containing *only* the new plugin's own
+  line does **not** work — confirmed directly: it fails with
+  `Unresolved requirement: Require-Bundle: org.eclipse.ui`, because the
+  rest of the normal bundle set (which a `-configuration` dir with no
+  `bundles.info` of its own would otherwise transparently inherit from
+  the install's own "shared configuration area", an Equinox mechanism
+  this investigation also confirmed exists) is not merged in once an
+  instance-level `bundles.info` is present — it's replaced outright. So
+  the fix reads whichever base list is available (the reused host
+  directory's own `bundles.info` if it has one, else the install's own
+  default one, shipped at
+  `<install>/configuration/org.eclipse.equinox.simpleconfigurator/bundles.info`),
+  and writes that full list back out with the plugin's own line appended
+  (or replaced, if already present — idempotent across launches, same as
+  everything else here).
+- Confirmed end to end, headlessly: with the jar bound at a fixed,
+  always-creatable sandbox path (`/home/scoder/.local/share/scoder-
+  eclipse-plugin/`, never under any read-only system bind) and referenced
+  from `bundles.info` by that path, the headless-import application
+  starts and imports correctly — no install-tree mutation attempted at
+  all.
+- **When reusing the user's own real `~/.eclipse/<hash>` directory**, this
+  writes a sandbox-only path into their real, native `bundles.info`.
+  Confirmed directly this is benign: a `bundles.info` entry whose
+  location doesn't resolve is silently skipped by Equinox — no error, no
+  effect on any other bundle — and would only matter if they ran this
+  exact plugin's own headless-import application natively themselves,
+  which isn't a real workflow. Left in place rather than cleaned up
+  afterward (no reliable "scoder is done with this install" signal to
+  clean up on), and self-healing anyway: every future scoder launch
+  rewrites the same entry idempotently.
+
 ## Design
 
 1. **Vendor the plugin jar in scoder's own repo**, pinned by its exact
@@ -148,10 +204,14 @@ the default design.
    than requiring the user's own Eclipse install to already have it — the
    user's own idea ("require the eclipse installation has specific
    plugins") is improved on here: nothing about the user's install needs
-   to change at all. The `eclipse` preset's `configBinds` adds one more
-   `ro-bind`, injecting the vendored jar into `<eclipse-install>/plugins/`
-   — confirmed this works against an install the sandbox otherwise only
-   ever sees read-only.
+   to change at all. The `eclipse` preset's `configBinds` binds it
+   read-only at a fixed, always-creatable sandbox path
+   (`/home/scoder/.local/share/scoder-eclipse-plugin/`, never under any
+   read-only system bind) and registers it with Equinox by editing
+   `bundles.info` inside the writable `-configuration` area — **not** by
+   injecting it into `<eclipse-install>/plugins/`, which real-world use
+   proved cannot work (see "The plugin-injection bug, and the real fix"
+   above).
 2. **A second, separate writable location for Eclipse's own runtime
    state** (the `-configuration` area, plus the p2 agent area, which
    needs nothing special since it already defaults to `$HOME`/`/home/scoder`,
@@ -244,13 +304,19 @@ prepareCommand?: (
 ```
 
 `buildBwrapCommand`'s wrapper (the same family as `wrapWithIdeBackground`)
-would need a third stage: run the prepare command to completion first
-(checking its exit code — a failed workspace prep should be a clear,
-loud failure, not a silently broken IDE launch), *then* proceed with
-whatever combination of foreground tool / background `--ide` companion
-was already going to run. This is a real, if fairly small, extension to
-`src/sandbox/builder.ts`'s wrapper-generation code, not something that
-fits inside the existing `wrapWithIdeBackground` shape unchanged.
+needed a third stage: run the prepare command(s) to completion first
+(checking each one's exit code — a failed workspace prep should be a
+clear, loud failure, not a silently broken IDE launch), *then* proceed
+with whatever combination of foreground tool / background `--ide`
+companion was already going to run. **Implemented as a list, not a single
+optional step**: eclipse's real use case is as the `--ide` companion (`pi
+--ide eclipse`), so both the primary preset's own `prepareCommand` and
+the `--ide` companion's own are collected (in that order) and run in
+sequence by `wrapWithPrepareStep` — a whole-launch failure on the first
+one that exits non-zero, later steps never run. This is a real, if fairly
+small, extension to `src/sandbox/builder.ts`'s wrapper-generation code,
+not something that fits inside the existing `wrapWithIdeBackground` shape
+unchanged.
 
 **A second, smaller plumbing gap**: `dependencyDirs` above isn't actually
 available as its own list anywhere today. `.agentreadonly`'s `$HOME/...`
@@ -403,26 +469,33 @@ plumbing gap noted above.
 
 **Implemented** — see `src/tools/presets.ts`'s `eclipse` preset,
 `resolveEclipseLayout`, and the surrounding helpers, plus the follow-on
-commit to this plan doc for the exact final shape. In brief:
+commits to this plan doc for the exact final shape (including one real
+production bug and its fix — see "The plugin-injection bug, and the real
+fix" above). In brief:
 - `configBinds`: X11/XAUTHORITY/XDG_RUNTIME_DIR/DBUS_SESSION_BUS_ADDRESS
   binds and env, by direct analogy with `rstudio`'s own (Decision 3);
   `ensureDir`+bind the persisted workspace directory; locate the host's
   Eclipse installation (needed regardless, to resolve where `plugins/`
-  is) and inject the vendored plugin jar there, read-only. Also compute
-  the expected `~/.eclipse/<app>_<version>_<hash>/` directory (Decision
-  5) and check whether one already exists on the host: if so, bind it
-  into the sandbox at the identical mirrored path, read-write, and
-  record "no `-configuration` flag needed"; if not, `ensureDir`+bind a
-  scoder-managed fallback directory (keyed by the hash alone) and record
-  its path for use as an explicit `-configuration <dir>`. **Deviation
-  from the sketch above**: rather than reconstructing the full
-  `<app>_<version>_<hash>` name from the install's `.eclipseproduct`
-  marker, the implementation matches on the hash suffix alone (any
-  `~/.eclipse/*_<hash>` entry) — the hash is the only part actually
-  load-bearing for correctness (it's what ties the directory to this
-  specific install path); getting an app id or version string wrong
-  would otherwise risk missing a real, existing directory for no good
-  reason. `.eclipseproduct` is never read.
+  is, and as the base bundle-list source for the fallback config case)
+  and bind the vendored plugin jar read-only at a fixed, always-creatable
+  sandbox path, then register it with Equinox by editing `bundles.info`
+  inside the writable configuration area (`ensureEclipseBundlesInfo`) —
+  **not** by injecting it into the install's own `plugins/`, which
+  real-world use proved doesn't work. Also compute the expected
+  `~/.eclipse/<app>_<version>_<hash>/` directory (Decision 5) and check
+  whether one already exists on the host: if so, bind it into the
+  sandbox at the identical mirrored path, read-write, and record "no
+  `-configuration` flag needed"; if not, `ensureDir`+bind a scoder-managed
+  fallback directory (keyed by the hash alone) and record its path for
+  use as an explicit `-configuration <dir>`. **Deviation from the sketch
+  above**: rather than reconstructing the full `<app>_<version>_<hash>`
+  name from the install's `.eclipseproduct` marker, the implementation
+  matches on the hash suffix alone (any `~/.eclipse/*_<hash>` entry) —
+  the hash is the only part actually load-bearing for correctness (it's
+  what ties the directory to this specific install path); getting an
+  app id or version string wrong would otherwise risk missing a real,
+  existing directory for no good reason. `.eclipseproduct` is never
+  read.
 - `prepareCommand`: returns the headless-import invocation
   (`<eclipse-bin> -nosplash -clean [-configuration <fallback config
   dir>] -application com.seeq.eclipse.importprojects.headlessimport
@@ -441,9 +514,15 @@ commit to this plan doc for the exact final shape. In brief:
   preserve its exact prior behaviour under the new contract.
 - `validate`: `commandExists("eclipse")`, plus a re-check of the vendored
   jar's sha256 against the pinned value on every run (`verifyEclipseJar`)
-  — not in the original sketch, added since the jar is injected into a
-  real install's own trusted `plugins/` dir and is worth not just
-  trusting blindly at a fixed repo path.
+  — not in the original sketch, added since the jar ends up referenced
+  from `bundles.info` and is worth not just trusting blindly at a fixed
+  repo path.
+- **`--ide` support**: both the primary preset's own `prepareCommand` and
+  the `--ide` companion's own are collected and run, in that order, before
+  either actually starts (see the "New Preset-System Capability Needed"
+  section above) — `pi --ide eclipse` is eclipse's actual intended use
+  case, not merely `scoder eclipse` on its own, so this needed to work
+  from the start rather than being deferred.
 
 ### Vendored asset
 
@@ -454,19 +533,19 @@ provenance and the exact verification performed (this document).
 ## Open Questions, Not Resolved Here
 
 - **Locating the Eclipse installation's own directory** (needed to know
-  where to inject the vendored jar, since Eclipse's `plugins/` sits
-  alongside the executable, not somewhere independently discoverable).
-  Real-world feedback confirms at least one real shape directly: a
-  root-installed `/opt/eclipse` with `plugins/` as a plain sibling of the
-  `eclipse` binary, exactly matching this investigation's own tarball
-  extraction — so `which eclipse`, followed to its real target through
-  any symlinks, with `plugins/` resolved as its sibling, should work for
-  that shape. Not tested here against a distro-packaged (`apt`/`.deb`)
-  install, which historically sometimes uses an indirect launcher script
-  rather than a direct symlink to the real binary — worth confirming
-  before relying on "sibling of the resolved binary" as a universal rule.
-  Separately: the *per-user fallback directory* concern this same feedback
-  originally raised is resolved, not just open — see Decision 5.
+  where its `plugins/` and default `bundles.info` are, and as the
+  install-hash basis for Decision 5). Real-world feedback confirms at
+  least one real shape directly: a root-installed `/opt/eclipse` with
+  `plugins/` as a plain sibling of the `eclipse` binary, exactly matching
+  this investigation's own tarball extraction — so `which eclipse`,
+  followed to its real target through any symlinks, with `plugins/`
+  resolved as its sibling, should work for that shape. Not tested here
+  against a distro-packaged (`apt`/`.deb`) install, which historically
+  sometimes uses an indirect launcher script rather than a direct symlink
+  to the real binary — worth confirming before relying on "sibling of the
+  resolved binary" as a universal rule. Separately: the *per-user
+  fallback directory* concern this same feedback originally raised is
+  resolved, not just open — see Decision 5.
 - **GTK/D-Bus behavior for the actual interactive GUI phase** (Decision 3)
   — needs a host with GTK installed to close out.
 - **`-clean`'s necessity** (Decision 4) — cheap to leave unresolved and

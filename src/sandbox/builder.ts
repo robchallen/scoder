@@ -22,13 +22,19 @@ export interface SandboxConfig {
 	// EM: design/features/ide-companion.md and wrapWithIdeBackground below.
 	ideBin?: string;
 	ideArgs?: string[];
-	// EM: A preset's prepareCommand (see types.ts), already resolved to a
-	// EM: concrete sandbox-side bin/args pair — run to completion, inside
-	// EM: the sandbox, before the tool/IDE exec. See wrapWithPrepareStep and
+	// EM: Every preset's prepareCommand (see types.ts) that resolved to a
+	// EM: concrete sandbox-side bin/args pair — the primary tool's own, and
+	// EM: the --ide companion's own, in that order, if either or both
+	// EM: defined one. Run to completion, in sequence, inside the sandbox,
+	// EM: before the tool/IDE exec. See wrapWithPrepareStep and
 	// EM: design/implementation/plans/eclipse-preset.md.
-	prepareBin?: string;
-	prepareArgs?: string[];
+	prepareSteps?: PrepareStep[];
 	protectionConfig?: ProtectionConfig;
+}
+
+export interface PrepareStep {
+	bin: string;
+	args: string[];
 }
 
 // ### buildBwrapCommand
@@ -52,8 +58,7 @@ export async function buildBwrapCommand(
 		toolEnv,
 		ideBin,
 		ideArgs,
-		prepareBin,
-		prepareArgs,
+		prepareSteps,
 		protectionConfig,
 	} = config;
 
@@ -339,11 +344,8 @@ export async function buildBwrapCommand(
 		? wrapWithIdeBackground(toolBin, toolArgs, ideBin, ideArgs ?? [])
 		: [toolBin, ...toolArgs];
 
-	if (prepareBin) {
-		cmd.push(
-			"--",
-			...wrapWithPrepareStep(prepareBin, prepareArgs ?? [], innerCmd),
-		);
+	if (prepareSteps && prepareSteps.length > 0) {
+		cmd.push("--", ...wrapWithPrepareStep(prepareSteps, innerCmd));
 	} else {
 		cmd.push("--", ...innerCmd);
 	}
@@ -410,25 +412,28 @@ export function wrapWithIdeBackground(
 
 // ### wrapWithPrepareStep
 // [IMPLEMENTS](/design/features/tool-presets.md)
-// Runs a preset's prepareCommand (see types.ts) to completion, inside the
-// sandbox, before handing off to the real tool/IDE command — used by the
-// eclipse preset to (re)build its dynamically-generated workspace on every
-// launch. See design/implementation/plans/eclipse-preset.md.
+// Runs one or more presets' prepareCommand (see types.ts) to completion, in
+// order, inside the sandbox, before handing off to the real tool/IDE
+// command — used by the eclipse preset to (re)build its
+// dynamically-generated workspace on every launch, whether eclipse is the
+// primary tool or the --ide companion (both can supply their own step; see
+// design/implementation/plans/eclipse-preset.md).
 //
-// A non-zero exit here is treated as a whole-launch failure, not something
-// swallowed on the way to a broken interactive session: the script prints
-// a one-line diagnostic to stderr and exits with the prepare step's own
-// status, mirroring wrapWithIdeBackground's own STATUS-forwarding idiom.
+// A non-zero exit from any step is treated as a whole-launch failure, not
+// something swallowed on the way to a broken interactive session: the
+// script prints a one-line diagnostic to stderr and exits with that step's
+// own status, mirroring wrapWithIdeBackground's own STATUS-forwarding
+// idiom. Later steps never run once an earlier one has failed.
 //
-// Same positional-argv convention as wrapWithIdeBackground/wrapWithFdShim:
-// PREPARE_ARGC tells the script how many of the following words are the
-// prepare command's own argv, so the remainder (finalCmd) can be handed to
-// `exec "$@"` untouched — nothing here is interpolated into the script
-// string, so an argument containing spaces or shell metacharacters is
-// never reparsed as shell syntax.
+// Same positional-argv convention as wrapWithIdeBackground/wrapWithFdShim,
+// nested one level for the outer step count: STEPS_COUNT tells the script
+// how many steps follow, each prefixed by its own STEP_ARGC so the loop
+// can peel off exactly that many words as that step's argv, leaving
+// finalCmd to be handed to `exec "$@"` untouched. Nothing here is
+// interpolated into the script string, so an argument containing spaces
+// or shell metacharacters is never reparsed as shell syntax.
 export function wrapWithPrepareStep(
-	prepareBin: string,
-	prepareArgs: string[],
+	prepareSteps: PrepareStep[],
 	finalCmd: string[],
 ): string[] {
 	// biome-ignore-start lint/suspicious/noTemplateCurlyInString: this is a
@@ -436,24 +441,31 @@ export function wrapWithPrepareStep(
 	// forgotten JS template placeholder — this is a plain string, not a
 	// template literal, so JS never interpolates it.
 	const script =
-		'PREPARE_ARGC="$1"; shift; ' +
-		"PREPARE_ARGV=(); " +
-		'for ((i=0; i<PREPARE_ARGC; i++)); do PREPARE_ARGV+=("$1"); shift; done; ' +
-		'"${PREPARE_ARGV[@]}"; STATUS=$?; ' +
+		'STEPS_COUNT="$1"; shift; ' +
+		"for ((s=0; s<STEPS_COUNT; s++)); do " +
+		'STEP_ARGC="$1"; shift; ' +
+		"STEP_ARGV=(); " +
+		'for ((i=0; i<STEP_ARGC; i++)); do STEP_ARGV+=("$1"); shift; done; ' +
+		'"${STEP_ARGV[@]}"; STATUS=$?; ' +
 		'if [ "$STATUS" -ne 0 ]; then ' +
-		'echo "scoder: prepare step failed (exit $STATUS)" >&2; ' +
+		'echo "scoder: prepare step $((s+1))/$STEPS_COUNT failed (exit $STATUS)" >&2; ' +
 		'exit "$STATUS"; ' +
 		"fi; " +
+		"done; " +
 		'exec "$@"';
 	// biome-ignore-end lint/suspicious/noTemplateCurlyInString: see above
+	const flattenedSteps = prepareSteps.flatMap((step) => [
+		(1 + step.args.length).toString(),
+		step.bin,
+		...step.args,
+	]);
 	return [
 		"bash",
 		"-c",
 		script,
 		"_",
-		(1 + prepareArgs.length).toString(),
-		prepareBin,
-		...prepareArgs,
+		prepareSteps.length.toString(),
+		...flattenedSteps,
 		...finalCmd,
 	];
 }

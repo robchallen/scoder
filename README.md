@@ -216,13 +216,18 @@ unfamiliar host key.
 
 ## A companion IDE (`--ide`)
 
-`--ide NAME` launches `NAME` (must have a registered preset — currently
-just `rstudio`, following the same pattern as other tool presets) as a
+`--ide NAME` launches `NAME` (must have a registered preset — `rstudio`
+and `eclipse`, following the same pattern as other tool presets) as a
 companion alongside the primary tool, both inside the *same* sandbox:
 
 ```bash
 scoder pi --ide rstudio     # rstudio in the background, pi in the foreground
+scoder pi --ide eclipse     # eclipse in the background, pi in the foreground
 ```
+
+This is `eclipse`'s actual intended use — its own dynamic-workspace
+prepare step (see above) runs whether it's the primary tool or the `--ide`
+companion.
 
 `NAME` runs in the background, the primary tool in the foreground
 (connected to your terminal, same as running it alone), and both must

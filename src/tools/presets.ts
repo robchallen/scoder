@@ -51,6 +51,11 @@ const ECLIPSE_JAR_PATH = new URL(
 	`../../assets/eclipse/${ECLIPSE_JAR_NAME}`,
 	import.meta.url,
 ).pathname;
+// EM: The bundle's own symbolic name and version, as recorded in its
+// EM: MANIFEST.MF — needed verbatim for the bundles.info entry below, not
+// EM: derivable from ECLIPSE_JAR_NAME by convention alone.
+const ECLIPSE_JAR_SYMBOLIC_NAME = "com.seeq.eclipse.importprojects";
+const ECLIPSE_JAR_BUNDLE_VERSION = "1.4.0";
 
 interface EclipseLayout {
 	sandboxEclipseBin: string;
@@ -205,6 +210,79 @@ function eclipseConfigArgs(layout: EclipseLayout): string[] {
 	return layout.reuseHostConfig
 		? []
 		: ["-configuration", layout.configSandboxDir];
+}
+
+// ### ensureEclipseBundlesInfo
+// Registers the vendored plugin with Equinox's simpleconfigurator by
+// editing `bundles.info` directly, entirely on the host side (plain file
+// I/O, no bwrap involved) — NOT by injecting the jar into the install's
+// own plugins/ dir, which was tried first and confirmed broken: a real
+// installer-owned install's plugins/ directory is genuinely read-only
+// (not just made so by scoder), and bwrap's --ro-bind needs to *create* a
+// destination node for a file that doesn't already exist there, which
+// fails with exactly the reported "Read-only file system" once the
+// parent has already been mounted read-only (by builder.ts's own
+// wholesale /opt bind, applied well before any preset's own binds run).
+// The earlier "verified" claim in eclipse-preset.md tested a subtly
+// different scenario — binding a new source *over an already-existing*
+// destination file — not creating a brand-new one; corrected there.
+//
+// bundles.info is Equinox's own definitive bundle list (modern Eclipse
+// installs use org.eclipse.equinox.simpleconfigurator, not a long
+// per-bundle osgi.bundles= line) — confirmed directly, headlessly, no GTK
+// needed: an empty/partial bundles.info in the configuration area does
+// NOT fall back to merging with the install's own default list (an
+// earlier attempt with *only* this plugin's own line in an otherwise
+// empty bundles.info failed with "Unresolved requirement: Require-Bundle:
+// org.eclipse.ui" — org.eclipse.ui and the rest of the normal bundle set
+// were simply never loaded). So the full base list has to be present in
+// whichever bundles.info Equinox actually reads, not just our own
+// addition to it.
+//
+// The referenced jar path is a sandbox-only path (see configBinds), so
+// when reusing the user's own real ~/.eclipse/<hash> directory (Decision
+// 5), this writes that same sandbox-only reference into their real,
+// native config. Confirmed directly this is benign: a bundles.info entry
+// whose location doesn't resolve is silently skipped by Equinox (no
+// error, no effect on any other bundle) — it would only matter if the
+// user ran this exact plugin's own application natively, which isn't a
+// real workflow. Left in place rather than cleaned up afterward: there's
+// no reliable "scoder is done with this install" signal to clean up on,
+// and every future scoder launch rewrites this same entry idempotently
+// anyway.
+async function ensureEclipseBundlesInfo(
+	configHostDir: string,
+	hostInstallDir: string,
+	sandboxJarPath: string,
+): Promise<void> {
+	const bundlesInfoDir = `${configHostDir}/org.eclipse.equinox.simpleconfigurator`;
+	const bundlesInfoPath = `${bundlesInfoDir}/bundles.info`;
+
+	let baseContent: string;
+	if (await fileExists(bundlesInfoPath)) {
+		baseContent = await Bun.file(bundlesInfoPath).text();
+	} else {
+		const installDefault = `${hostInstallDir}/configuration/org.eclipse.equinox.simpleconfigurator/bundles.info`;
+		if (!(await fileExists(installDefault))) {
+			warning(
+				"eclipse: no bundles.info found (install or reused config dir) — plugin auto-import will not be available",
+			);
+			return;
+		}
+		baseContent = await Bun.file(installDefault).text();
+	}
+
+	const ourLine = `${ECLIPSE_JAR_SYMBOLIC_NAME},${ECLIPSE_JAR_BUNDLE_VERSION},file:${sandboxJarPath},4,true`;
+	const lines = baseContent
+		.split("\n")
+		.filter(
+			(line) =>
+				line.trim() !== "" && !line.startsWith(`${ECLIPSE_JAR_SYMBOLIC_NAME},`),
+		);
+	lines.push(ourLine);
+
+	await ensureDir(bundlesInfoDir);
+	await Bun.write(bundlesInfoPath, `${lines.join("\n")}\n`);
 }
 
 // ### verifyEclipseJar
@@ -686,20 +764,30 @@ export const TOOL_PRESETS: Record<string, ToolPreset> = {
 				dest: layout.sandboxInstallDir,
 			});
 
-			// EM: The vendored plugin jar, injected into the install's own
-			// EM: (otherwise untouched, read-only) plugins/ dir — confirmed
-			// EM: this works against a read-only-mounted install: a second,
-			// EM: more specific --ro-bind after the wholesale one wins, and
-			// EM: bwrap applies binds in the order given (this one is pushed
-			// EM: after the wholesale install-dir bind above, in the same
-			// EM: array). See eclipse-preset.md's Verified Groundwork. Its
-			// EM: sha256 is re-checked in validate() (verifyEclipseJar) — see
-			// EM: assets/eclipse/PROVENANCE.md.
+			// EM: The vendored plugin jar, bound read-only at a fixed sandbox
+			// EM: path that's always freely creatable (under /home/scoder,
+			// EM: fresh tmpfs — never under any wholesale read-only system
+			// EM: bind) — NOT injected into the install's own plugins/ dir,
+			// EM: which genuinely cannot work: see ensureEclipseBundlesInfo's
+			// EM: own comment for why, and what registers it with Equinox
+			// EM: instead. Its sha256 is re-checked in validate()
+			// EM: (verifyEclipseJar) — see assets/eclipse/PROVENANCE.md.
+			const sandboxJarPath = `${sandboxHome}/.local/share/scoder-eclipse-plugin/${ECLIPSE_JAR_NAME}`;
+			pushIntermediateDirs(
+				dirs,
+				sandboxHome,
+				".local/share/scoder-eclipse-plugin",
+			);
 			binds.push({
 				type: "ro-bind",
 				source: ECLIPSE_JAR_PATH,
-				dest: `${layout.sandboxInstallDir}/plugins/${ECLIPSE_JAR_NAME}`,
+				dest: sandboxJarPath,
 			});
+			await ensureEclipseBundlesInfo(
+				layout.configHostDir,
+				layout.hostInstallDir,
+				sandboxJarPath,
+			);
 
 			const projDir = await getProjDir(process.cwd());
 			pushIntermediateDirs(

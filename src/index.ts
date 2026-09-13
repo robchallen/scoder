@@ -29,7 +29,11 @@ import {
 	hasUncommittedChanges,
 	setupGitWorktree,
 } from "./git/worktree.ts";
-import { buildBwrapCommand, collectBindDests } from "./sandbox/builder.ts";
+import {
+	buildBwrapCommand,
+	collectBindDests,
+	type PrepareStep,
+} from "./sandbox/builder.ts";
 import {
 	getSandboxGid,
 	getSandboxUid,
@@ -463,18 +467,17 @@ async function main(): Promise<void> {
 
 	// EM: Independent of worktree vs. direct mode, so set up once here — see
 	// EM: ToolPreset.prepareCommand (types.ts) and
-	// EM: design/implementation/plans/eclipse-preset.md. Only the primary
-	// EM: preset is wired up; a --ide companion's own prepareCommand (were
-	// EM: one ever added) is not run today.
-	let prepareBin: string | undefined;
-	let prepareArgs: string[] | undefined;
+	// EM: design/implementation/plans/eclipse-preset.md. Both the primary
+	// EM: preset's own and the --ide companion's own are run, in that
+	// EM: order, if either or both define one (e.g. `pi --ide eclipse`:
+	// EM: pi has none, eclipse's own workspace-prepare step runs before
+	// EM: pi/eclipse actually start).
+	const prepareSteps: PrepareStep[] = [];
+	const hostProjectDir =
+		options.worktree && worktreeInfo ? worktreeInfo.worktreeDir : process.cwd();
+	const dependencyDirs = protectionConfig?.dependencyDirs ?? [];
 
 	if (preset?.prepareCommand) {
-		const hostProjectDir =
-			options.worktree && worktreeInfo
-				? worktreeInfo.worktreeDir
-				: process.cwd();
-		const dependencyDirs = protectionConfig?.dependencyDirs ?? [];
 		const prepared = await preset.prepareCommand(
 			hostProjectDir,
 			sandboxProjDir,
@@ -484,8 +487,20 @@ async function main(): Promise<void> {
 			error(`${toolDescription}: could not prepare the sandbox for launch`);
 			process.exit(1);
 		}
-		prepareBin = prepared.bin;
-		prepareArgs = prepared.args;
+		prepareSteps.push(prepared);
+	}
+
+	if (idePreset?.prepareCommand) {
+		const prepared = await idePreset.prepareCommand(
+			hostProjectDir,
+			sandboxProjDir,
+			dependencyDirs,
+		);
+		if (!prepared) {
+			error(`${options.ide}: could not prepare the sandbox for launch`);
+			process.exit(1);
+		}
+		prepareSteps.push(prepared);
 	}
 
 	const config = {
@@ -499,8 +514,7 @@ async function main(): Promise<void> {
 		toolEnv,
 		ideBin,
 		ideArgs,
-		prepareBin,
-		prepareArgs,
+		prepareSteps,
 		protectionConfig,
 	};
 
@@ -547,9 +561,12 @@ async function main(): Promise<void> {
 	// EM: ToolPreset.prepareCommand), so this checks bindDests directly
 	// EM: rather than going through checkExecTargetReachable's own
 	// EM: host-vs-sandbox comparison.
-	if (prepareBin && !isUnderAny(prepareBin, bindDests)) {
+	for (const step of prepareSteps) {
+		if (isUnderAny(step.bin, bindDests)) {
+			continue;
+		}
 		const report = options.dryRun ? warning : error;
-		report(`${toolDescription}: prepare step's ${prepareBin} is not reachable`);
+		report(`${toolDescription}: prepare step's ${step.bin} is not reachable`);
 		report("inside the sandbox — check where its preset resolved it from");
 		if (!options.dryRun) {
 			process.exit(1);

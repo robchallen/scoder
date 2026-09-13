@@ -229,7 +229,7 @@ case either, exactly as for the `~/.eclipse/<hash>` case — both are now
 just the two forms "a real, already-existing host directory is being
 reused directly," covered by the same `reuseHostConfig` flag.
 
-**A smaller, defensive fix alongside it**: the hash-suffix match against
+**A smaller, defensive fix alongside it**: the hash match against
 `~/.eclipse/` entries now also tries the raw (possibly negative) hash
 string, not just its absolute value — a hedge against the "Equinox forces
 this non-negative" detail in this doc's own source citation being
@@ -238,6 +238,39 @@ mismatch. Not confirmed either way to have been the actual cause of
 anything (the missing first-choice check above was reproduced and fixed
 independently of this), but cheap enough to add defensively while in this
 code anyway.
+
+### The third bug: the directory name isn't just `<app>_<version>_<hash>`
+
+Immediately after the second bug's fix, real-world use surfaced a third
+one in the same area: the user's real `~/.eclipse/` directory is named
+`org.eclipse.platform_4.39.0_1473617060_linux_gtk_x86_64` — the hash is
+followed by *more* underscore-separated segments (`linux`, `gtk`,
+`x86_64` — OS/WS/ARCH, not part of this doc's original,
+under-specified `<app>_<version>_<hash>` sketch). The match was written
+as `name.endsWith(`_${hash}`)`, which only matches when the hash is the
+*last* segment — never true here, so it fell through to the
+scoder-managed fallback exactly the same way the second bug did, just
+via a different, narrower mismatch this time.
+
+Fixed by matching the hash as its own segment *anywhere* in the name,
+not only at the end: split the entry name on `_` and check whether the
+hash string is one of the resulting segments (`segments.includes(hash)`),
+rather than testing the whole name for a trailing substring. Confirmed
+directly against the user's own real directory name shape, with a fake
+install reproducing the exact hash: correctly matched and bound, with
+the existing (fake) custom-installed plugin's own `bundles.info` entry
+still preserved alongside the newly-appended one.
+
+Three bugs, all in the same area, is worth naming honestly rather than
+looking past: none of them were found by this investigation's own
+headless testing (which never had a `~/.eclipse/<hash>` directory, real
+or fake, with a *genuine* platform-suffixed name to test against) — all
+three were caught by the very first real-world use against a real
+install. The lesson carried forward, not just noted here: this specific
+mechanism (matching an existing, externally-named directory on the host)
+is exactly the kind of thing worth testing against the messiest real
+example available, not the cleanest one this investigation happened to
+construct.
 
 ## Design
 
@@ -557,13 +590,15 @@ fix" above). In brief:
   using the (empty) fallback directory instead of a personal-machine
   user's own real, already-populated Eclipse configuration. See "The
   second bug" above. **Deviation from the sketch
-  above**: rather than reconstructing the full `<app>_<version>_<hash>`
-  name from the install's `.eclipseproduct` marker, the implementation
-  matches on the hash suffix alone (any `~/.eclipse/*_<hash>` entry) —
-  the hash is the only part actually load-bearing for correctness (it's
-  what ties the directory to this specific install path); getting an
-  app id or version string wrong would otherwise risk missing a real,
-  existing directory for no good reason. `.eclipseproduct` is never
+  above**: rather than reconstructing the full directory name from the
+  install's `.eclipseproduct` marker, the implementation matches on the
+  hash alone, as its own underscore-delimited segment anywhere in the
+  entry name (not merely a suffix — see "The third bug": a real
+  directory name has OS/WS/ARCH segments *after* the hash) — the hash is
+  the only part actually load-bearing for correctness (it's what ties
+  the directory to this specific install path); getting an app id or
+  version string wrong would otherwise risk missing a real, existing
+  directory for no good reason. `.eclipseproduct` is never
   read.
 - `prepareCommand`: returns the headless-import invocation
   (`<eclipse-bin> -nosplash -clean [-configuration <fallback config

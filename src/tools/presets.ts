@@ -225,21 +225,27 @@ async function resolveEclipseLayout(
 		// EM: sign mismatch.
 		const hashCandidates = [Math.abs(rawHash).toString(), rawHash.toString()];
 
-		// EM: Matched by hash suffix alone, not by reconstructing the full
-		// EM: <app>_<version>_<hash> name from .eclipseproduct — the hash
-		// EM: is the only part that's actually load-bearing for
-		// EM: correctness (it's what ties the directory to this specific
-		// EM: install path); getting an app id or version string wrong
-		// EM: would otherwise risk missing a real, existing directory for
-		// EM: no good reason.
+		// EM: Matched by hash alone, not by reconstructing the full
+		// EM: directory name from .eclipseproduct — the hash is the only
+		// EM: part that's actually load-bearing for correctness (it's what
+		// EM: ties the directory to this specific install path); getting
+		// EM: an app id or version string wrong would otherwise risk
+		// EM: missing a real, existing directory for no good reason.
+		//
+		// The hash is matched as its own underscore-delimited *segment*,
+		// not merely a suffix — a real observed directory name,
+		// `org.eclipse.platform_4.39.0_1473617060_linux_gtk_x86_64`, has
+		// OS/WS/ARCH info appended *after* the hash, so `endsWith` (an
+		// earlier version of this check) never matched anything real.
 		const eclipseUserDir = `${realHome}/.eclipse`;
 		let reuseDirName: string | null = null;
 		if (await dirExists(eclipseUserDir)) {
 			const entries = await readdir(eclipseUserDir);
 			reuseDirName =
-				entries.find((name) =>
-					hashCandidates.some((hash) => name.endsWith(`_${hash}`)),
-				) ?? null;
+				entries.find((name) => {
+					const segments = name.split("_");
+					return hashCandidates.some((hash) => segments.includes(hash));
+				}) ?? null;
 		}
 
 		if (reuseDirName) {

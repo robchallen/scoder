@@ -16,6 +16,7 @@ on a separate git branch via a worktree.
 | `copilot` | GitHub Copilot CLI config + data |
 | `pi` | Pi Coding Agent config + data |
 | `rstudio` | RStudio Desktop config + data, X11 access, and pi's own binds (see below) |
+| `eclipse` | Eclipse IDE, X11 access, and a dynamically (re)generated workspace (see below) |
 | *(any)* | Generic sandbox |
 
 **`rstudio` is different from every other preset here**, deliberately: it
@@ -38,6 +39,21 @@ automatically (RStudio Desktop doesn't otherwise pick up the sandbox's
 working directory on its own); with none found, it opens the project
 directory itself. Passing your own argument (e.g. a specific file)
 always overrides this.
+
+**`eclipse` shares `rstudio`'s X11 trade-off** (see above) — not
+independently re-verified for Eclipse specifically, see
+`design/features/tool-presets.md`. It also solves a problem `rstudio`
+doesn't have: an Eclipse workspace records absolute host paths back to
+each project, so a workspace built outside the sandbox has stale
+references inside it. Every launch, scoder runs a headless import step
+inside the sandbox first, building (or refreshing) a persisted, dedicated
+workspace against the sandbox's own project path, plus every
+`.agentreadonly` `$HOME/...` entry as its own project — so cross-project
+references resolve correctly. See
+`design/implementation/plans/eclipse-preset.md` for the full
+investigation, including why Eclipse's own runtime configuration is
+reused from your real, native install when possible rather than always
+forced into a separate scoder-specific location.
 
 ## How it works
 

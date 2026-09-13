@@ -22,6 +22,12 @@ export interface SandboxConfig {
 	// EM: design/features/ide-companion.md and wrapWithIdeBackground below.
 	ideBin?: string;
 	ideArgs?: string[];
+	// EM: A preset's prepareCommand (see types.ts), already resolved to a
+	// EM: concrete sandbox-side bin/args pair — run to completion, inside
+	// EM: the sandbox, before the tool/IDE exec. See wrapWithPrepareStep and
+	// EM: design/implementation/plans/eclipse-preset.md.
+	prepareBin?: string;
+	prepareArgs?: string[];
 	protectionConfig?: ProtectionConfig;
 }
 
@@ -46,6 +52,8 @@ export async function buildBwrapCommand(
 		toolEnv,
 		ideBin,
 		ideArgs,
+		prepareBin,
+		prepareArgs,
 		protectionConfig,
 	} = config;
 
@@ -327,13 +335,17 @@ export async function buildBwrapCommand(
 	// EM: `--` marks end-of-options, so a tool path beginning with `-` cannot be
 	// EM: mistaken for a bwrap flag. Previously this separated pasta's options
 	// EM: from the command; bwrap accepts it in the same role.
-	if (ideBin) {
+	const innerCmd = ideBin
+		? wrapWithIdeBackground(toolBin, toolArgs, ideBin, ideArgs ?? [])
+		: [toolBin, ...toolArgs];
+
+	if (prepareBin) {
 		cmd.push(
 			"--",
-			...wrapWithIdeBackground(toolBin, toolArgs, ideBin, ideArgs ?? []),
+			...wrapWithPrepareStep(prepareBin, prepareArgs ?? [], innerCmd),
 		);
 	} else {
-		cmd.push("--", toolBin, ...toolArgs);
+		cmd.push("--", ...innerCmd);
 	}
 
 	return cmd;
@@ -393,6 +405,56 @@ export function wrapWithIdeBackground(
 		...ideArgs,
 		toolBin,
 		...toolArgs,
+	];
+}
+
+// ### wrapWithPrepareStep
+// [IMPLEMENTS](/design/features/tool-presets.md)
+// Runs a preset's prepareCommand (see types.ts) to completion, inside the
+// sandbox, before handing off to the real tool/IDE command — used by the
+// eclipse preset to (re)build its dynamically-generated workspace on every
+// launch. See design/implementation/plans/eclipse-preset.md.
+//
+// A non-zero exit here is treated as a whole-launch failure, not something
+// swallowed on the way to a broken interactive session: the script prints
+// a one-line diagnostic to stderr and exits with the prepare step's own
+// status, mirroring wrapWithIdeBackground's own STATUS-forwarding idiom.
+//
+// Same positional-argv convention as wrapWithIdeBackground/wrapWithFdShim:
+// PREPARE_ARGC tells the script how many of the following words are the
+// prepare command's own argv, so the remainder (finalCmd) can be handed to
+// `exec "$@"` untouched — nothing here is interpolated into the script
+// string, so an argument containing spaces or shell metacharacters is
+// never reparsed as shell syntax.
+export function wrapWithPrepareStep(
+	prepareBin: string,
+	prepareArgs: string[],
+	finalCmd: string[],
+): string[] {
+	// biome-ignore-start lint/suspicious/noTemplateCurlyInString: this is a
+	// literal bash "${...}" reference in a generated shell script, not a
+	// forgotten JS template placeholder — this is a plain string, not a
+	// template literal, so JS never interpolates it.
+	const script =
+		'PREPARE_ARGC="$1"; shift; ' +
+		"PREPARE_ARGV=(); " +
+		'for ((i=0; i<PREPARE_ARGC; i++)); do PREPARE_ARGV+=("$1"); shift; done; ' +
+		'"${PREPARE_ARGV[@]}"; STATUS=$?; ' +
+		'if [ "$STATUS" -ne 0 ]; then ' +
+		'echo "scoder: prepare step failed (exit $STATUS)" >&2; ' +
+		'exit "$STATUS"; ' +
+		"fi; " +
+		'exec "$@"';
+	// biome-ignore-end lint/suspicious/noTemplateCurlyInString: see above
+	return [
+		"bash",
+		"-c",
+		script,
+		"_",
+		(1 + prepareArgs.length).toString(),
+		prepareBin,
+		...prepareArgs,
+		...finalCmd,
 	];
 }
 

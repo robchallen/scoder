@@ -357,23 +357,36 @@ async function main(): Promise<void> {
 	}
 
 	// EM: Independent of worktree vs. direct mode, so set up once here.
-	// EM: Only when the user passed no args of their own — an explicit
-	// EM: argument (e.g. a specific file to open) always wins.
-	if (preset?.resolveArgs && toolArgs.length === 0) {
+	// EM: Always called when present — unlike a plain default-when-empty,
+	// EM: a preset may need its own fixed flags ahead of the user's own
+	// EM: args on every launch (e.g. eclipse's -data/-configuration), not
+	// EM: just when the user gave none at all. Each preset's own resolveArgs
+	// EM: decides what to do with existingArgs — see types.ts.
+	if (preset?.resolveArgs) {
 		const hostProjectDir =
 			options.worktree && worktreeInfo
 				? worktreeInfo.worktreeDir
 				: process.cwd();
-		toolArgs = await preset.resolveArgs(hostProjectDir, sandboxProjDir);
+		toolArgs = await preset.resolveArgs(
+			hostProjectDir,
+			sandboxProjDir,
+			toolArgs,
+		);
 	}
 
-	// EM: Same reasoning, for the companion IDE's own argv.
+	// EM: Same reasoning, for the companion IDE's own argv — existingArgs is
+	// EM: always [] here, since there is no way for the user to supply the
+	// EM: --ide companion's own arguments directly.
 	if (idePreset?.resolveArgs) {
 		const hostProjectDir =
 			options.worktree && worktreeInfo
 				? worktreeInfo.worktreeDir
 				: process.cwd();
-		ideArgs = await idePreset.resolveArgs(hostProjectDir, sandboxProjDir);
+		ideArgs = await idePreset.resolveArgs(
+			hostProjectDir,
+			sandboxProjDir,
+			ideArgs,
+		);
 	}
 
 	// EM: Independent of worktree vs. direct mode, so set up once here rather
@@ -448,6 +461,33 @@ async function main(): Promise<void> {
 		await setupScratchLink(projectRoot, protectionConfig);
 	}
 
+	// EM: Independent of worktree vs. direct mode, so set up once here — see
+	// EM: ToolPreset.prepareCommand (types.ts) and
+	// EM: design/implementation/plans/eclipse-preset.md. Only the primary
+	// EM: preset is wired up; a --ide companion's own prepareCommand (were
+	// EM: one ever added) is not run today.
+	let prepareBin: string | undefined;
+	let prepareArgs: string[] | undefined;
+
+	if (preset?.prepareCommand) {
+		const hostProjectDir =
+			options.worktree && worktreeInfo
+				? worktreeInfo.worktreeDir
+				: process.cwd();
+		const dependencyDirs = protectionConfig?.dependencyDirs ?? [];
+		const prepared = await preset.prepareCommand(
+			hostProjectDir,
+			sandboxProjDir,
+			dependencyDirs,
+		);
+		if (!prepared) {
+			error(`${toolDescription}: could not prepare the sandbox for launch`);
+			process.exit(1);
+		}
+		prepareBin = prepared.bin;
+		prepareArgs = prepared.args;
+	}
+
 	const config = {
 		worktreeInfo,
 		sandboxProjDir,
@@ -459,6 +499,8 @@ async function main(): Promise<void> {
 		toolEnv,
 		ideBin,
 		ideArgs,
+		prepareBin,
+		prepareArgs,
 		protectionConfig,
 	};
 
@@ -492,6 +534,24 @@ async function main(): Promise<void> {
 			options.dryRun,
 		);
 		if (!ideReachable && !options.dryRun) {
+			process.exit(1);
+		}
+	}
+
+	// EM: Same reachability concern as toolBin/ideBin above, for a preset's
+	// EM: prepareCommand — a bin it resolved that isn't actually reachable
+	// EM: inside the sandbox would otherwise fail silently as a bare
+	// EM: "execvp: No such file or directory" from the prepare step, before
+	// EM: the primary tool ever gets a chance to run. prepareCommand
+	// EM: already returns a sandbox-side path rather than a host one (see
+	// EM: ToolPreset.prepareCommand), so this checks bindDests directly
+	// EM: rather than going through checkExecTargetReachable's own
+	// EM: host-vs-sandbox comparison.
+	if (prepareBin && !isUnderAny(prepareBin, bindDests)) {
+		const report = options.dryRun ? warning : error;
+		report(`${toolDescription}: prepare step's ${prepareBin} is not reachable`);
+		report("inside the sandbox — check where its preset resolved it from");
+		if (!options.dryRun) {
 			process.exit(1);
 		}
 	}

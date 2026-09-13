@@ -88,6 +88,13 @@ export interface ProtectionConfig {
 	safeBinds: BindMount[];
 	agentsMdOverlay?: string;
 	dirs?: string[];
+	// The sandbox-side destinations of every .agentreadonly $HOME/... entry
+	// — a distinct list, not just whatever of safeBinds happens to look
+	// like one, so a preset's prepareCommand (see ToolPreset) can treat
+	// each as its own project to import without guessing which safeBinds
+	// entries are dependency-project-shaped and which are unrelated
+	// infrastructure (agents/.local/bin snapshots, resolv.conf, etc.).
+	dependencyDirs: string[];
 }
 
 // ### setupProtection
@@ -99,6 +106,7 @@ export async function setupProtection(
 	const protectedPaths: string[] = [];
 	const safeBinds: BindMount[] = [];
 	const dirs: string[] = [];
+	const dependencyDirs: string[] = [];
 	const agentreadonlyPath = `${sourceDir}/.agentreadonly`;
 	const agentreadonlyExists = await fileExists(agentreadonlyPath);
 
@@ -112,7 +120,12 @@ export async function setupProtection(
 			}
 
 			if (line.startsWith("$HOME/")) {
-				await registerAgentreadonlyHomeBind(line, safeBinds, dirs);
+				await registerAgentreadonlyHomeBind(
+					line,
+					safeBinds,
+					dirs,
+					dependencyDirs,
+				);
 				continue;
 			}
 
@@ -163,13 +176,14 @@ export async function setupProtection(
 		sandboxProjDir,
 	);
 
-	return { protectedPaths, safeBinds, agentsMdOverlay, dirs };
+	return { protectedPaths, safeBinds, agentsMdOverlay, dirs, dependencyDirs };
 }
 
 async function registerAgentreadonlyHomeBind(
 	homePathExpr: string,
 	binds: BindMount[],
 	dirs: string[],
+	dependencyDirs: string[],
 ): Promise<void> {
 	const realHome = process.env.HOME || "/home/user";
 	const relativePath = homePathExpr.slice("$HOME/".length);
@@ -218,6 +232,7 @@ async function registerAgentreadonlyHomeBind(
 		source: sourceReal,
 		dest: sandboxDest,
 	});
+	dependencyDirs.push(sandboxDest);
 
 	info(`Binding ${homePathExpr} to ${sandboxDest} (read-only)`);
 }

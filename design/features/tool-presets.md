@@ -8,8 +8,9 @@ tags: [feature, tools, configuration]
 
 ## Summary
 
-Built-in configuration presets for opencode, claude, copilot, pi, and rstudio
-that provide tool-specific config/data directory bind mounts into the sandbox.
+Built-in configuration presets for opencode, claude, copilot, pi, rstudio, and
+eclipse that provide tool-specific config/data directory bind mounts into the
+sandbox.
 
 ## Motivation
 
@@ -21,9 +22,30 @@ automatically, with config read-only and data/cache read-write.
 
 [IMPLEMENTED_BY](/src/tools/presets.ts)
 
-Each tool has an async function pair:
+Every preset has an async function pair:
 - `configBinds(realHome, sandboxHome)` — returns bind mounts and directory specs
 - `validate()` — checks tool is installed, prints install instructions if missing
+
+Two more hooks are optional, and only some presets need them:
+- `resolveArgs(hostProjectDir, sandboxProjectDir, existingArgs)` — lets a
+  preset choose the tool's final argv once the project directory is known
+  (`configBinds` runs before it exists). Always called when present;
+  `existingArgs` is whatever the user already passed (`[]` for the `--ide`
+  companion, which has no way to supply its own). Each preset decides for
+  itself what to do with them — `rstudio` only fills in a default when the
+  user gave none at all; `eclipse` always prepends its own fixed flags
+  ahead of whatever the user passed. See `ToolPreset.resolveArgs` in
+  `src/types.ts`.
+- `prepareCommand(hostProjectDir, sandboxProjectDir, dependencyDirs)` — runs
+  a separate, complete command inside the sandbox before the tool/IDE exec,
+  for setup work that has to happen inside the sandbox's own mount
+  namespace. Only `eclipse` uses this today — see below and
+  `design/implementation/plans/eclipse-preset.md`. A non-zero exit here is
+  a loud, whole-launch failure (`wrapWithPrepareStep` in
+  `src/sandbox/builder.ts`), not something folded silently into the other
+  hooks. `dependencyDirs` is the sandbox-side destinations of every
+  `.agentreadonly` `$HOME/...` entry already resolved for this session
+  (`ProtectionConfig.dependencyDirs` in `src/git/protection.ts`).
 
 | Tool | Config (ro) | Data/Cache (rw) |
 |------|------------|-----------------|
@@ -32,6 +54,7 @@ Each tool has an async function pair:
 | copilot | ~/.config/github-copilot, ~/.copilot | ~/.local/share/github-copilot |
 | pi | — | ~/.pi/agent, ~/.local/share/pi, ~/.cache/pi |
 | rstudio | — | ~/.config/rstudio, ~/.local/share/rstudio, plus pi's own binds (see below) |
+| eclipse | ~/.eclipse/\<hash\> (reused, when found) or a scoder-managed fallback | ~/.local/share/scoder-eclipse-workspaces/\<project\>, plus the reused/fallback config dir above |
 
 `~/.config/gh` is not preset-specific — it is bound read-only for every
 sandbox by `buildExtraBinds`, so any tool can use an authenticated `gh`.
@@ -121,6 +144,55 @@ to choose a project; the bare-directory fallback is also documented
 RStudio CLI behaviour, but — like the D-Bus passthrough above — has not
 been independently verified against a real RStudio Desktop install in
 this project.
+
+### eclipse
+
+Eclipse's workspace is not "point the IDE at a directory" — it's a
+persistent metadata store that records, per project, an absolute path back
+to that project's real location on disk, in a binary, versioned,
+checksummed file format (`.location`, under
+`.metadata/.plugins/org.eclipse.core.resources/.projects/<name>/`). A
+workspace built or last used outside the sandbox has every project
+reference pointing at a path that doesn't exist inside it — none of
+scoder's own path-mirroring saves this, since project paths under `$HOME`
+are remapped onto `/home/scoder`.
+
+The full investigation, including why hand-writing `.location` was
+rejected and what was verified against a real Eclipse install, is
+`design/implementation/plans/eclipse-preset.md`. In short:
+
+- `configBinds` locates the host's Eclipse install (resolving `which
+  eclipse` through any symlinks) and injects a vendored, pinned plugin jar
+  (`seeq12/eclipse-import-projects-plugin`, `assets/eclipse/`) into its
+  `plugins/` directory read-only — even though the install itself is
+  otherwise read-only, a more specific `--ro-bind` after a wholesale one
+  still lands correctly. It also binds a persisted, project-scoped
+  workspace directory (`~/.local/share/scoder-eclipse-workspaces/<project>`,
+  read-write) and Eclipse's own runtime configuration area: **reusing the
+  host's existing `~/.eclipse/<app>_<version>_<hash>/` directory when one
+  exists** (bound at the identical mirrored sandbox path — the hash is a
+  pure function of the install directory's own path, and scoder mounts
+  `/opt`-style install paths unchanged between host and sandbox, so the
+  same hash applies in both places), falling back to a scoder-managed
+  directory, keyed by that same hash, only when no host directory exists
+  yet.
+- `prepareCommand` runs the vendored plugin's headless-import application
+  inside the sandbox, before the interactive launch, importing the main
+  project and every `.agentreadonly` `$HOME/...` dependency as its own
+  project — solving "a Java project references other local projects that
+  also need to be workspace projects" without a manual step. Safe to
+  re-run on every launch: the plugin's own code already branches on
+  `project.isOpen()` to import vs. refresh.
+- `resolveArgs` always prepends `-data <workspace>` (and `-configuration
+  <dir>`, only in the fallback case) to the interactive launch, whatever
+  args the user passed — these are intrinsically tied to project identity,
+  not something a user would reasonably want to override.
+
+Like `rstudio`, this is a GUI app needing the same X11
+socket/`DISPLAY`/`XAUTHORITY` access — but unlike `rstudio`'s, this has
+**not** been independently re-verified: this project has no host with GTK
+installed and a real X session to confirm the interactive phase against,
+only the headless prepare step.
 
 [HAS_FEATURE](./sandbox-isolation.md)
 [HAS_FEATURE](./host-tool-binding.md)

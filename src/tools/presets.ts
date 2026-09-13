@@ -1,6 +1,14 @@
-import { readdir } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { readdir, realpath } from "node:fs/promises";
+import { dirname } from "node:path";
+import { getProjDir } from "../git/worktree.ts";
 import type { BindMount, ToolBindSpec, ToolPreset } from "../types.ts";
 import { error, warning } from "../utils/logger.ts";
+import {
+	getRealHome,
+	resolveHomePrefixes,
+	toSandboxPath,
+} from "../utils/paths.ts";
 
 // EM: Tool preset system for opencode, claude, copilot, and pi
 // EM: Implements tool-presets feature with tool-specific config/data bindings
@@ -24,6 +32,197 @@ async function dirExists(path: string): Promise<boolean> {
 
 async function ensureDir(path: string): Promise<void> {
 	await Bun.spawn(["mkdir", "-p", path]);
+}
+
+// EM: ### Eclipse preset support
+// EM: See design/implementation/plans/eclipse-preset.md for the full
+// EM: investigation this is built on. Kept together, ahead of TOOL_PRESETS,
+// EM: since configBinds/prepareCommand/resolveArgs all need the exact same
+// EM: computed layout and must never disagree with each other about it.
+
+const ECLIPSE_JAR_NAME = "com.seeq.eclipse.importprojects_1.4.0.jar";
+// EM: Pinned, not "whatever's newest" — the plugin's own master branch is
+// EM: ahead of this exact build in a way that silently breaks it (a
+// EM: renamed CLI flag). Re-verify by hand, the same way, before ever
+// EM: bumping this. See Design Decision 2 in eclipse-preset.md.
+const ECLIPSE_JAR_SHA256 =
+	"133c61b284c61b889836560c06619e1ff3619080b733537f4137d1accb28ab2d";
+const ECLIPSE_JAR_PATH = new URL(
+	`../../assets/eclipse/${ECLIPSE_JAR_NAME}`,
+	import.meta.url,
+).pathname;
+
+interface EclipseLayout {
+	sandboxEclipseBin: string;
+	hostInstallDir: string;
+	sandboxInstallDir: string;
+	workspaceHostDir: string;
+	workspaceSandboxDir: string;
+	configHostDir: string;
+	configSandboxDir: string;
+	// EM: True once an existing ~/.eclipse/<app>_<version>_<hash> directory
+	// EM: was found on the host — see Decision 5 in eclipse-preset.md. When
+	// EM: true, no -configuration flag is passed at all: it's bound in at
+	// EM: the identical mirrored path, and Eclipse's own default resolution
+	// EM: finds it exactly the way it would outside the sandbox.
+	reuseHostConfig: boolean;
+}
+
+// ### javaStringHashCode
+// Reproduces java.lang.String#hashCode() exactly: s[0]*31^(n-1) + ... +
+// s[n-1], computed with 32-bit wraparound (Math.imul does the wraparound
+// multiply; `| 0` keeps the running total a 32-bit signed int, matching
+// Java's int arithmetic). Needed to compute the same
+// ~/.eclipse/<app>_<version>_<hash> directory name Equinox's own
+// getInstallDirHash() would — see eclipse-preset.md's "The ~/.eclipse/<hash>
+// fallback" section for the citation.
+function javaStringHashCode(s: string): number {
+	let h = 0;
+	for (let i = 0; i < s.length; i++) {
+		h = Math.imul(31, h) + s.charCodeAt(i);
+	}
+	return h | 0;
+}
+
+// ### pushIntermediateDirs
+// bwrap's --dir does not create intermediate path segments on its own (see
+// registerAgentreadonlyHomeBind in src/git/protection.ts, which has the
+// same requirement) — every level from sandboxHome down to the leaf has to
+// be its own --dir. Harmless to re-push a segment builder.ts's own fixed
+// --dir list (or another preset) already declared; bwrap tolerates a
+// repeated --dir the same way it tolerates a repeated bind.
+function pushIntermediateDirs(
+	dirs: string[],
+	sandboxHome: string,
+	relPath: string,
+): void {
+	let current = sandboxHome;
+	for (const part of relPath.split("/").filter(Boolean)) {
+		current = `${current}/${part}`;
+		if (!dirs.includes(current)) {
+			dirs.push(current);
+		}
+	}
+}
+
+// ### resolveEclipseLayout
+// Computes every path the eclipse preset's three hooks (configBinds,
+// prepareCommand, resolveArgs) need to agree on. Called independently from
+// each of them rather than threaded through as shared state — ToolPreset's
+// hooks are plain functions with no shared closure over per-launch state —
+// but every input is either fixed (the host's own filesystem) or derived
+// purely from hostProjectDir, so recomputing it is deterministic and safe
+// to call more than once per launch.
+async function resolveEclipseLayout(
+	hostProjectDir: string,
+): Promise<EclipseLayout | null> {
+	const hostEclipseBin = await resolveCommandPath("eclipse");
+	if (!hostEclipseBin) {
+		return null;
+	}
+
+	const realHome = getRealHome();
+	const homePrefixes = await resolveHomePrefixes();
+	const sandboxEclipseBin = toSandboxPath(hostEclipseBin, homePrefixes);
+
+	// EM: Eclipse's plugins/ dir sits alongside the real executable, not
+	// EM: the symlink `which` may have found (e.g. /etc/alternatives/eclipse
+	// EM: or a distro's own indirection) — resolve through it. See the
+	// EM: "Locating the Eclipse installation's own directory" open question
+	// EM: in eclipse-preset.md: confirmed for a plain /opt install, not
+	// EM: independently verified for a distro-packaged one.
+	let hostInstallDir: string;
+	try {
+		hostInstallDir = dirname(await realpath(hostEclipseBin));
+	} catch {
+		hostInstallDir = dirname(hostEclipseBin);
+	}
+	const sandboxInstallDir = toSandboxPath(hostInstallDir, homePrefixes);
+
+	const projDir = await getProjDir(hostProjectDir);
+	const workspaceHostDir = `${realHome}/.local/share/scoder-eclipse-workspaces/${projDir}`;
+	await ensureDir(workspaceHostDir);
+	const workspaceSandboxDir = toSandboxPath(workspaceHostDir, homePrefixes);
+
+	// EM: Equinox's own getInstallDirHash() hashes the install dir's
+	// EM: *canonical* path, falling back to the absolute path only if that
+	// EM: can't be resolved — mirrored here for the same reason: this hash
+	// EM: has to land on the exact directory name a real, native Eclipse
+	// EM: run against this same install would use.
+	let canonicalInstallDir: string;
+	try {
+		canonicalInstallDir = await realpath(hostInstallDir);
+	} catch {
+		canonicalInstallDir = hostInstallDir;
+	}
+	const hashStr = Math.abs(javaStringHashCode(canonicalInstallDir)).toString();
+
+	// EM: Matched by hash suffix alone, not by reconstructing the full
+	// EM: <app>_<version>_<hash> name from .eclipseproduct — the hash is
+	// EM: the only part that's actually load-bearing for correctness (it's
+	// EM: what ties the directory to this specific install path); getting
+	// EM: an app id or version string wrong would otherwise risk missing a
+	// EM: real, existing directory for no good reason.
+	const eclipseUserDir = `${realHome}/.eclipse`;
+	let reuseDirName: string | null = null;
+	if (await dirExists(eclipseUserDir)) {
+		const entries = await readdir(eclipseUserDir);
+		reuseDirName = entries.find((name) => name.endsWith(`_${hashStr}`)) ?? null;
+	}
+
+	let configHostDir: string;
+	let reuseHostConfig: boolean;
+	if (reuseDirName) {
+		configHostDir = `${eclipseUserDir}/${reuseDirName}`;
+		reuseHostConfig = true;
+	} else {
+		// EM: Keyed by the install's own hash, not by project — matching
+		// EM: Eclipse's real granularity (this is per-install runtime state,
+		// EM: not per-project), and so shared correctly across every scoder
+		// EM: project that happens to use the same Eclipse install.
+		configHostDir = `${realHome}/.local/share/scoder-eclipse-config/${hashStr}`;
+		await ensureDir(configHostDir);
+		reuseHostConfig = false;
+	}
+	const configSandboxDir = toSandboxPath(configHostDir, homePrefixes);
+
+	return {
+		sandboxEclipseBin,
+		hostInstallDir,
+		sandboxInstallDir,
+		workspaceHostDir,
+		workspaceSandboxDir,
+		configHostDir,
+		configSandboxDir,
+		reuseHostConfig,
+	};
+}
+
+// EM: The -configuration flag is included only in the fallback case — when
+// EM: reusing the host's own directory, passing no flag at all is the
+// EM: point (see Decision 5): Eclipse's own default resolution finds it.
+function eclipseConfigArgs(layout: EclipseLayout): string[] {
+	return layout.reuseHostConfig
+		? []
+		: ["-configuration", layout.configSandboxDir];
+}
+
+// ### verifyEclipseJar
+// The vendored jar gets injected into a real Eclipse install's own plugins/
+// dir (see the eclipse preset's configBinds) — worth confirming its bytes
+// still match the pinned, hand-verified sha256 before trusting it, rather
+// than assuming a file at a fixed repo path was never modified or
+// corrupted since vendoring.
+async function verifyEclipseJar(): Promise<boolean> {
+	try {
+		const bytes = await Bun.file(ECLIPSE_JAR_PATH).arrayBuffer();
+		const digest = createHash("sha256")
+			.update(Buffer.from(bytes))
+			.digest("hex");
+		return digest === ECLIPSE_JAR_SHA256;
+	} catch {
+		return false;
+	}
 }
 
 // ### TOOL_PRESETS
@@ -394,7 +593,14 @@ export const TOOL_PRESETS: Record<string, ToolPreset> = {
 		// EM: as a fallback when there's no .Rproj — used here, but not
 		// EM: independently verified against a real RStudio Desktop install
 		// EM: in this project, unlike the X11 mechanics in configBinds above.
-		resolveArgs: async (hostProjectDir, sandboxProjectDir) => {
+		// EM: An explicit argument from the user always wins outright — this
+		// EM: only fills in a default when there isn't one, unlike eclipse's
+		// EM: own resolveArgs, which always prepends its fixed flags.
+		resolveArgs: async (hostProjectDir, sandboxProjectDir, existingArgs) => {
+			if (existingArgs.length > 0) {
+				return existingArgs;
+			}
+
 			let entries: string[];
 			try {
 				entries = await readdir(hostProjectDir);
@@ -415,6 +621,192 @@ export const TOOL_PRESETS: Record<string, ToolPreset> = {
 				);
 			}
 			return [`${sandboxProjectDir}/${rprojFiles[0]}`];
+		},
+	},
+
+	eclipse: {
+		description: "Eclipse IDE",
+
+		configBinds: async (realHome, sandboxHome) => {
+			const binds: BindMount[] = [];
+			const dirs: string[] = [];
+			const env: Record<string, string> = {};
+
+			// EM: Eclipse's UI is SWT/GTK, not Electron — the same class of
+			// EM: X11-needing desktop app as rstudio (see
+			// EM: architecture/decision-records/0002-rstudio-x11-access.md for
+			// EM: the verified X11-socket/XAUTHORITY mechanics this mirrors),
+			// EM: but NOT independently re-verified for Eclipse specifically:
+			// EM: this project has no host with GTK installed and a real X
+			// EM: session to confirm it against. See Design Decision 3 in
+			// EM: eclipse-preset.md.
+			if (await dirExists("/tmp/.X11-unix")) {
+				binds.push({
+					type: "ro-bind",
+					source: "/tmp/.X11-unix",
+					dest: "/tmp/.X11-unix",
+				});
+			}
+
+			if (process.env.DISPLAY) {
+				env.DISPLAY = process.env.DISPLAY;
+			}
+			if (process.env.XDG_RUNTIME_DIR) {
+				env.XDG_RUNTIME_DIR = process.env.XDG_RUNTIME_DIR;
+			}
+			if (process.env.DBUS_SESSION_BUS_ADDRESS) {
+				env.DBUS_SESSION_BUS_ADDRESS = process.env.DBUS_SESSION_BUS_ADDRESS;
+			}
+
+			const xauthPath = process.env.XAUTHORITY || `${realHome}/.Xauthority`;
+			if (await fileExists(xauthPath)) {
+				const sandboxXauthPath = `${sandboxHome}/.Xauthority`;
+				binds.push({
+					type: "ro-bind",
+					source: xauthPath,
+					dest: sandboxXauthPath,
+				});
+				env.XAUTHORITY = sandboxXauthPath;
+			}
+
+			const layout = await resolveEclipseLayout(process.cwd());
+			if (!layout) {
+				warning("eclipse install not found — workspace/config binds skipped");
+				return { binds, dirs, env };
+			}
+
+			// EM: Whole install dir, defensively, read-only — in case it
+			// EM: isn't already covered by builder.ts's own wholesale /opt
+			// EM: bind (e.g. an install extracted directly under $HOME).
+			// EM: Harmless overlap when it already is covered: a repeated
+			// EM: mount over the same path is a no-op to bwrap.
+			binds.push({
+				type: "ro-bind",
+				source: layout.hostInstallDir,
+				dest: layout.sandboxInstallDir,
+			});
+
+			// EM: The vendored plugin jar, injected into the install's own
+			// EM: (otherwise untouched, read-only) plugins/ dir — confirmed
+			// EM: this works against a read-only-mounted install: a second,
+			// EM: more specific --ro-bind after the wholesale one wins, and
+			// EM: bwrap applies binds in the order given (this one is pushed
+			// EM: after the wholesale install-dir bind above, in the same
+			// EM: array). See eclipse-preset.md's Verified Groundwork. Its
+			// EM: sha256 is re-checked in validate() (verifyEclipseJar) — see
+			// EM: assets/eclipse/PROVENANCE.md.
+			binds.push({
+				type: "ro-bind",
+				source: ECLIPSE_JAR_PATH,
+				dest: `${layout.sandboxInstallDir}/plugins/${ECLIPSE_JAR_NAME}`,
+			});
+
+			const projDir = await getProjDir(process.cwd());
+			pushIntermediateDirs(
+				dirs,
+				sandboxHome,
+				`.local/share/scoder-eclipse-workspaces/${projDir}`,
+			);
+			binds.push({
+				type: "bind",
+				source: layout.workspaceHostDir,
+				dest: layout.workspaceSandboxDir,
+			});
+
+			if (layout.reuseHostConfig) {
+				pushIntermediateDirs(
+					dirs,
+					sandboxHome,
+					layout.configHostDir.slice(realHome.length + 1),
+				);
+			} else {
+				const hashPart = layout.configHostDir.split("/").pop() ?? "";
+				pushIntermediateDirs(
+					dirs,
+					sandboxHome,
+					`.local/share/scoder-eclipse-config/${hashPart}`,
+				);
+			}
+			binds.push({
+				type: "bind",
+				source: layout.configHostDir,
+				dest: layout.configSandboxDir,
+			});
+
+			return { binds, dirs, env };
+		},
+
+		// EM: The unconditional, every-launch pre-launch step that makes the
+		// EM: dynamic workspace generation work — see Design points 4/5 in
+		// EM: eclipse-preset.md. Idempotent by construction (the plugin's own
+		// EM: project.isOpen() branch), so re-running this on every launch,
+		// EM: against the same persisted workspace, is safe.
+		prepareCommand: async (
+			hostProjectDir,
+			sandboxProjectDir,
+			dependencyDirs,
+		) => {
+			const layout = await resolveEclipseLayout(hostProjectDir);
+			if (!layout) {
+				error("eclipse install could not be located for the prepare step");
+				return null;
+			}
+
+			const args = [
+				"-nosplash",
+				"-clean",
+				...eclipseConfigArgs(layout),
+				"-application",
+				"com.seeq.eclipse.importprojects.headlessimport",
+				"-data",
+				layout.workspaceSandboxDir,
+				"-import",
+				sandboxProjectDir,
+				...dependencyDirs.flatMap((dir) => ["-import", dir]),
+			];
+
+			return { bin: layout.sandboxEclipseBin, args };
+		},
+
+		// EM: Unlike rstudio's own resolveArgs, these flags are always
+		// EM: prepended, whatever the user passed — the workspace/config
+		// EM: paths are intrinsically tied to project identity, not
+		// EM: something a user would reasonably want to override. See
+		// EM: Design point 6 in eclipse-preset.md.
+		resolveArgs: async (hostProjectDir, _sandboxProjectDir, existingArgs) => {
+			const layout = await resolveEclipseLayout(hostProjectDir);
+			if (!layout) {
+				return existingArgs;
+			}
+
+			return [
+				...eclipseConfigArgs(layout),
+				"-data",
+				layout.workspaceSandboxDir,
+				...existingArgs,
+			];
+		},
+
+		validate: async () => {
+			const exists = await commandExists("eclipse");
+			if (!exists) {
+				error("eclipse not found in PATH");
+				error("Install: https://www.eclipse.org/downloads/");
+				return false;
+			}
+
+			// EM: The vendored jar gets injected into the (otherwise
+			// EM: untouched) install's own plugins/ dir — worth checking its
+			// EM: integrity against the pinned sha256 on every run, not just
+			// EM: trusting whatever happens to be on disk at that path. See
+			// EM: assets/eclipse/PROVENANCE.md.
+			if (!(await verifyEclipseJar())) {
+				error(`vendored ${ECLIPSE_JAR_NAME} is missing or does not match`);
+				error(`its expected sha256 (${ECLIPSE_JAR_SHA256})`);
+				return false;
+			}
+
+			return true;
 		},
 	},
 };
@@ -461,15 +853,23 @@ async function piConfigBinds(
 	return { binds, dirs };
 }
 
-async function commandExists(cmd: string): Promise<boolean> {
+async function resolveCommandPath(cmd: string): Promise<string | null> {
 	try {
 		const proc = await Bun.spawn(["which", cmd], {
 			stdout: "pipe",
 			stderr: "pipe",
 		});
 		await proc.exited;
-		return proc.exitCode === 0;
+		if (proc.exitCode !== 0) {
+			return null;
+		}
+		const out = (await new Response(proc.stdout).text()).trim();
+		return out || null;
 	} catch {
-		return false;
+		return null;
 	}
+}
+
+async function commandExists(cmd: string): Promise<boolean> {
+	return (await resolveCommandPath(cmd)) !== null;
 }

@@ -395,6 +395,14 @@ export async function buildBwrapCommand(
 // back into "the IDE's own argv" and "the primary tool's own argv" without
 // a sentinel value that some real argument could theoretically collide
 // with.
+//
+// If the primary tool exits first, the `wait` below can block for a while
+// with no further output — indistinguishable from a hang unless something
+// says so. `kill -0` right after the primary tool exits checks whether the
+// IDE is still running at that moment (a benign race if it exits a moment
+// later — the message is just slightly premature, not wrong) and prints a
+// notice, styled like scoder's own info() (src/utils/logger.ts) so it
+// reads as the same kind of message, before blocking on `wait`.
 export function wrapWithIdeBackground(
 	toolBin: string,
 	toolArgs: string[],
@@ -413,6 +421,9 @@ export function wrapWithIdeBackground(
 		'"${IDE_ARGV[@]}" >"$IDE_LOG" 2>&1 & ' +
 		"IDE_PID=$!; " +
 		'"$@"; STATUS=$?; ' +
+		'if kill -0 "$IDE_PID" 2>/dev/null; then ' +
+		'echo "\x1b[0;32mscoder: Waiting for attached IDE to close...\x1b[0m" >&2; ' +
+		"fi; " +
 		'wait "$IDE_PID"; ' +
 		'exit "$STATUS"';
 	// biome-ignore-end lint/suspicious/noTemplateCurlyInString: see above

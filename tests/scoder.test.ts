@@ -2156,7 +2156,10 @@ test("ide-requires-registered-preset: --ide naming a tool with no preset fails c
 // EM: finished, and that job's own side effect (a marker file) is visible
 // EM: afterward, proving it ran to completion rather than being cut short.
 // EM: Also confirms scoder's own exit code is the primary tool's, not the
-// EM: companion's. Guarded against shadowing a real local pi/rstudio
+// EM: companion's, and that a "Waiting for attached IDE to close" notice
+// EM: is printed when the primary tool (pi, here) exits well before the
+// EM: IDE does — otherwise the wait blocks silently, indistinguishable
+// EM: from a hang. Guarded against shadowing a real local pi/rstudio
 // EM: install, same reasoning as the rstudio-x11-connectivity test above.
 const ideE2eToolsAvailable =
 	!(await commandAvailable("rstudio")) && !(await commandAvailable("pi"));
@@ -2194,7 +2197,9 @@ test.skipIf(!ideE2eToolsAvailable)(
 			const elapsedMs = Date.now() - start;
 
 			const stdout = await new Response(proc.stdout).text();
+			const stderr = await new Response(proc.stderr).text();
 			expect(stdout).toContain("pi-ran");
+			expect(stderr).toContain("Waiting for attached IDE to close");
 			expect(proc.exitCode).toBe(7);
 			expect(elapsedMs).toBeGreaterThanOrEqual(1900);
 			expect(await fileExists(`${repoDir}/ide-finished-marker`)).toBe(true);

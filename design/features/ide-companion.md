@@ -57,6 +57,14 @@ companion, following the same pattern.
   IDE before exiting with the primary tool's own exit status — so scoder
   reports the primary tool's exit code, not the IDE's, regardless of
   which one finishes first.
+- **A notice when the primary tool finishes first.** If the primary tool
+  (e.g. `pi`) exits while the IDE is still running, the `wait` above can
+  block for a while with nothing on screen — indistinguishable from a
+  hang otherwise. Right after the primary tool exits, `kill -0` checks
+  whether the IDE is still alive (a benign race if it exits moments
+  later — the message is just slightly premature, not wrong) and, if so,
+  prints `Waiting for attached IDE to close...`, styled like scoder's own
+  `info()` (`src/utils/logger.ts`), before blocking on `wait`.
 - **No change needed to signal forwarding.** Confirmed directly: a
   backgrounded job in a non-interactive `bash -c` script shares the
   script's own process group (job-control process groups only apply to an

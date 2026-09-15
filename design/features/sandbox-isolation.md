@@ -9,9 +9,10 @@ tags: [feature, sandbox, filesystem]
 ## Summary
 
 bubblewrap (bwrap) provides unprivileged filesystem namespacing. The sandbox
-has: read-only system mounts, ephemeral `/home/scoder` HOME on tmpfs,
-selective tool config/data binds from the host home, and the project working
-tree bind-mounted at its real absolute path.
+has: read-only system mounts, a fresh tmpfs `/home` populated with the real
+host `$HOME` (see `path-mirroring`), selective tool config/data binds from
+the host home, and the project working tree bind-mounted at its real
+absolute path.
 
 ## Motivation
 
@@ -45,7 +46,7 @@ The sandbox shape:
 - `/dev` — devtmpfs
 - `/proc` — procfs
 - `/tmp` — ephemeral tmpfs
-- `/home/scoder` — ephemeral tmpfs with `.config/`, `.local/`, `.cache/` subdirs
+- `$HOME` (the real host `$HOME`) — fresh per-session tmpfs with `.config/`, `.local/`, `.cache/` subdirs, populated by the binds below; nothing in it persists across sessions except what's explicitly bound in
 - `<project-path>` — bind mount of worktree or cwd
 - `<git-dir>` — bind mount of host `.git` directory (worktree mode only)
 

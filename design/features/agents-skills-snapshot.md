@@ -10,7 +10,7 @@ tags: [feature, skills, agents]
 
 `~/.agents` is copied (with symlink resolution via `cp -aL`) to a temporary
 directory under `/tmp` at session startup, then bind-mounted read-only into
-`/home/scoder/.agents`.
+`$HOME/.agents` (the real host `$HOME`).
 
 ## Motivation
 

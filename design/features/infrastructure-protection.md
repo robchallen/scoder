@@ -25,7 +25,7 @@ rules, or alter lockfiles. Read-only overlays prevent this.
 - Default protected paths are always applied
 - `.agentreadonly` (gitignore-style, one path per line, `#` comments) overrides defaults
 - An empty `.agentreadonly` removes all default protections
-- `$HOME/...` entries bind host home directories read-only into `/home/scoder/`
+- `$HOME/...` entries bind host home directories read-only into the sandbox's own `$HOME` (the real host `$HOME` — see `path-mirroring`), at the same path they already live at
 - The `.agentreadonly` file itself is always read-only — including in the
   very first session that finds it missing and writes the default: a
   missing source path gets no bind mount at all, which previously left the

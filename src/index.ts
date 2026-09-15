@@ -25,7 +25,6 @@ import {
 	commitAllChanges,
 	getCommitCount,
 	getDiffStat,
-	getProjDir,
 	hasUncommittedChanges,
 	setupGitWorktree,
 } from "./git/worktree.ts";
@@ -61,8 +60,6 @@ import {
 const GIT_DIR = ".git";
 
 import { error, info, infoBlue, setQuiet, warning } from "./utils/logger.ts";
-
-const SCODER_HOME = "/home/scoder";
 
 async function main(): Promise<void> {
 	// EM: Parse command line arguments into ScoderOptions
@@ -186,7 +183,7 @@ async function main(): Promise<void> {
 			process.exit(1);
 		}
 
-		const bindSpec = await preset.configBinds(realHome, SCODER_HOME);
+		const bindSpec = await preset.configBinds(realHome, realHome);
 		toolBinds = bindSpec.binds;
 		toolDirs = bindSpec.dirs;
 		toolEnv = bindSpec.env;
@@ -221,7 +218,7 @@ async function main(): Promise<void> {
 		// EM: preset and the IDE's — harmless to bwrap either way (a repeated
 		// EM: bind is a no-op), but a clean merge is worth it over leaving
 		// EM: literal duplicate --dir/--bind flags in the built command.
-		const ideBindSpec = await idePreset.configBinds(realHome, SCODER_HOME);
+		const ideBindSpec = await idePreset.configBinds(realHome, realHome);
 		toolBinds = dedupeBinds([...toolBinds, ...ideBindSpec.binds]);
 		toolDirs = [...new Set([...toolDirs, ...ideBindSpec.dirs])];
 		toolEnv = { ...toolEnv, ...ideBindSpec.env };
@@ -240,9 +237,12 @@ async function main(): Promise<void> {
 		process.exit(1);
 	}
 
-	// EM: ...then translate it into the sandbox namespace before it becomes the
-	// EM: exec target. The sandbox replaces /home with a tmpfs holding only
-	// EM: /home/scoder, so a host path under $HOME does not exist inside it.
+	// EM: ...then canonicalize its home spelling before it becomes the exec
+	// EM: target. The sandbox replaces /home with a tmpfs holding only the
+	// EM: real $HOME, freshly created and empty until binds populate it — a
+	// EM: host tool path spelled via a symlinked $HOME's resolved form needs
+	// EM: rewriting onto the raw $HOME spelling actually bound in. See
+	// EM: toSandboxPath in utils/paths.ts.
 	const homePrefixes = await resolveHomePrefixes();
 	const toolBin = toSandboxPath(hostToolBin, homePrefixes);
 	if (hostIdeBin) {
@@ -276,7 +276,13 @@ async function main(): Promise<void> {
 			warning("Commit or stash them first if the agent needs them");
 		}
 
-		sandboxProjDir = `${SCODER_HOME}/${worktreeInfo.projDir}`;
+		// EM: worktreeInfo.worktreeDir is already the worktree's own real,
+		// EM: unmapped path (see getWorktreesParentDir in git/worktree.ts) —
+		// EM: no remapping under $HOME, deliberately: with $HOME no longer a
+		// EM: separate synthetic namespace, mapping it under $HOME/<projDir>
+		// EM: would collide with the project's own real checkout at that same
+		// EM: path.
+		sandboxProjDir = worktreeInfo.worktreeDir;
 		protectionConfig = await setupProtection(
 			worktreeInfo.worktreeDir,
 			sandboxProjDir,
@@ -317,8 +323,11 @@ async function main(): Promise<void> {
 		}
 	} else {
 		const cwd = process.cwd();
-		const projDir = await getProjDir(cwd);
-		sandboxProjDir = `${SCODER_HOME}/${projDir}`;
+		// EM: Mirrored at its own real path, same as toolBin above — a plain
+		// EM: home-prefix concatenation would mis-map a project living
+		// EM: outside $HOME (e.g. /opt/proj) onto a fabricated $HOME/opt/proj
+		// EM: that has no relation to where it actually lives.
+		sandboxProjDir = toSandboxPath(cwd, homePrefixes);
 		protectionConfig = await setupProtection(cwd, sandboxProjDir);
 
 		const agentsSnapshotBind = await setupAgentsSnapshot();
@@ -403,8 +412,8 @@ async function main(): Promise<void> {
 	if (options.sshTarget) {
 		const sshHomeBindConflict = protectionConfig?.safeBinds.some(
 			(bind) =>
-				bind.dest === `${SCODER_HOME}/.ssh` ||
-				bind.dest.startsWith(`${SCODER_HOME}/.ssh/`),
+				bind.dest === `${realHome}/.ssh` ||
+				bind.dest.startsWith(`${realHome}/.ssh/`),
 		);
 		if (sshHomeBindConflict) {
 			error(
@@ -693,7 +702,18 @@ function checkExecTargetReachable(
 	realHome: string,
 	dryRun: boolean,
 ): boolean {
-	if (sandboxBin === hostBin || isUnderAny(sandboxBin, bindDests)) {
+	// EM: bindDests is collected from the actual built command, including the
+	// EM: wholesale /usr, /bin, /opt, etc. binds — so a system-installed tool
+	// EM: is already covered by isUnderAny alone. A `sandboxBin === hostBin`
+	// EM: shortcut used to also catch that case, back when only a path
+	// EM: outside $HOME could produce that equality (toSandboxPath rewrote
+	// EM: every $HOME path onto a separate namespace). Now that the sandbox's
+	// EM: $HOME is the real $HOME (see path-mirroring), toSandboxPath is
+	// EM: identity for $HOME paths too, so that shortcut would trivially
+	// EM: "pass" a $HOME-installed tool whose own directory was never bound —
+	// EM: exactly the unreachable case this check exists to catch. Removed;
+	// EM: isUnderAny is the only correct test now.
+	if (isUnderAny(sandboxBin, bindDests)) {
 		return true;
 	}
 

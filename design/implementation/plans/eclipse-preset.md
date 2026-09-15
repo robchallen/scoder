@@ -13,12 +13,15 @@ same pattern established for `rstudio`. The problem the `rstudio` preset
 didn't have to solve: Eclipse's workspace is not "point the IDE at a
 directory" — it's a persistent metadata store that records, per project, an
 **absolute path back to that project's real location on disk**, in a
-binary, versioned, checksummed file format. Every path scoder mirrors into
-the sandbox is either remapped (`$HOME` → `/home/scoder`) or, in worktree
+binary, versioned, checksummed file format. At the time this investigation started, every path scoder mirrored into
+the sandbox was either remapped (`$HOME` → `/home/scoder`) or, in worktree
 mode, literally a different absolute path than where the user's own
-checkout lives. A workspace created or last used outside the sandbox would
+checkout lived. A workspace created or last used outside the sandbox would
 have every project reference pointing at a path that doesn't exist inside
-it.
+it. (The `$HOME` remapping itself was later retired repo-wide — see Design
+Decision 7 below — but the worktree-mode gap, and the general "a workspace
+references other projects living elsewhere on disk" gap, remain: see
+Design point 5 and Decision 7.)
 
 The user's own instinct — generate the workspace dynamically, at launch,
 rather than reuse a persistent one — is confirmed correct by everything
@@ -45,11 +48,12 @@ only sound way to update it is to have Eclipse's own code do it.
 
 **A. Reuse the user's real, persistent workspace as-is.** Rejected
 outright — every project reference in it points at a real host path, and
-scoder never binds the project at that path (worktree mode uses
-`/tmp/scoder/<projDir>` on the host and `/home/scoder/<projDir>` in the
-sandbox; direct mode binds `cwd` at `/home/scoder/<projDir>`, never at the
-real host path either). Every reference would be stale on the very first
-launch, regardless of mode.
+at the time, scoder never bound the project at that path (worktree mode
+used `/tmp/scoder/<projDir>` on the host and `/home/scoder/<projDir>` in
+the sandbox; direct mode bound `cwd` at `/home/scoder/<projDir>`, never at
+the real host path either — see Design Decision 7 for how the `$HOME`
+rename later changed this for direct mode). Every reference would be
+stale on the very first launch, regardless of mode.
 
 **B. Hand-construct `.location` (and the rest of workspace metadata)
 ourselves.** Rejected — see above. Binary, checksummed, versioned; a
@@ -140,9 +144,9 @@ below), not independently re-verified here for the same reason.
    subdirectory matters or reconstruct Equinox's own resolution logic:
    Eclipse's own default resolution then finds whatever it would
    natively, with **no explicit `-configuration` flag needed at all**.
-   Preferences should be picked up automatically this way; not yet
-   independently re-verified end-to-end against a real interactive
-   Eclipse session (no GTK host available in this investigation).
+   Confirmed against a real interactive Eclipse session that preferences
+   and plugin preference pages are picked up automatically this way (see
+   Design Decisions 6 and 7 for the fix this needed along the way).
 3. **A persistent, project-scoped workspace directory**, the same shape
    as `rstudio`'s own `~/.config/rstudio`/`~/.local/share/rstudio`:
    `~/.local/share/scoder-eclipse-workspaces/<projDir>` on the host,
@@ -153,9 +157,9 @@ below), not independently re-verified here for the same reason.
    — it is **not** what makes dependency-project import work (see point 5
    below); that part works identically whether the workspace persists or
    not, since the import args are passed on every launch regardless.
-4. **No separate pre-launch stage — `-importProject`/`-importPreferences`
-   go straight to the one, normal, interactive Eclipse launch**, via
-   `resolveArgs`, not a distinct `prepareCommand` step. An earlier version
+4. **No separate pre-launch stage — `-importProject` goes straight to the
+   one, normal, interactive Eclipse launch**, via `resolveArgs`, not a
+   distinct `prepareCommand` step. An earlier version
    of this preset ran the plugin's own *headless* application as a
    separate stage first, landing you in the IDE only afterward — dropped
    once the plugin's own README confirmed its import flags work directly
@@ -173,18 +177,22 @@ below), not independently re-verified here for the same reason.
    shot, and that re-running against an already-imported project refreshes
    rather than re-imports (idempotent by the plugin's own construction,
    not scoder's).
-6. **An optional, project-supplied `.eclipse.epf`** (Eclipse preferences,
-   exported natively via `File > Export > Preferences`) at the root of
-   the scoder project directory: if present, passed to `-importPreferences`
-   at its own, ordinary in-project path — **deliberately not moved to a
-   separate, read-only sandbox location.** Read-write is the actually
-   -wanted behaviour here, not just an accepted gap: the whole point of
-   importing it fresh on every launch is that edits made to it inside the
-   sandbox take effect the next session, the same as any other project
-   file. (Making it read-only in place would need a bind layered *after*
-   the main project bind — the way `.agentreadonly`'s own protected paths
-   work — which a preset's `configBinds` has no way to do; moot here
-   anyway, since read-write is correct.)
+6. **Instance-scope preferences are seeded once, from the user's own real
+   workspace, by copying `.settings/` directly — not by importing an
+   exported `.eclipse.epf`.** `$HOME/.eclipse` (point 2) only covers
+   configuration scope; the JDT/formatter/editor preferences a person
+   actually thinks of as "my settings" are instance scope, stored per
+   workspace, and scoder's own persisted workspace (point 3) has never
+   been opened before. The first time it's created, `resolveEclipseLayout`
+   copies every `.metadata/.plugins/*/.settings/` directory from the most
+   recently used real workspace (found via `RECENT_WORKSPACES` in
+   `org.eclipse.ui.ide.prefs`, no other logic, excluding scoder's own
+   managed workspaces to avoid seeding from a previous scoder session
+   instead of a real one). An earlier version used `-importPreferences`
+   against a project-root `.eclipse.epf` export instead — replaced after
+   two problems found in practice: it needs a full GUI restart, and a
+   preferences export doesn't capture default values, leaving some
+   settings blank on import. See Design Decision 8.
 7. **The interactive Eclipse launch is pointed at the persisted
    workspace** via `-data <persisted-workspace>` — always supplied by the
    preset itself (not merely a default-when-no-args-given the way
@@ -293,6 +301,128 @@ in `src/types.ts`), exposed as its own distinct list via
 `ProtectionConfig.dependencyDirs` (`src/git/protection.ts`) rather than
 mixed into `safeBinds` alongside unrelated binds.
 
+### 6. `pushDualHomeBind`: a real bug real-world testing caught, headless testing couldn't
+
+Real-world use of the interactive launch (this investigation's headless
+testing never exercised this) surfaced a bug in a place none of the six
+vendored-plugin bugs above touched: `~/.eclipse/<hash>`'s own p2 profile
+registry stores its bundle pool location as a literal, absolute host path
+(`file:/home/<user>/.eclipse/<hash>/...`), written by *prior native Eclipse
+use*, long before scoder ever mounted the directory. Under the
+then-current `$HOME` → `/home/scoder` remapping, that literal path didn't
+exist inside the sandbox even though the directory itself was correctly
+bound at its mapped location — Eclipse listed a plugin as "installed" (the
+profile metadata was there) but could never find its bundle jar (the
+profile's own recorded path to it wasn't reachable). Reported symptom:
+plugins load, but their preference pages are missing and project import
+fails.
+
+Fixed at the time by `pushDualHomeBind` (`src/tools/presets.ts`, since
+removed — see Decision 7): bind the directory at BOTH its sandbox-mapped
+path (so Eclipse's own `$HOME`-based resolution finds it) AND its own
+real, unmapped path (so the absolute paths already baked into its content
+also resolve) — a deliberate relaxation of the "hide the real host
+identity inside the sandbox" design, the same class of trade-off as
+[0002-rstudio-x11-access](/architecture/decision-records/0002-rstudio-x11-access.md).
+
+### 7. The repo-wide `$HOME` rename retired `pushDualHomeBind` entirely
+
+`pushDualHomeBind` fixed a real bug, but it was also the clearest evidence
+yet of a broader problem, one this preset's own investigation had already
+named without fully generalizing it: any value baked into a file that's
+read both natively and inside the sandbox can only be correct in one of
+the two spellings of `$HOME`, since scoder deliberately never exposed the
+real one inside the sandbox. Real-world testing found the same class of
+problem again even with the dual bind in place — `-importPreferences`
+itself still threw errors with some preference settings left unset
+afterward, not fully explained by the profile-registry issue alone.
+
+The decision was made to retire the `$HOME` → `/home/scoder` remapping
+across all of scoder, not just this preset: the sandbox's own `$HOME` is
+now the real host `$HOME`, bound at the same path on both sides (see
+`design/features/path-mirroring.md` for the repo-wide change). Once the
+mapped and raw paths became the same string, `pushDualHomeBind`'s second
+bind was a redundant no-op binding the same path to itself twice, and it
+was removed — a single ordinary bind (`configBinds` in
+`src/tools/presets.ts`) now satisfies both needs at once, for both the
+Eclipse install directory (Design point 1) and `$HOME/.eclipse` (Design
+point 2).
+
+Direct mode benefits automatically from this — a project already living
+under `$HOME` now sits at the exact same path inside the sandbox as out.
+Worktree mode does not benefit the same way: a worktree session still
+runs from a distinct, sibling location under
+`$HOME/.../worktrees/<projDir>/scoder` (see `git-worktree-isolation`),
+deliberately not the project's own real path, to avoid colliding with the
+user's real checkout now that `$HOME` isn't a separate synthetic
+namespace scoder could safely alias into. The worktree-mode gap named in
+the Goal section above is therefore still open.
+
+### 8. Instance-scope preferences: seed `.settings/` directly, not `-importPreferences`/`.eclipse.epf`
+
+Real-world use of `-importPreferences <path>.eclipse.epf` (Design point 6,
+Open Questions) surfaced two problems past the point of being worth
+chasing further: it requires a full GUI restart to actually take effect —
+the plugin's own docs say so, and it was confirmed directly — and,
+separately, a preferences export does not capture default values, so
+importing one into a fresh workspace leaves any preference the user never
+explicitly changed from its default simply unset, rather than at its
+correct default value. Both problems are inherent to the export/import
+round-trip itself, not implementation bugs in the plugin — no amount of
+further debugging fixes them.
+
+The root cause underneath both is that `$HOME/.eclipse` was never the
+right place to look for most of what a person calls "my Eclipse
+settings" in the first place. Eclipse preferences split into scopes:
+*configuration* scope (small, install-level — `$HOME/.eclipse` is
+genuinely where this lives) and *instance* scope (JDT compiler/formatter,
+editor behaviour, save actions, most everything else) — stored **per
+workspace**, at `<workspace>/.metadata/.plugins/<plugin-id>/.settings/`.
+Binding `$HOME/.eclipse` whole (Design point 2) was never going to
+populate instance-scope preferences, because that data was never stored
+there natively either — it lives in whichever workspace directory the
+user actually works in day to day, which scoder's own persisted,
+project-scoped workspace (Design point 3) is not: it's a workspace that
+has never been opened before.
+
+Fixed by seeding it directly instead of importing an export:
+`resolveEclipseLayout` (`src/tools/presets.ts`), the first time a
+project's scoder-managed workspace directory is created (never on a
+later launch — this must not clobber preference edits made inside the
+sandbox afterward), copies every `.metadata/.plugins/*/.settings/`
+directory wholesale from the user's own real workspace into it. A plain
+file copy sidesteps both problems above at once: no restart is needed
+(the files are just there before Eclipse ever starts), and normal
+preference resolution is preserved exactly — an unset key still falls
+through to `DefaultScope` the same way it would in the source workspace,
+since nothing was exported or re-imported at all.
+
+Finding "the user's own real workspace" reuses a mechanism Eclipse
+already has: `RECENT_WORKSPACES`, a preference in
+`org.eclipse.ui.ide.prefs` at *configuration* scope (so it's inside the
+same `$HOME/.eclipse`-or-install-dir tree already searched for other
+reasons — see `findEclipseUiIdePrefs`), listing every workspace Eclipse
+has opened, most recent first. Deliberately kept dumb on purpose: the
+most recently used entry, full stop — no attempt to match which
+workspace actually contains the current project (e.g. searching each
+candidate's own `.../.projects/<name>/.location`), which the earlier
+six-bug and `pushDualHomeBind` sagas above both argue against attempting
+again. One necessary exception, not really "more logic" so much as a
+correctness guard: `$HOME/.eclipse` is bound read-write at its own real
+path (Design point 2, post-Decision-7), so Eclipse running *inside* a
+previous scoder session already wrote its own workspace to the front of
+this very same `RECENT_WORKSPACES` list — entries under scoder's own
+`~/.local/share/scoder-eclipse-workspaces/` are skipped, or seeding a
+second project would silently copy from a first project's scoder
+workspace instead of the user's actual one, drifting further from it
+with every new project seeded.
+
+`-importPreferences` and `.eclipse.epf` handling were removed from
+`resolveArgs` entirely, not merely left dormant — nothing calls it, and
+scoder no longer looks at `.eclipse.epf` at all. A user who still wants
+to hand-import a specific preferences export can do so themselves,
+natively, the normal Eclipse way; it's just an ordinary project file now.
+
 ## Changes Required
 
 ### `src/types.ts`
@@ -325,19 +455,22 @@ The `eclipse` preset:
   any symlinks) and binds it read-write if under `$HOME`, read-only
   otherwise; binds `$HOME/.eclipse` whole, read-write, if it exists
   (Decision 3); `ensureDir`+binds the persisted workspace directory
-  (Design point 3). Does **not** touch `.eclipse.epf` at all — it's
-  already part of the regular, read-write project bind (Design point 6).
+  (Design point 3). Does **not** touch `.eclipse.epf` at all — scoder no
+  longer looks at it (Decision 8); it's just an ordinary project file now.
+- `resolveEclipseLayout`: also where instance-scope preferences get
+  seeded — `findMostRecentEclipseWorkspace`/`seedWorkspaceSettingsFromHost`,
+  called the first time the persisted workspace directory is created
+  (Decision 8).
 - `resolveArgs`: the interactive launch always begins with `-data
   <persisted workspace>`, `-importProject <sandboxProjectDir>`, one more
-  `-importProject` per `dependencyDirs` entry, and (only when
-  `.eclipse.epf` exists at the project root) `-importPreferences
-  <sandboxProjectDir>/.eclipse.epf` — with any user-supplied arguments
-  appended after all of that.
+  `-importProject` per `dependencyDirs` entry — with any user-supplied
+  arguments appended after all of that. No `-importPreferences` (Decision
+  8).
 - `validate`: `commandExists("eclipse")` — same shape as every other
   preset. Does **not** verify the plugin itself is installed; a missing
   plugin surfaces as a loud, native Eclipse error (an unresolved
-  `-importProject`/`-importPreferences` argument, or "application not
-  found" if something explicitly requests the headless application), not
+  `-importProject` argument, or "application not found" if something
+  explicitly requests the headless application), not
   a silent one.
 
 ## History: the vendored-plugin approach (superseded)
@@ -425,11 +558,22 @@ about it prompted rereading the plugin's own docs more carefully.
   (`apt`/`.deb`) install, which historically sometimes uses an indirect
   launcher script rather than a direct symlink to the real binary.
 - **GTK/D-Bus behavior for the actual interactive GUI phase** (Decision
-  2), whether `-importProject`/`-importPreferences` behave on the
-  interactive launch exactly as the plugin's README describes, and
-  whether preferences are genuinely picked up correctly from a bound-in
-  `$HOME/.eclipse` in a real interactive session — all need a host with
-  GTK installed to close out; the user intends to test this directly.
+  2) — since confirmed working against a real interactive session:
+  `-importProject` correctly creates and populates the workspace, and
+  (with the `pushDualHomeBind`/`$HOME`-rename fixes above)
+  `$HOME/.eclipse` preferences and plugin preference pages are picked up.
+  `-importPreferences`/`.eclipse.epf` itself throwing errors with some
+  settings left unset (previously listed here as open) is no longer being
+  chased — Design Decision 8 replaces that mechanism with a direct
+  `.settings/` copy instead of debugging the import path further, since
+  the problem turned out to be inherent to the export/import round-trip,
+  not something more debugging would fix.
+- **The `RECENT_WORKSPACES`/`.settings`-copy seeding mechanism** (Design
+  Decision 8) is unverified against a real Eclipse install, same gap as
+  everything else in this section: whether `org.eclipse.ui.ide.prefs`
+  and `RECENT_WORKSPACES` are laid out exactly as expected, and whether
+  copying `.settings/` wholesale actually produces a workspace that opens
+  cleanly with the user's real preferences applied.
 
 [IMPACTS](/src/types.ts)
 [IMPACTS](/src/git/protection.ts)

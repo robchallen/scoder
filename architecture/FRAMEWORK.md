@@ -42,14 +42,14 @@ src/
 │   └── presets.ts        # Per-tool config binds and validation for opencode/claude/copilot/pi/rstudio
 ├── sandbox/
 │   ├── builder.ts        # bwrap command construction: system mounts, binds, env vars, pasta; --ide companion background/foreground wrapper
-│   ├── identity.ts       # passwd/group overlay so getpwuid() resolves to /home/scoder
+│   ├── identity.ts       # passwd/group overlay so getpwuid() resolves to the real user/home
 │   ├── launch.ts         # two-stage launch: bwrap blocks, pasta attaches, tool releases; forwards terminal signals (SIGWINCH/SIGINT/SIGQUIT/SIGTSTP) into the sandbox; live-reload watcher for .agentports
 │   ├── pasta.ts          # network sidecar: attach to the sandbox netns, teardown
 │   └── ssh.ts            # --allow-ssh: ControlMaster tunnel sidecar, opened and torn down outside the sandbox
 └── utils/
     ├── logger.ts          # Coloured output: info, infoBlue, warning, error
     ├── checks.ts          # System checks: bwrap userns, command existence, LLM port auto-detect probe
-    └── paths.ts           # Host ↔ sandbox path translation (home remapping)
+    └── paths.ts           # Host ↔ sandbox path translation (home spelling canonicalization)
 
 tests/
 ├── scoder.test.ts        # Integration test suite (93 tests as of v2.5.0)
@@ -67,7 +67,7 @@ tests/
 5. **Special modes** — `--configure-apparmor`, `--install-dependencies` exit early
 6. **Tool selection** — resolve preset, validate tool exists, get config binds, translate the host tool path into the sandbox namespace; if `--ide NAME` was given, the same for NAME's own preset, with binds/dirs/env merged (deduplicated) into the one sandbox
 7. **If worktree mode:**
-   - Create/reuse/prune git worktree at `/tmp/scoder/<project-path>`
+   - Create/reuse/prune git worktree at `$HOME/<dirname(projDir)>/worktrees/<projDir>/scoder`
    - Check for stale worktree directories (reboot recovery)
 8. **Infrastructure protection:**
    - Parse `.agentreadonly` for protected paths and `$HOME/` binds

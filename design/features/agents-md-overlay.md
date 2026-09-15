@@ -23,7 +23,13 @@ practice, via a locally hosted MCP server running outside the sandbox: the
 agent had no way to know the real host path, and an earlier, vaguer wording
 ("always use paths relative to $HOME") was misread as "always use
 `/home/scoder/...`", including for that external server's own filesystem,
-where `/home/scoder/...` does not exist.
+where `/home/scoder/...` did not exist. That specific confusion is now
+structurally impossible: since the $HOME rename (see `path-mirroring`), the
+sandbox's own `$HOME` *is* the real host `$HOME` — there is no second
+spelling to misread the advice into. The overlay still states `$HOME`
+literally, since the agent has no other way to learn it, but the guidance is
+now simply "paths under `$HOME` resolve the same way inside and outside the
+sandbox," not a caution about two different namespaces.
 
 ## Implementation
 

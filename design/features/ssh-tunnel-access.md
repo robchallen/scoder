@@ -36,8 +36,9 @@ opening the connection before the agent ever starts, keeps the choice of
   against the master exiting first.
 - Only the resulting unix control socket, and a scoder-generated (not the
   host's) `~/.ssh/config`, are bound into the sandbox:
-  - `ro-bind` the socket's directory at `/home/scoder/.ssh-control`.
-  - `ro-bind` the generated config at `/home/scoder/.ssh/config`.
+  - `ro-bind` the socket's directory at `$HOME/.ssh-control`.
+  - `ro-bind` the generated config at `$HOME/.ssh/config` (the real host
+    `$HOME` — see `path-mirroring`).
 - The generated config pins both host *and* user via a token-templated
   `ControlPath` (`%r@%h:%p`) inside a `Host <host>` block — not a literal
   path, not `Host *`. A bare `ssh <host> [cmd]` resolves to the one bound
@@ -61,8 +62,8 @@ opening the connection before the agent ever starts, keeps the choice of
   server), since it makes the flag a full, unsandboxed shell back onto the
   host.
 - `.agentreadonly` binding `$HOME/.ssh` and `--allow-ssh` together are
-  refused explicitly, since both would try to populate `/home/scoder/.ssh`
-  and bind ordering would make whichever applies last win silently.
+  refused explicitly, since both would try to populate `$HOME/.ssh` and bind
+  ordering would make whichever applies last win silently.
 
 [HAS_FEATURE](./sandbox-isolation.md)
 [HAS_FEATURE](./network-isolation.md)

@@ -19,7 +19,7 @@ tags: [standards, coding]
 | Interface/Type | PascalCase | `ToolPreset`, `BindMount`, `GitWorktreeInfo` |
 | Function | camelCase | `setupGitWorktree`, `checkBwrapUserns` |
 | Variable | camelCase | `worktreeInfo`, `sandboxProjDir` |
-| Constant | SCREAMING_SNAKE_CASE | `SCODER_HOME`, `DEFAULT_PROTECTED` |
+| Constant | SCREAMING_SNAKE_CASE | `SANDBOX_FALLBACK_CONNECT_TIMEOUT_S`, `DEFAULT_PROTECTED` |
 
 ## File Organisation
 

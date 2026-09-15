@@ -1,9 +1,14 @@
 import { realpath } from "node:fs/promises";
 
 // EM: Path translation between the host and sandbox namespaces
-// EM: Implements the home-remapping half of the path-mirroring feature
-
-const SCODER_HOME = "/home/scoder";
+// EM: Implements the home-canonicalization half of the path-mirroring feature
+//
+// EM: The sandbox no longer remaps $HOME onto a separate synthetic path — its
+// EM: own $HOME is the real host $HOME, bound at the same path on both sides.
+// EM: toSandboxPath's job is now narrower: collapse the different spellings a
+// EM: host path can have for "home" (the raw $HOME value, and its
+// EM: symlink-resolved form when they differ) onto the one spelling that is
+// EM: actually bound into the sandbox.
 
 function stripTrailingSlashes(path: string): string {
 	return path.replace(/\/+$/, "");
@@ -39,14 +44,17 @@ export async function resolveHomePrefixes(): Promise<string[]> {
 // ### toSandboxPath
 // Map a host path into the sandbox namespace.
 //
-// Paths outside the home directory are mirrored at their real location
-// (see path-mirroring) and returned unchanged. Paths under the home
-// directory are rewritten onto /home/scoder, because the sandbox replaces
-// /home with a tmpfs containing only the ephemeral scoder home.
+// Every path is mirrored at its own real location (see path-mirroring) —
+// including home paths, now that the sandbox's $HOME is the real host
+// $HOME rather than a separate synthetic one. The only rewriting left is
+// canonicalization: a path spelled via a symlinked $HOME's resolved form
+// is rewritten onto the raw $HOME spelling, since that's the one actually
+// bound into the sandbox.
 export function toSandboxPath(
 	hostPath: string,
 	realHomes: string | string[],
 ): string {
+	const canonicalHome = getRealHome();
 	const homes = (Array.isArray(realHomes) ? realHomes : [realHomes])
 		.map(stripTrailingSlashes)
 		.filter((home) => home.length > 0)
@@ -55,10 +63,10 @@ export function toSandboxPath(
 
 	for (const home of homes) {
 		if (hostPath === home) {
-			return SCODER_HOME;
+			return canonicalHome;
 		}
 		if (hostPath.startsWith(`${home}/`)) {
-			return `${SCODER_HOME}${hostPath.slice(home.length)}`;
+			return `${canonicalHome}${hostPath.slice(home.length)}`;
 		}
 	}
 

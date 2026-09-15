@@ -1,12 +1,21 @@
+import { mkdir } from "node:fs/promises";
 import type { ProtectionConfig } from "../git/protection.ts";
-import { getGitCommonDir, isInGitRepo } from "../git/worktree.ts";
+import {
+	getGitCommonDir,
+	getProjDir,
+	getWorktreesParentDir,
+	isInGitRepo,
+} from "../git/worktree.ts";
 import type { BindMount, GitWorktreeInfo, ScoderOptions } from "../types.ts";
-import { getSandboxGid, getSandboxUid } from "./identity.ts";
+import { getRealHome } from "../utils/paths.ts";
+import {
+	getSandboxGid,
+	getSandboxUid,
+	getSandboxUsername,
+} from "./identity.ts";
 
 // EM: Implements sandbox-isolation, network-isolation, path-mirroring, and host-tool-binding features
 // EM: Constructs bwrap command with system mounts, binds, env vars, and pasta networking
-
-const SCODER_HOME = "/home/scoder";
 
 export interface SandboxConfig {
 	worktreeInfo: GitWorktreeInfo | null;
@@ -39,6 +48,7 @@ export async function buildBwrapCommand(
 	const {
 		worktreeInfo,
 		sandboxProjDir,
+		options,
 		toolBinds,
 		toolDirs,
 		toolBin,
@@ -49,7 +59,8 @@ export async function buildBwrapCommand(
 		protectionConfig,
 	} = config;
 
-	const realHome = process.env.HOME || "/home/user";
+	const realHome = getRealHome();
+	const sandboxHome = realHome;
 	const uid = getSandboxUid();
 	const gid = getSandboxGid();
 
@@ -161,15 +172,15 @@ export async function buildBwrapCommand(
 		"--tmpfs",
 		"/home",
 		"--dir",
-		SCODER_HOME,
+		sandboxHome,
 		"--dir",
-		`${SCODER_HOME}/.local`,
+		`${sandboxHome}/.local`,
 		"--dir",
-		`${SCODER_HOME}/.local/share`,
+		`${sandboxHome}/.local/share`,
 		"--dir",
-		`${SCODER_HOME}/.config`,
+		`${sandboxHome}/.config`,
 		"--dir",
-		`${SCODER_HOME}/.cache`,
+		`${sandboxHome}/.cache`,
 	);
 
 	cmd.push("--dir", sandboxProjDir);
@@ -182,10 +193,32 @@ export async function buildBwrapCommand(
 		cmd.push(`--${bind.type}`, bind.source, bind.dest);
 	}
 
-	const extraBinds = await buildExtraBinds(realHome, SCODER_HOME);
+	const extraBinds = await buildExtraBinds(realHome, sandboxHome);
 	for (const bind of extraBinds) {
 		cmd.push(`--${bind.type}`, bind.source, bind.dest);
 	}
+
+	// EM: Ensured and bound writable on every session, worktree or direct mode
+	// EM: alike — preparatory infrastructure for explicitly supporting multiple
+	// EM: named worktrees from within a direct-mode session in future. Pushed
+	// EM: before the project-dir bind below: in worktree mode that bind's
+	// EM: destination nests inside this one
+	// EM: (.../worktrees/<projDir>/scoder), and bind mounts applied later at
+	// EM: an ancestor path hide whatever was already mounted at a path nested
+	// EM: beneath it — confirmed directly while building the eclipse preset
+	// EM: (see design/implementation/plans/eclipse-preset.md) — so the
+	// EM: broader parent bind must come first.
+	const worktreesProjDir =
+		worktreeInfo?.projDir ?? (await getProjDir(process.cwd()));
+	const worktreesParentDir = getWorktreesParentDir(realHome, worktreesProjDir);
+	// EM: --dry-run must stay side-effect free, same as getAgentPortsBind's
+	// EM: auto-detect-and-append step and describeSshAccess (see their own
+	// EM: comments) — skip the real mkdir there, but still push the bind so
+	// EM: the printed preview shows what a real launch would do.
+	if (!options.dryRun) {
+		await mkdir(worktreesParentDir, { recursive: true });
+	}
+	cmd.push("--bind", worktreesParentDir, worktreesParentDir);
 
 	if (worktreeInfo) {
 		// EM: Bind worktree at real absolute path for git cross-references (path-mirroring)
@@ -216,7 +249,8 @@ export async function buildBwrapCommand(
 		}
 	}
 
-	const sandboxPath = await buildSandboxPath(sandboxProjDir, SCODER_HOME);
+	const sandboxPath = await buildSandboxPath(sandboxProjDir, sandboxHome);
+	const sandboxUsername = getSandboxUsername();
 
 	cmd.push(
 		"--chdir",
@@ -229,16 +263,16 @@ export async function buildBwrapCommand(
 		sandboxPath,
 		"--setenv",
 		"HOME",
-		SCODER_HOME,
+		sandboxHome,
 		"--setenv",
 		"SCODER_SANDBOX",
 		"1",
 		"--setenv",
 		"USER",
-		"scoder",
+		sandboxUsername,
 		"--setenv",
 		"LOGNAME",
-		"scoder",
+		sandboxUsername,
 		"--setenv",
 		"TERM",
 		process.env.TERM || "xterm-256color",

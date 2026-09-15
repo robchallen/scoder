@@ -8,11 +8,11 @@ tags: [feature, tools, configuration]
 
 ## Summary
 
-Selective read-only bind mounts from the host home directory into
-`/home/scoder` for development tools and configuration that the sandboxed
-process needs: `.gitconfig`, `.local/bin`, `.cargo/bin`, `.rustup`, mise
-shims and config, R packages and profile, `.m2` (Maven), `.npmrc`,
-`.pypirc`.
+Selective read-only bind mounts from the host home directory into the
+sandbox's own `$HOME` (the real host `$HOME` — see `path-mirroring`) for
+development tools and configuration that the sandboxed process needs:
+`.gitconfig`, `.local/bin`, `.cargo/bin`, `.rustup`, mise shims and config,
+R packages and profile, `.m2` (Maven), `.npmrc`, `.pypirc`.
 
 ## Motivation
 

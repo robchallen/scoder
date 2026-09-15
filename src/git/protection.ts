@@ -32,23 +32,30 @@ const DEFAULT_PROTECTED = [
 	"mise.toml",
 ];
 
-const RESERVED_SANDBOX_PATHS = [
-	"/home/scoder/.agents",
-	"/home/scoder/.cache",
-	"/home/scoder/.cargo",
-	"/home/scoder/.claude",
-	"/home/scoder/.config",
-	"/home/scoder/.copilot",
-	"/home/scoder/.gitconfig",
-	"/home/scoder/.local",
-	"/home/scoder/.local/share/mise",
-	"/home/scoder/.m2",
-	"/home/scoder/.npmrc",
-	"/home/scoder/.pypirc",
-	"/home/scoder/.Rprofile",
-	"/home/scoder/.rustup",
-	"/home/scoder/R",
-];
+// Sandbox destinations a .agentreadonly $HOME/... entry must not collide
+// with — every fixed infra bind scoder itself already places under the
+// sandbox home. Parameterized by realHome, not a fixed literal: the
+// sandbox's own $HOME is the real host $HOME (see path-mirroring), which
+// varies by user and by test.
+function reservedSandboxPaths(realHome: string): string[] {
+	return [
+		`${realHome}/.agents`,
+		`${realHome}/.cache`,
+		`${realHome}/.cargo`,
+		`${realHome}/.claude`,
+		`${realHome}/.config`,
+		`${realHome}/.copilot`,
+		`${realHome}/.gitconfig`,
+		`${realHome}/.local`,
+		`${realHome}/.local/share/mise`,
+		`${realHome}/.m2`,
+		`${realHome}/.npmrc`,
+		`${realHome}/.pypirc`,
+		`${realHome}/.Rprofile`,
+		`${realHome}/.rustup`,
+		`${realHome}/R`,
+	];
+}
 
 // Sandbox destinations that are always bind-mounted, used to resolve symlinks
 // in ~/.local/bin at snapshot time. If a symlink target maps under one of these
@@ -59,22 +66,37 @@ const RESERVED_SANDBOX_PATHS = [
 // prefix that is NOT actually bound makes the check claim resolvability it
 // cannot deliver, producing a dangling symlink inside the sandbox — which is
 // why the entries are the precise bound paths rather than their parents.
-// Preset-specific destinations are dynamic and passed in separately.
-const SANDBOX_MOUNT_PREFIXES = [
-	"/tmp/scoder/", // worktree
-	"/home/scoder/.local/bin",
-	"/home/scoder/.local/share/mise",
-	"/home/scoder/.config/mise",
-	"/home/scoder/.config/gh",
-	"/home/scoder/.cargo/bin",
-	"/home/scoder/.rustup",
-	"/home/scoder/R",
-	"/home/scoder/.Rprofile",
-	"/home/scoder/.m2",
-	"/home/scoder/.npmrc",
-	"/home/scoder/.pypirc",
-	"/home/scoder/.gitconfig",
-];
+// Preset-specific destinations are dynamic and passed in separately. The
+// worktree tree itself isn't listed here — isSandboxResolvable short-circuits
+// on it directly via isWorktreeMountPath, since (unlike this fixed list) its
+// location is user/project-dependent.
+function sandboxMountPrefixes(realHome: string): string[] {
+	return [
+		`${realHome}/.local/bin`,
+		`${realHome}/.local/share/mise`,
+		`${realHome}/.config/mise`,
+		`${realHome}/.config/gh`,
+		`${realHome}/.cargo/bin`,
+		`${realHome}/.rustup`,
+		`${realHome}/R`,
+		`${realHome}/.Rprofile`,
+		`${realHome}/.m2`,
+		`${realHome}/.npmrc`,
+		`${realHome}/.pypirc`,
+		`${realHome}/.gitconfig`,
+	];
+}
+
+// ### isWorktreeMountPath
+// True if `path` sits under $HOME/**/worktrees/**, the fixed shape every
+// scoder worktree lives under (see getWorktreesParentDir in
+// src/git/worktree.ts). A heuristic, not an exact membership check against
+// the current session's own worktree — used only where that's the right
+// trade-off: symlink-resolvability guessing in isSandboxResolvable, and the
+// AGENTS.md overlay's "this is a worktree" note.
+function isWorktreeMountPath(path: string, realHome: string): boolean {
+	return path.startsWith(`${realHome}/`) && path.includes("/worktrees/");
+}
 
 // Ceiling on copying an unresolvable symlink target into the snapshot. Some
 // tools ship hundreds of megabytes in a single binary (Claude Code's native
@@ -185,7 +207,7 @@ async function registerAgentreadonlyHomeBind(
 	dirs: string[],
 	dependencyDirs: string[],
 ): Promise<void> {
-	const realHome = process.env.HOME || "/home/user";
+	const realHome = getRealHome();
 	const relativePath = homePathExpr.slice("$HOME/".length);
 	const sourcePath = `${realHome}/${relativePath}`;
 
@@ -203,9 +225,9 @@ async function registerAgentreadonlyHomeBind(
 		process.exit(1);
 	}
 
-	const sandboxDest = `/home/scoder/${relativePath}`;
+	const sandboxDest = `${realHome}/${relativePath}`;
 
-	for (const reservedPath of RESERVED_SANDBOX_PATHS) {
+	for (const reservedPath of reservedSandboxPaths(realHome)) {
 		if (pathsOverlap(sandboxDest, reservedPath)) {
 			error(
 				`.agentreadonly HOME bind overlaps reserved sandbox path: ${homePathExpr}`,
@@ -214,11 +236,10 @@ async function registerAgentreadonlyHomeBind(
 		}
 	}
 
-	const SCODER_HOME = "/home/scoder";
-	if (sandboxDest !== SCODER_HOME) {
-		const rel = sandboxDest.slice(`${SCODER_HOME}/`.length);
+	if (sandboxDest !== realHome) {
+		const rel = sandboxDest.slice(`${realHome}/`.length);
 		const parts = rel.split("/");
-		let currentPath = SCODER_HOME;
+		let currentPath = realHome;
 		for (const part of parts) {
 			currentPath = `${currentPath}/${part}`;
 			if (!dirs.includes(currentPath)) {
@@ -248,7 +269,7 @@ const SCRATCH_LINK_NAME = "scratch";
 
 // Real host paths mirroring buildExtraBinds in src/sandbox/builder.ts —
 // what setupScratchLink treats as "already read-only furniture". Must be
-// kept in sync with that function, same caveat SANDBOX_MOUNT_PREFIXES above
+// kept in sync with that function, same caveat sandboxMountPrefixes above
 // already carries for a different check.
 function furniturePaths(realHome: string): string[] {
 	return [
@@ -292,7 +313,7 @@ export async function setupScratchLink(
 		return; // An unrelated file/dir named "scratch" — leave it alone.
 	}
 
-	const realHome = process.env.HOME || "/home/user";
+	const realHome = getRealHome();
 	const target = await resolveScratchTarget(linkPath);
 
 	if (target !== realHome && !target.startsWith(`${realHome}/`)) {
@@ -577,19 +598,16 @@ async function _setupAgentsMdOverlay(
 This section is injected by scoder inside the sandbox and is not part of the repository.
 
 - You are running inside a scoder sandbox.
-- \`/home/scoder\` is an ephemeral sandbox home — nothing here persists between sessions, and it is not a real host path.
-- The host's real home directory is \`${realHome}\`.
-- Wherever possible use relative paths to reference files that make no assumption on the home directory.
+- Your \`$HOME\` (\`${realHome}\`) is the real host home directory — paths under it resolve the same way inside and outside the sandbox.
 - \`localhost\` http MCP servers may be running outside the sandbox and operate on real host filesystem.
 - \`stdio\` MCP servers run inside the sandbox and use sandbox paths.
-- If you get errors when using MCP servers with file-path arguments, then use \`${realHome}/...\`, instead of \`/home/scoder/...\`
 - You cannot edit files like \`AGENTS.md\` or \`.agents/*\` or other configuration files, so do not try. Ask the user to edit them instead.
 - Read the \`working-in-a-scoder-sandbox\` skill: \`npx skills add https://github.com/robchallen/scoder/tree/main/skills/working-in-a-scoder-sandbox\`
 `;
 
-	if (sourceDir.startsWith("/tmp/scoder/")) {
+	if (isWorktreeMountPath(sourceDir, realHome)) {
 		sandboxSection = `${sandboxSection}
-- This checkout is an isolated git worktree managed by scoder.
+- This checkout is an isolated git worktree managed by scoder, at \`${sourceDir}\`.
 - Commit after all changes otherwise your edits will be lost.
 `;
 	}
@@ -714,14 +732,18 @@ async function safeCopyDirRecursive(
 export async function setupLocalBinSnapshot(
 	extraSandboxPrefixes: string[] = [],
 ): Promise<BindMount | null> {
-	const localBinSrc = `${process.env.HOME}/.local/bin`;
+	const realHome = getRealHome();
+	const localBinSrc = `${realHome}/.local/bin`;
 
 	if (!(await fileOrDirExists(localBinSrc))) {
 		return null;
 	}
 
 	const snapshotDir = await createTempDir("scoder-local-bin");
-	const sandboxPrefixes = [...SANDBOX_MOUNT_PREFIXES, ...extraSandboxPrefixes];
+	const sandboxPrefixes = [
+		...sandboxMountPrefixes(realHome),
+		...extraSandboxPrefixes,
+	];
 	const homePrefixes = await resolveHomePrefixes();
 
 	try {
@@ -730,6 +752,7 @@ export async function setupLocalBinSnapshot(
 			snapshotDir,
 			sandboxPrefixes,
 			homePrefixes,
+			realHome,
 		);
 	} catch (err) {
 		error(`Failed to snapshot ~/.local/bin: ${err}`);
@@ -744,7 +767,7 @@ export async function setupLocalBinSnapshot(
 	return {
 		type: "ro-bind",
 		source: snapshotDir,
-		dest: "/home/scoder/.local/bin",
+		dest: `${realHome}/.local/bin`,
 	};
 }
 
@@ -758,6 +781,7 @@ async function resolveLocalBinEntries(
 	destDir: string,
 	sandboxPrefixes: string[],
 	homePrefixes: string[],
+	realHome: string,
 ): Promise<void> {
 	const entries = await readdir(srcDir, { withFileTypes: true });
 
@@ -773,6 +797,7 @@ async function resolveLocalBinEntries(
 					dest,
 					sandboxPrefixes,
 					homePrefixes,
+					realHome,
 				);
 			} else if (entry.isFile()) {
 				await copyExecutable(src, dest);
@@ -792,6 +817,7 @@ async function copySymlinkEntry(
 	dest: string,
 	sandboxPrefixes: string[],
 	homePrefixes: string[],
+	realHome: string,
 ): Promise<void> {
 	const target = await readlink(src);
 	const targetReal = await realpath(target);
@@ -799,7 +825,7 @@ async function copySymlinkEntry(
 
 	await ensureParentDir(dest);
 
-	if (isSandboxResolvable(sandboxTarget, sandboxPrefixes)) {
+	if (isSandboxResolvable(sandboxTarget, sandboxPrefixes, realHome)) {
 		// Target is bound into the sandbox. Keep the symlink, but point it at the
 		// sandbox path — the host spelling does not exist inside the sandbox.
 		// Relative targets already resolve within the snapshot, so leave them be.
@@ -856,8 +882,9 @@ async function ensureParentDir(path: string): Promise<void> {
 function isSandboxResolvable(
 	sandboxPath: string,
 	sandboxPrefixes: string[],
+	realHome: string,
 ): boolean {
-	if (sandboxPath.startsWith("/tmp/scoder/")) {
+	if (isWorktreeMountPath(sandboxPath, realHome)) {
 		return true; // worktree mount, mirrored at its real path
 	}
 
@@ -866,7 +893,8 @@ function isSandboxResolvable(
 
 // [IMPLEMENTS](/design/features/agents-skills-snapshot.md)
 export async function setupAgentsSnapshot(): Promise<BindMount | null> {
-	const agentsSrc = `${process.env.HOME}/.agents`;
+	const realHome = getRealHome();
+	const agentsSrc = `${realHome}/.agents`;
 
 	if (!(await fileOrDirExists(agentsSrc))) {
 		return null;
@@ -889,7 +917,7 @@ export async function setupAgentsSnapshot(): Promise<BindMount | null> {
 	return {
 		type: "ro-bind",
 		source: snapshotDir,
-		dest: "/home/scoder/.agents",
+		dest: `${realHome}/.agents`,
 	};
 }
 

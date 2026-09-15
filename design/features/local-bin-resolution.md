@@ -10,10 +10,11 @@ tags: [feature, tools, bin, symlinks]
 
 At session startup, `~/.local/bin` contents are copied to a temporary
 directory under `/tmp`. A symlink whose target *is* bound into the sandbox is
-kept as a symlink, with its target rewritten into the sandbox namespace; a
-symlink whose target is not reachable has the target binary copied in instead.
-Regular files are copied as-is with their exec bits. The result is bind-mounted
-read-only at `/home/scoder/.local/bin`.
+kept as a symlink, with its target canonicalized to the spelling actually
+bound into the sandbox (see `path-mirroring`); a symlink whose target is not
+reachable has the target binary copied in instead. Regular files are copied
+as-is with their exec bits. The result is bind-mounted read-only at
+`$HOME/.local/bin` (the real host `$HOME`).
 
 ## Motivation
 
@@ -33,28 +34,31 @@ temporary directory under `/tmp`. Each entry is handled according to
 its type:
 
 1. **Regular file** → copied as-is with executable permission preserved
-2. **Symlink** → resolved to its real target, and the target mapped into the
-   sandbox namespace via `toSandboxPath` (see `path-mirroring`). If the mapped
-   target lands under a path that is actually bound into the sandbox, the entry
-   stays a symlink but points at the **mapped** target — keeping the host
-   spelling would leave it dangling inside the sandbox. Otherwise the target
+2. **Symlink** → resolved to its real target, and the target canonicalized
+   via `toSandboxPath` (see `path-mirroring`) — a no-op unless the target was
+   spelled through a symlinked `$HOME`. If the canonicalized target lands
+   under a path that is actually bound into the sandbox, the entry stays a
+   symlink but points at the canonicalized target. Otherwise the target
    binary itself is copied into the snapshot.
 3. **Broken/missing symlink** → skipped silently (same as
    `setupAgentsSnapshot` handling of unreadable entries)
 4. **Directory** → skipped silently
 
-The result is bind-mounted read-only at `/home/scoder/.local/bin`.
+The result is bind-mounted read-only at `$HOME/.local/bin`.
 
 ### Which paths count as bound
 
 Resolvability is checked against two sources, because guessing wrong in either
 direction has a cost:
 
-- `SANDBOX_MOUNT_PREFIXES` — the always-present host-tool binds. This list must
-  mirror `buildExtraBinds` **exactly**, and name the precise bound paths rather
-  than their parents. A prefix that is not really bound (an earlier version
-  listed the parent `/home/scoder/.local`) makes the check claim resolvability
-  it cannot deliver, and the entry dangles.
+- `sandboxMountPrefixes(realHome)` — the always-present host-tool binds. This
+  list must mirror `buildExtraBinds` **exactly**, and name the precise bound
+  paths rather than their parents. A prefix that is not really bound (an
+  earlier version listed the parent `$HOME/.local`) makes the check claim
+  resolvability it cannot deliver, and the entry dangles. The worktree tree
+  itself isn't in this list — it's checked separately via
+  `isWorktreeMountPath`, since (unlike this fixed list) its location depends
+  on the project.
 - The active tool preset's bind destinations, passed in per session. These are
   dynamic — `~/.local/share/claude` is bound for `scoder claude` and not for
   `scoder opencode` — so they cannot live in a static list.
@@ -91,8 +95,8 @@ has) rather than a per-launch copy.
 
 ### Correctness
 
-- Absolute symlink, target bound → symlink kept, target rewritten to
-  `/home/scoder/...`
+- Absolute symlink, target bound → symlink kept, target canonicalized (a
+  no-op unless it was spelled through a symlinked `$HOME`)
 - Absolute symlink, target unbound and under the size ceiling → target binary
   copied in
 - Absolute symlink, target unbound and oversized → mapped symlink written,
@@ -121,11 +125,14 @@ makes it present. This mirrors `setupAgentsSnapshot`, which also copies.
 
 ### Why rewrite kept symlink targets instead of leaving them alone?
 
-Symlink targets are resolved by the kernel *inside* the sandbox namespace, so
-an absolute host target is interpreted against the sandbox's `/home`, which
-contains only `scoder`. Leaving the host spelling in place produces an entry
-that looks correct on the host and dangles in the sandbox — the failure mode
-that made `scoder claude` exit with `execvp: No such file or directory`.
+Symlink targets are resolved by the kernel *inside* the sandbox namespace.
+Most of the time that's now the same real `$HOME` the host has (see
+`path-mirroring`), so a plain absolute target already resolves unchanged —
+but a target spelled through a symlinked `$HOME` (network homes commonly
+have one) still needs canonicalizing onto the raw `$HOME` spelling actually
+bound in, or it dangles. This is the same failure mode that made `scoder
+claude` exit with `execvp: No such file or directory` before the rewrite
+existed.
 
 ### Why not just `--bind` the real targets?
 
@@ -155,6 +162,7 @@ Six test cases verify:
 4. **local-bin-symlink-target-mapped**: No entry in the snapshot is a symlink
    to a host `$HOME` path, whichever branch each entry took.
 5. **home-installed-tool-exec-path-mapped**: The exec target for a
-   `$HOME`-installed tool is rewritten to `/home/scoder`.
+   `$HOME`-installed tool resolves correctly inside the sandbox (unchanged,
+   since the sandbox's `$HOME` is the real host `$HOME`).
 6. **home-installed-tool-runs**: A tool symlinked from `~/.local/bin` into
    `~/.local/share` actually executes inside the sandbox.

@@ -2,23 +2,37 @@ import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { BindMount } from "../types.ts";
+import { getRealHome } from "../utils/paths.ts";
 
 // EM: Sandbox user identity
-// EM: Implements the NSS half of path-mirroring's home remapping
+// EM: Implements the NSS half of path-mirroring's home handling
 //
 // EM: Setting HOME is not enough. Anything resolving the current user through
 // EM: getpwuid()/getgrgid() rather than $HOME reads /etc/passwd and /etc/group,
 // EM: and OpenSSH is the notable example — it locates ~/.ssh that way.
 //
-// EM: Bound from the host, those files resolve the sandbox uid to the developer's
-// EM: own account: the home directory would be /home/<user>, which does not exist
-// EM: inside the sandbox, and the group name would be the host's. Overlaying
-// EM: single-entry files makes the sandbox identity self-consistent and stops the
-// EM: host username leaking in through the group name.
+// EM: /etc is bound read-only from the host, so without this overlay the
+// EM: sandbox's uid would resolve through whatever entry the host's own
+// EM: passwd/group database happens to have for it (an LDAP-backed system, a
+// EM: differing shell/GECOS, or no entry at all under sudo's re-mapped uid).
+// EM: This overlay makes that resolution deterministic instead — but the
+// EM: identity it describes is now the real one, not a synthetic "scoder"
+// EM: user: the sandbox no longer remaps $HOME to a separate namespace, so
+// EM: the username and home directory here must match the ones getRealHome()
+// EM: and --setenv HOME already use, or getpwuid()-based tools like OpenSSH
+// EM: would look for ~<user> under a name/home pair that doesn't resolve.
 
-const SANDBOX_USER = "scoder";
-const SANDBOX_HOME = "/home/scoder";
 const SANDBOX_SHELL = "/bin/bash";
+
+// ### getSandboxUsername
+// The username the sandbox identity describes. SUDO_USER first, matching
+// getSandboxUid/getSandboxGid's own SUDO_* precedence, so `sudo scoder`
+// still describes the invoking user rather than root.
+export function getSandboxUsername(): string {
+	return (
+		process.env.SUDO_USER || process.env.USER || process.env.LOGNAME || "user"
+	);
+}
 
 export interface SandboxIdentity {
 	binds: BindMount[];
@@ -58,15 +72,17 @@ export async function setupSandboxIdentity(
 
 	const passwdPath = join(dir, "passwd");
 	const groupPath = join(dir, "group");
+	const username = getSandboxUsername();
+	const home = getRealHome();
 
 	// username:password:UID:GID:GECOS:home:shell
 	await Bun.write(
 		passwdPath,
-		`${SANDBOX_USER}:x:${uid}:${gid}:Sandbox User:${SANDBOX_HOME}:${SANDBOX_SHELL}\n`,
+		`${username}:x:${uid}:${gid}:Sandbox User:${home}:${SANDBOX_SHELL}\n`,
 	);
 
 	// groupname:password:GID:members
-	await Bun.write(groupPath, `${SANDBOX_USER}:x:${gid}:\n`);
+	await Bun.write(groupPath, `${username}:x:${gid}:\n`);
 
 	return {
 		dir,

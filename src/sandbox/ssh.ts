@@ -4,6 +4,7 @@ import { hostname, networkInterfaces, tmpdir } from "node:os";
 import { join } from "node:path";
 import type { BindMount } from "../types.ts";
 import { error, warning } from "../utils/logger.ts";
+import { getRealHome } from "../utils/paths.ts";
 import { terminateProcess } from "../utils/process.ts";
 
 // EM: The ssh ControlMaster tunnel sidecar
@@ -20,10 +21,10 @@ import { terminateProcess } from "../utils/process.ts";
 // EM: and only for the exact user@host it was asked for — anything else
 // EM: falls through to a normal, failing ssh connection attempt.
 
-const SCODER_HOME = "/home/scoder";
-const CONTROL_DIR_DEST = `${SCODER_HOME}/.ssh-control`;
-const SSH_CONFIG_DEST = `${SCODER_HOME}/.ssh/config`;
-const SSH_DIR_DEST = `${SCODER_HOME}/.ssh`;
+const SANDBOX_HOME = getRealHome();
+const CONTROL_DIR_DEST = `${SANDBOX_HOME}/.ssh-control`;
+const SSH_CONFIG_DEST = `${SANDBOX_HOME}/.ssh/config`;
+const SSH_DIR_DEST = `${SANDBOX_HOME}/.ssh`;
 
 /** Bound wait for the master to report itself ready, or to give up. */
 const MASTER_READY_TIMEOUT_MS = 10_000;

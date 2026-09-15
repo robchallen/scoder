@@ -1,8 +1,32 @@
+import { dirname, join } from "node:path";
 import type { GitWorktreeInfo } from "../types.ts";
 import { error, info } from "../utils/logger.ts";
+import { getRealHome } from "../utils/paths.ts";
 
 // EM: Git worktree lifecycle management for scoder sandbox isolation
 // EM: Implements git-worktree-isolation feature with branch creation, worktree setup, and cleanup
+
+// ### getWorktreesParentDir
+// [IMPLEMENTS](/design/features/git-worktree-isolation.md)
+// The directory that holds a project's scoder worktree(s):
+// $HOME/<dirname(projDir)>/worktrees/<projDir>. Deliberately not nested
+// directly under the project's own location — since the sandbox's $HOME is
+// now the real host $HOME (see path-mirroring), a worktree mapped onto
+// $HOME/<projDir> would collide with the project's own real checkout at
+// that same path. The /worktrees/<projDir> detour keeps it a sibling
+// instead, and puts "worktree" in the path itself so it's obvious to the
+// user what they're looking at.
+//
+// Ensured to exist and bound writable on every session, worktree or direct
+// mode alike — see buildBwrapCommand in src/sandbox/builder.ts — as
+// preparatory infrastructure for explicitly supporting multiple named
+// worktrees from within a direct-mode session in future.
+export function getWorktreesParentDir(
+	realHome: string,
+	projDir: string,
+): string {
+	return join(realHome, dirname(projDir), "worktrees", projDir);
+}
 
 export async function isInGitRepo(): Promise<boolean> {
 	// EM: Check if current directory is in a git repository
@@ -283,14 +307,15 @@ export async function setupGitWorktree(
 	const projName = repoRoot.split("/").pop() || "unknown";
 	const worktreeBranch = `scoder/${projName}`;
 
+	const realHome = getRealHome();
 	let projDir: string;
-	if (repoRoot.startsWith(process.env.HOME || "")) {
-		projDir = repoRoot.slice((process.env.HOME || "").length + 1);
+	if (repoRoot.startsWith(`${realHome}/`)) {
+		projDir = repoRoot.slice(realHome.length + 1);
 	} else {
 		projDir = repoRoot.slice(1);
 	}
 
-	const worktreeDir = `/tmp/scoder/${projDir}`;
+	const worktreeDir = join(getWorktreesParentDir(realHome, projDir), "scoder");
 	const worktreeList = await getWorktreeList();
 
 	let existingWorktree = await findWorktreeForBranch(
@@ -423,7 +448,7 @@ function formatRefLabel(branch: string | null, head: string): string {
 }
 
 export async function getProjDir(cwd: string): Promise<string> {
-	const realHome = process.env.HOME || "/home/user";
+	const realHome = getRealHome();
 	let rootDir = cwd;
 
 	try {

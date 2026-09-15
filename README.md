@@ -56,9 +56,11 @@ than diverging.
 **Requires the
 [import-projects plugin](https://github.com/robchallen/eclipse-import-projects-plugin)
 installed into your Eclipse first** (`Help > Install New Software...`,
-`>= 2.0.0`) — scoder does not install or vendor it. An optional
-`.eclipse.epf` at the project root (exported via
-`File > Export > Preferences`) is imported automatically if present. See
+`>= 2.0.0`) — scoder does not install or vendor it. The first time a
+project's sandbox workspace is created, scoder also seeds its preferences
+from your most recently used real Eclipse workspace (JDT/formatter
+settings, keybindings, etc. — instance-scope preferences that live per
+workspace, not in `~/.eclipse`), so it isn't blank on first open. See
 `design/implementation/plans/eclipse-preset.md` for the full
 investigation.
 

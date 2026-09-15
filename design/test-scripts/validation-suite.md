@@ -27,14 +27,17 @@ tags: [test-script, validation]
 
 `tests/scoder.test.ts` is a self-contained integration test suite that creates
 temporary git repositories under `/tmp`, runs `scoder` against them using
-`/bin/bash` as the sandboxed command, and asserts expected behaviour. 93
+`/bin/bash` as the sandboxed command, and asserts expected behaviour. 94
 tests cover all sandbox mechanics.
 
 Cleanup runs in an `afterAll` hook. It removes the temp repos, their worktrees
-under `/tmp/scoder/tmp/scoder-test-repos`, and the artifacts the `~/.local/bin`
-cases create in the real home directory. The paths are enumerated explicitly
-rather than globbed, because `/tmp/scoder` also holds the developer's genuine
-session worktrees.
+under `$HOME/tmp/scoder-test-repos/worktrees/tmp/scoder-test-repos`, and the
+artifacts the `~/.local/bin` cases create in the real home directory. The
+paths are enumerated explicitly rather than globbed, because a worktree now
+lives under the same real `$HOME` a developer's own genuine session worktrees
+do (see path-mirroring) — the test fixture directory name
+(`scoder-test-repos`) keeps the two trees from ever actually colliding, but
+a wholesale glob under `$HOME` would risk sweeping up real work.
 
 Two exceptions use the real `claude` preset (cases 40-41). They run under
 `--dry-run`, so they inspect the built command without launching a sandbox or
@@ -75,7 +78,8 @@ An outer cleanup trap also removes any leftover temporary repos, worktrees, and 
 ### 1. home-isolation
 [TESTED_BY](/tests/scoder.test.ts#testHomeIsolation)
 
-Verifies `$HOME` inside the sandbox is `/home/scoder`, not the developer's real home.
+Verifies `$HOME` inside the sandbox is the real host `$HOME` (see
+path-mirroring) — not a synthetic path, and not empty/unset.
 
 ### 2. system-read-only
 [TESTED_BY](/tests/scoder.test.ts#testSystemReadOnly)
@@ -234,17 +238,25 @@ git tracking. The exclude is cleaned up after the session.
 scoder runs successfully in worktree mode with AGENTS.md excluded from the
 worktree git index. The exclude is cleaned up after the session.
 
-### 30. home-installed-tool-exec-path-mapped
-[TESTED_BY](/tests/scoder.test.ts#testHomeInstalledToolExecPathMapped)
+### 30. home-installed-tool-exec-path-resolved
+[TESTED_BY](/tests/scoder.test.ts#testHomeInstalledToolExecPathResolved)
 
 A tool installed under `$HOME` (a `~/.local/bin` entry symlinked at a versioned
 binary under `~/.local/share/<tool>/versions/`, the layout native installers
-produce) has its exec target rewritten to `/home/scoder/.local/bin/<tool>`.
-Asserts the dry-run command never carries the host `$HOME` path.
+produce) has an exec target that resolves inside the sandbox. Since the
+sandbox's own `$HOME` is now the real host `$HOME` (see path-mirroring), the
+resolved exec path and the host path are the same string — this asserts the
+dry-run command carries a real, bindable path, not that it differs from the
+host's.
 
 Regression test for `scoder claude` failing with `execvp: No such file or
-directory`: `which` resolves on the host, but the sandbox replaces `/home` with
-a tmpfs containing only `/home/scoder`.
+directory`: `which` resolves on the host, but historically the sandbox
+replaced `/home` with a tmpfs containing only a separate `/home/scoder`
+namespace the host path didn't exist under. That separate namespace is gone
+now (see path-mirroring's history), but the underlying risk this test guards
+— a `$HOME`-installed tool whose directory isn't actually bound into the
+sandbox — is still real, just caught by `checkExecTargetReachable`'s
+`isUnderAny` check against the built command's own bind destinations instead.
 
 ### 31. home-installed-tool-runs
 [TESTED_BY](/tests/scoder.test.ts#testHomeInstalledToolRuns)
@@ -255,10 +267,15 @@ the sandbox and produces its output. Asserts `execvp` never appears on stderr.
 ### 32. local-bin-symlink-target-mapped
 [TESTED_BY](/tests/scoder.test.ts#testLocalBinSymlinkTargetMapped)
 
-Scans the whole `~/.local/bin` snapshot and asserts that no entry is a symlink
-pointing at a host `$HOME` path. Such an entry resolves on the host and dangles
-inside the sandbox. Branch-agnostic: it holds whether an entry was kept as a
-symlink or copied in whole.
+Renamed from an earlier version of this test that scanned the whole
+`~/.local/bin` snapshot for any symlink pointing at a literal `$HOME/...`
+path — a meaningful check back when the sandbox remapped `$HOME` onto a
+separate `/home/scoder` namespace (any such entry was necessarily a bug: the
+rewrite had been skipped). Now that the sandbox's own `$HOME` is the real
+host `$HOME` (see path-mirroring), a `$HOME`-relative symlink target is not
+itself suspicious, so that sweep is gone. What's left, and still meaningful:
+a fixture tool that is small and unbound by any preset must be copied into
+the snapshot whole, not left as a dangling symlink.
 
 ### 33. unbound-home-tool-diagnosed
 [TESTED_BY](/tests/scoder.test.ts#testUnboundHomeToolDiagnosed)
@@ -352,11 +369,16 @@ legitimately have other scoder sessions running.
 ### 45. sandbox-identity-consistent
 [TESTED_BY](/tests/scoder.test.ts#testSandboxIdentityConsistent)
 
-`id -un`, `id -gn` and `getpwuid()` all report the sandbox user: `scoder`,
-`scoder`, `/home/scoder`. Setting `$HOME` is not sufficient, because anything
-resolving the user through NSS reads `/etc/passwd` and `/etc/group` instead —
-OpenSSH locates `~/.ssh` that way. Bound from the host those files name the
-developer's own account, and the gid used to resolve to the host username.
+`id -un`, `id -gn` and `getpwuid()` all report the sandbox's real identity:
+the real username (`getSandboxUsername()` — `$SUDO_USER`, else `$USER`, else
+`$LOGNAME`) and the real `$HOME`. Setting `$HOME` is not sufficient, because
+anything resolving the user through NSS reads `/etc/passwd` and `/etc/group`
+instead — OpenSSH locates `~/.ssh` that way. The overlay `setupSandboxIdentity`
+writes exists to make that resolution deterministic (not dependent on
+whatever the host's own passwd/group database happens to contain, e.g. an
+LDAP-backed system) — it describes the real identity now, not a synthetic
+`scoder` one, since the sandbox no longer remaps `$HOME` to a separate
+namespace (see path-mirroring).
 
 ### 46. sandbox-identity-files-cleaned
 [TESTED_BY](/tests/scoder.test.ts#testSandboxIdentityFilesCleaned)
@@ -396,8 +418,8 @@ alone would let a different user ride the tunnel.
 ### 51. ssh-no-private-keys-in-sandbox
 [TESTED_BY](/tests/scoder.test.ts#testSshNoPrivateKeysInSandbox)
 
-With `--allow-ssh` active, nothing under `/home/scoder/.ssh` or
-`/home/scoder/.ssh-control` contains private key material. The most
+With `--allow-ssh` active, nothing under the sandbox's `$HOME/.ssh` or
+`$HOME/.ssh-control` contains private key material. The most
 important guard in the set — it is what stops a future "just forward the
 agent, it's easier" change from passing review.
 
@@ -597,15 +619,18 @@ controlling-terminal relationship to reproduce at all — a plain `Bun.spawn`
 allocation). Self-skips if `python3` is not installed. See
 [design/implementation/issues/terminal-signals-not-forwarded-to-sandbox.md](/design/implementation/issues/terminal-signals-not-forwarded-to-sandbox.md).
 
-### 76. agents-md-overlay-uses-real-host-home-for-external-tools
-[TESTED_BY](/tests/scoder.test.ts#testAgentsMdOverlayUsesRealHostHomeForExternalTools)
+### 76. agents-md-overlay-states-real-home
+[TESTED_BY](/tests/scoder.test.ts#testAgentsMdOverlayStatesRealHome)
 
-The overlay states the real host home directory literally (`getRealHome()`),
-not just `/home/scoder`, and no longer tells the agent to "always use paths
-relative to $HOME" — wording that was reported as actually misread as "always
-use `/home/scoder/...`", including when passing a file path to a locally
-hosted MCP server running outside the sandbox on the real host filesystem,
-where `/home/scoder/...` does not exist.
+Renamed from `agents-md-overlay-uses-real-host-home-for-external-tools`. That
+test's whole premise — dual-path advice telling the agent the sandbox home
+differs from the real host home, because MCP servers running outside the
+sandbox only understand the real one — is obsolete now that the sandbox's
+own `$HOME` *is* the real host `$HOME` (see path-mirroring): there is only
+one path to state. The overlay now just says `$HOME` (stated literally, via
+`getRealHome()`) is the real host home directory, and paths under it resolve
+the same way inside and outside the sandbox. This test asserts that text and
+that no `/home/scoder` string survives anywhere in the overlay.
 
 ### 77. update-alternatives-state-mounted
 [TESTED_BY](/tests/scoder.test.ts#testUpdateAlternativesStateMounted)
@@ -685,7 +710,7 @@ for RStudio's reported greyed-out menus. See
 
 With a `.Rproj` file at the project root and no explicit argument,
 `rstudio` is launched with that file's sandbox-side path — fixes RStudio
-starting with `getwd()` at `/home/scoder` rather than the project.
+starting with `getwd()` at `$HOME` rather than the project.
 
 ### 86. rstudio-resolveargs-falls-back-to-project-dir
 [TESTED_BY](/tests/scoder.test.ts#testRstudioResolveargsFallsBackToProjectDir)
@@ -754,6 +779,25 @@ read-only inside the sandbox, so `mcptools`' own default location can
 never be created there regardless of what's already at that path on the
 host.
 
+### 94. worktrees-parent-dir-bound-regardless-of-mode
+[TESTED_BY](/tests/scoder.test.ts#testWorktreesParentDirBoundRegardlessOfMode)
+
+The directory that will hold a project's scoder worktree(s)
+(`getWorktreesParentDir` in `src/git/worktree.ts` — `$HOME/<dirname(projDir)>
+/worktrees/<projDir>`, without the trailing `/scoder`) is ensured to exist and
+bound read-write on *every* session, not just `--worktree` ones —
+preparatory infrastructure for explicitly supporting multiple named
+worktrees from within a direct-mode session in future (see
+git-worktree-isolation). Runs a direct-mode (`--no-worktree`) session and
+checks the directory exists on disk afterward — the real `mkdir` happens
+while building the bwrap command, before pasta ever gets a chance to fail,
+same reasoning as `agentreadonly-created-default`'s "file exists before that
+point is reached" pattern — then a separate `--dry-run` invocation checks the
+expected `--bind <dir> <dir>` entry appears in the built command. `--dry-run`
+itself stays side-effect free (matching `getAgentPortsBind`'s auto-detect
+step and `describeSshAccess`): it skips the real `mkdir`, so only the
+preview is checked there.
+
 ## Current Network Coverage
 
 - Host loopback access is blocked (`host-loopback-blocked`)
@@ -819,8 +863,8 @@ directly while building the fixture: ssh resolves `~/.ssh/config` via
 so `HOME=<fixture> ssh -G host` still reports the real config's settings. The
 shim never affects the *sandboxed* ssh invocation under test: `bwrap
 --clearenv` wipes the host `PATH`, and the generated
-`/home/scoder/.ssh/config` is read correctly because `getpwuid()` resolves to
-`/home/scoder` inside the sandbox — that's what `setupSandboxIdentity` is for.
+`$HOME/.ssh/config` is read correctly because `getpwuid()` resolves to the
+real `$HOME` inside the sandbox — that's what `setupSandboxIdentity` is for.
 
 ### Temp Directory Cleanup
 

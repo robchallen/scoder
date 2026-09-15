@@ -7,10 +7,18 @@
 // Import test utilities from bun:test
 import { afterAll, expect, test } from "bun:test";
 import { addGitExclude, removeGitExclude } from "../src/git/protection.ts";
+import { getSandboxUsername } from "../src/sandbox/identity.ts";
+import { getRealHome } from "../src/utils/paths.ts";
 
 // ### Constants
 const TEST_BASE = "/tmp/scoder-test-repos";
-const SCODER_HOME = "/home/scoder";
+// The sandbox's own $HOME is the real host $HOME now (see path-mirroring) —
+// no more separate /home/scoder namespace. Kept as its own named constant
+// (rather than inlining getRealHome() everywhere below) so every assertion
+// that cares about "the sandbox's home" reads the same way it did before
+// the rename, just pointed at the real value now.
+const SANDBOX_HOME = getRealHome();
+const SANDBOX_USERNAME = getSandboxUsername();
 
 // ### Test state tracking
 const tempRepos: string[] = [];
@@ -192,10 +200,19 @@ async function cleanupRepo(repoDir: string): Promise<void> {
 }
 
 // ### Cleanup on exit
-// Worktrees for temp repos land here: projDir for /tmp/scoder-test-repos/repo-X
-// is "tmp/scoder-test-repos/repo-X". Scoped deliberately — /tmp/scoder also
-// holds the developer's real worktrees and must never be removed wholesale.
-const TEST_WORKTREE_BASE = "/tmp/scoder/tmp/scoder-test-repos";
+// Worktrees for temp repos land here: TEST_BASE ("/tmp/scoder-test-repos")
+// is not under $HOME, so projDir for /tmp/scoder-test-repos/repo-X is
+// "tmp/scoder-test-repos/repo-X" (its leading slash stripped, per
+// getProjDir), and getWorktreesParentDir(realHome, projDir) is
+// $HOME/<dirname(projDir)>/worktrees/<projDir> — dirname(projDir) is the
+// same "tmp/scoder-test-repos" for every test repo, so this prefix (down to
+// but not including the varying "/repo-X/scoder" leaf) covers all of them.
+// Unlike the old /tmp/scoder/... location, no real project's worktrees can
+// plausibly land under this prefix — it would require a real checkout
+// literally at ~/tmp/scoder-test-repos/... — so the old "never remove
+// wholesale" collision risk no longer applies, but the scoping is kept
+// anyway since there's no reason to widen it.
+const TEST_WORKTREE_BASE = `${SANDBOX_HOME}/tmp/scoder-test-repos/worktrees/tmp/scoder-test-repos`;
 
 // Artifacts the ~/.local/bin tests create in the *real* home directory. Left
 // behind, they show up in every subsequent real scoder session.
@@ -265,7 +282,10 @@ function setupSignalCleanup(): void {
 setupSignalCleanup();
 
 // ### Test: home-isolation
-test("home-isolation: $HOME inside sandbox is /home/scoder", async () => {
+// EM: The sandbox no longer remaps $HOME to a separate synthetic path — its
+// EM: own $HOME is the real host $HOME, bound at the same path both sides.
+// EM: See path-mirroring / getRealHome in src/utils/paths.ts.
+test("home-isolation: $HOME inside the sandbox is the real host $HOME", async () => {
 	const repoDir = await createTempRepo();
 	tempRepos.push(repoDir);
 
@@ -276,7 +296,7 @@ test("home-isolation: $HOME inside sandbox is /home/scoder", async () => {
 			"-c",
 			"echo $HOME",
 		]);
-		expect(output.trim()).toBe(SCODER_HOME);
+		expect(output.trim()).toBe(SANDBOX_HOME);
 	} finally {
 		await cleanupRepo(repoDir);
 	}
@@ -302,9 +322,13 @@ test("sandbox-uid-preserved: uid inside the sandbox is the host uid, not root", 
 // ### Test: sandbox-identity-consistent
 // $HOME alone is not enough: anything resolving the user through getpwuid or
 // getgrgid reads /etc/passwd and /etc/group, and OpenSSH locates ~/.ssh that
-// way. Bound from the host those name the developer's own account, so the gid
-// used to resolve to the host username.
-test("sandbox-identity-consistent: passwd and group describe only the sandbox user", async () => {
+// way. /etc is bound read-only from the host, so without the passwd/group
+// overlay (setupSandboxIdentity) the sandbox uid would resolve through
+// whatever the host's own database happens to have for it. The identity the
+// overlay describes is the real one now (getSandboxUsername/getRealHome),
+// not a synthetic "scoder" user — it has to be, since --setenv HOME and the
+// real, unmapped $HOME bind already commit to the real identity elsewhere.
+test("sandbox-identity-consistent: passwd and group describe the real sandbox identity", async () => {
 	const repoDir = await createTempRepo();
 	tempRepos.push(repoDir);
 
@@ -317,10 +341,10 @@ test("sandbox-identity-consistent: passwd and group describe only the sandbox us
 		]);
 		const [user, group, home] = output.trim().split("\n");
 
-		expect(user).toBe("scoder");
-		expect(group).toBe("scoder");
+		expect(user).toBe(SANDBOX_USERNAME);
+		expect(group).toBe(SANDBOX_USERNAME);
 		// The path OpenSSH would use to find ~/.ssh
-		expect(home).toBe(SCODER_HOME);
+		expect(home).toBe(SANDBOX_HOME);
 	} finally {
 		await cleanupRepo(repoDir);
 	}
@@ -492,23 +516,73 @@ test("worktree-writable: Can create file in project working tree", async () => {
 		const testFilePath = `${worktreeDir}/test-file.txt`;
 		expect(await fileExists(testFilePath)).toBe(false);
 
-		// Use sandbox path inside shell command (worktree is mounted at /home/scoder/<projDir> in sandbox)
-		const sandboxWorktreePath = worktreeDir.replace(
-			"/tmp/scoder/",
-			"/home/scoder/",
-		);
+		// EM: worktreeDir is already the sandbox path too — the worktree is
+		// EM: bound at its own real, unmapped location, no separate sandbox
+		// EM: spelling to translate to.
 		await runScoder(repoDir, [
 			"-w",
 			"-q",
 			"/bin/bash",
 			"-c",
-			`touch ${sandboxWorktreePath}/test-file.txt`,
+			`touch ${worktreeDir}/test-file.txt`,
 		]);
 
 		// File should exist now on the host worktree
 		expect(await fileExists(testFilePath)).toBe(true);
 	} finally {
 		await cleanupRepo(repoDir);
+	}
+});
+
+// ### Test: worktrees-parent-dir-bound-regardless-of-mode
+// EM: The directory that will hold this project's worktree(s) is ensured
+// EM: and bound writable on every session now, not just --worktree ones —
+// EM: preparatory infrastructure for explicitly supporting multiple named
+// EM: worktrees from within a direct-mode session in future. See
+// EM: getWorktreesParentDir in src/git/worktree.ts and its call in
+// EM: buildBwrapCommand (src/sandbox/builder.ts).
+test("worktrees-parent-dir-bound-regardless-of-mode: a direct-mode session still ensures and binds the worktrees parent dir", async () => {
+	const repoDir = await createTempRepo();
+	tempRepos.push(repoDir);
+
+	// repoDir sits under TEST_BASE ("/tmp/scoder-test-repos"), not $HOME, so
+	// its projDir (getProjDir) is "tmp/scoder-test-repos/<repo-name>" and its
+	// worktrees-parent dir is
+	// $HOME/tmp/scoder-test-repos/worktrees/tmp/scoder-test-repos/<repo-name>
+	// — i.e. TEST_WORKTREE_BASE (the shared prefix every test repo's worktree
+	// lands under) plus this repo's own name.
+	const repoName = repoDir.split("/").pop();
+	const expectedParent = `${TEST_WORKTREE_BASE}/${repoName}`;
+
+	try {
+		// --dry-run stays side-effect free (same as getAgentPortsBind's
+		// auto-detect step and describeSshAccess), so the real mkdir is
+		// checked via an ordinary (non-dry-run) invocation instead. Its
+		// preview is checked too, from the same run's stdout, to confirm the
+		// bind is actually part of the built command.
+		const proc = await Bun.spawn(
+			[SCODER_PATH, "-q", "--no-worktree", "/bin/bash", "-c", "true"],
+			{ cwd: repoDir, stdout: "pipe", stderr: "pipe" },
+		);
+		await proc.exited;
+
+		// The session itself may still fail later (pasta attaching), but the
+		// worktrees-parent dir is created while building the bwrap command,
+		// before that point is ever reached — same reasoning as
+		// agentreadonly-created-default above.
+		expect(await dirExists(expectedParent)).toBe(true);
+
+		const dryRunOutput = await runScoder(repoDir, [
+			"--dry-run",
+			"--no-worktree",
+			"/bin/bash",
+		]);
+		expect(dryRunOutput).toContain(
+			`--bind ${expectedParent} ${expectedParent}`,
+		);
+	} finally {
+		await cleanupRepo(repoDir);
+		await Bun.spawn(["rm", "-rf", expectedParent]).exited;
 	}
 });
 
@@ -690,7 +764,7 @@ test("agentreadonly-home-directory-readonly: .agentreadonly HOME bind is read-on
 		);
 
 		// Try to write to the bind-mounted directory (use sandbox path, not host path)
-		const testHomeSandbox = `${SCODER_HOME}/.scoder-test-home-bind`;
+		const testHomeSandbox = `${SANDBOX_HOME}/.scoder-test-home-bind`;
 		const proc = await Bun.spawn(
 			[
 				"scoder",
@@ -911,7 +985,7 @@ test("symlinked-agents-skills-available: Symlinked agent skills are available in
 
 		// Run scoder and check if skills are available
 		const proc = await Bun.spawn(
-			["scoder", "-q", "/bin/bash", "-c", "ls /home/scoder/.agents 2>&1"],
+			["scoder", "-q", "/bin/bash", "-c", `ls ${SANDBOX_HOME}/.agents 2>&1`],
 			{ cwd: repoDir, stdout: "pipe", stderr: "pipe" },
 		);
 		await proc.exited;
@@ -951,16 +1025,20 @@ test("sandbox-agents-md-overlay-visible: AGENTS.md overlay is visible in sandbox
 	}
 });
 
-// ### Test: agents-md-overlay-uses-real-host-home-for-external-tools
-// EM: Guards against a real mistake an agent made in practice: the old
-// EM: wording ("Always use paths relative to $HOME") was interpreted as
-// EM: "always pass /home/scoder/... paths", including to a locally hosted
-// EM: MCP server running outside the sandbox on the real host filesystem,
-// EM: where /home/scoder/... does not exist. Uses --dry-run (no pasta
+// ### Test: agents-md-overlay-states-real-home
+// EM: Now that the sandbox's $HOME is the real host $HOME (no more separate
+// EM: /home/scoder namespace), there's only one spelling to state — this
+// EM: guards that the overlay says so, and that no stray /home/scoder
+// EM: reference survives from the old wording. The stdio-vs-localhost MCP
+// EM: transport distinction (sandboxed stdio server needs sandbox paths;
+// EM: localhost-HTTP server running outside the sandbox needs the real host
+// EM: path — still the same path now, but the distinction is about *where
+// EM: the server runs*, not about two different path spellings) is still
+// EM: worth its own line and still checked here. Uses --dry-run (no pasta
 // EM: needed) since the overlay file is written before the dry-run branch,
 // EM: same timing agentports's own auto-detect-skips-under-dry-run test
 // EM: relies on.
-test("agents-md-overlay-uses-real-host-home-for-external-tools: overlay states the real host home, not /home/scoder, for external tools", async () => {
+test("agents-md-overlay-states-real-home: overlay states $HOME is the real host home, no /home/scoder reference", async () => {
 	const repoDir = await createTempRepo();
 	tempRepos.push(repoDir);
 	let overlayPath: string | undefined;
@@ -983,9 +1061,9 @@ test("agents-md-overlay-uses-real-host-home-for-external-tools: overlay states t
 		expect(realHome).toBeTruthy();
 
 		expect(content).toContain(
-			`The host's real home directory is \`${realHome}\``,
+			`Your \`$HOME\` (\`${realHome}\`) is the real host home directory`,
 		);
-		expect(content).not.toContain("Always use paths relative to $HOME");
+		expect(content).not.toContain("/home/scoder");
 
 		// Loosely, not word-for-word: only pins down that the distinction is
 		// present at all (stdio MCP servers run inside the sandbox and need
@@ -1165,11 +1243,14 @@ test("agentports-is-readonly: --dry-run shows a ro-bind for .agentports, not a b
 		await Bun.write(`${repoDir}/.agentports`, "8080\n");
 
 		const output = await runScoder(repoDir, ["--dry-run", "/bin/bash"]);
+		// EM: repoDir (under TEST_BASE, "/tmp/scoder-test-repos") is not under
+		// EM: $HOME, so it's mirrored unchanged at its own real path — no
+		// EM: sandbox-home prefix, now that $HOME isn't a separate namespace.
 		expect(output).toContain(
-			`--ro-bind ${repoDir}/.agentports ${SCODER_HOME}${repoDir}/.agentports`,
+			`--ro-bind ${repoDir}/.agentports ${repoDir}/.agentports`,
 		);
 		expect(output).not.toContain(
-			`--bind ${repoDir}/.agentports ${SCODER_HOME}${repoDir}/.agentports`,
+			`--bind ${repoDir}/.agentports ${repoDir}/.agentports`,
 		);
 	} finally {
 		await cleanupRepo(repoDir);
@@ -1540,7 +1621,7 @@ test.skipIf(!claudePresetTestable)(
 
 		try {
 			const output = await runScoder(repoDir, ["--dry-run", "claude"]);
-			const bind = `${process.env.HOME}/.claude ${SCODER_HOME}/.claude`;
+			const bind = `${process.env.HOME}/.claude ${SANDBOX_HOME}/.claude`;
 
 			expect(output).toContain(`--bind ${bind}`);
 			expect(output).not.toContain(`--ro-bind ${bind}`);
@@ -1615,11 +1696,11 @@ test("rstudio-preset-binds-x11-and-config-dirs: binds the X11 socket, DISPLAY, a
 		}
 		expect(output).toContain("--setenv DISPLAY :42");
 
-		const configBind = `${process.env.HOME}/.config/rstudio ${SCODER_HOME}/.config/rstudio`;
+		const configBind = `${process.env.HOME}/.config/rstudio ${SANDBOX_HOME}/.config/rstudio`;
 		expect(output).toContain(`--bind ${configBind}`);
 		expect(output).not.toContain(`--ro-bind ${configBind}`);
 
-		const dataBind = `${process.env.HOME}/.local/share/rstudio ${SCODER_HOME}/.local/share/rstudio`;
+		const dataBind = `${process.env.HOME}/.local/share/rstudio ${SANDBOX_HOME}/.local/share/rstudio`;
 		expect(output).toContain(`--bind ${dataBind}`);
 		expect(output).not.toContain(`--ro-bind ${dataBind}`);
 	} finally {
@@ -1640,10 +1721,10 @@ test("rstudio-preset-includes-pi-config: pi's data/cache dirs are bound, same as
 		});
 
 		expect(output).toContain(
-			`--bind ${process.env.HOME}/.local/share/pi ${SCODER_HOME}/.local/share/pi`,
+			`--bind ${process.env.HOME}/.local/share/pi ${SANDBOX_HOME}/.local/share/pi`,
 		);
 		expect(output).toContain(
-			`--bind ${process.env.HOME}/.cache/pi ${SCODER_HOME}/.cache/pi`,
+			`--bind ${process.env.HOME}/.cache/pi ${SANDBOX_HOME}/.cache/pi`,
 		);
 	} finally {
 		await Bun.spawn(["rm", "-rf", fakeBinDir]).exited;
@@ -1666,9 +1747,9 @@ test("rstudio-preset-binds-xauthority-when-present: binds the auth file and poin
 		});
 
 		expect(output).toContain(
-			`--ro-bind ${fakeXauth} ${SCODER_HOME}/.Xauthority`,
+			`--ro-bind ${fakeXauth} ${SANDBOX_HOME}/.Xauthority`,
 		);
-		expect(output).toContain(`--setenv XAUTHORITY ${SCODER_HOME}/.Xauthority`);
+		expect(output).toContain(`--setenv XAUTHORITY ${SANDBOX_HOME}/.Xauthority`);
 		expect(output).not.toContain(`--setenv XAUTHORITY ${fakeXauth}`);
 	} finally {
 		await Bun.spawn(["rm", "-rf", fakeBinDir, fakeXauth]).exited;
@@ -1757,7 +1838,7 @@ test("rstudio-preset-sets-mcptools-socket-dir: MCPTOOLS_SOCKET_DIR points at a f
 
 // EM: ### Tests for the rstudio preset's resolveArgs (.Rproj detection)
 // EM: RStudio Desktop does not inherit the launching process's cwd for its
-// EM: initial R session — reported directly: getwd() came back /home/scoder,
+// EM: initial R session — reported directly: getwd() came back $HOME,
 // EM: not the project directory. See presets.ts's own comment on
 // EM: resolveArgs for why a .Rproj argument is the fix, and why the bare-
 // EM: directory fallback (used here, and in the no-.Rproj test below) is a
@@ -1778,8 +1859,10 @@ test("rstudio-resolveargs-picks-rproj-file: rstudio is launched with the project
 			{ PATH: `${fakeBinDir}:${process.env.PATH}` },
 		);
 
+		// EM: repoDir is not under $HOME, so it's mirrored unchanged at its
+		// EM: own real path — no sandbox-home prefix.
 		expect(output).toContain(
-			`-- ${fakeBinDir}/rstudio ${SCODER_HOME}${repoDir}/myproject.Rproj`,
+			`-- ${fakeBinDir}/rstudio ${repoDir}/myproject.Rproj`,
 		);
 	} finally {
 		await Bun.spawn(["rm", "-rf", fakeBinDir]).exited;
@@ -1800,9 +1883,7 @@ test("rstudio-resolveargs-falls-back-to-project-dir: with no .Rproj file, rstudi
 			{ PATH: `${fakeBinDir}:${process.env.PATH}` },
 		);
 
-		expect(output).toContain(
-			`-- ${fakeBinDir}/rstudio ${SCODER_HOME}${repoDir}\n`,
-		);
+		expect(output).toContain(`-- ${fakeBinDir}/rstudio ${repoDir}\n`);
 	} finally {
 		await Bun.spawn(["rm", "-rf", fakeBinDir]).exited;
 		await cleanupRepo(repoDir);
@@ -1949,7 +2030,7 @@ test("ide-flag-merges-companion-binds: --ide merges the companion's binds into t
 
 		expect(output).toContain("--ro-bind /tmp/.X11-unix /tmp/.X11-unix");
 
-		const piDataBind = `--bind ${process.env.HOME}/.local/share/pi ${SCODER_HOME}/.local/share/pi`;
+		const piDataBind = `--bind ${process.env.HOME}/.local/share/pi ${SANDBOX_HOME}/.local/share/pi`;
 		expect(output).toContain(piDataBind);
 		// pi's own preset and rstudio's (which also includes pi's binds, so
 		// pi works from RStudio's embedded terminal too) both contribute
@@ -2361,11 +2442,16 @@ async function createHomeInstalledTool(name: string): Promise<{
 	return { symlink, versionDir, shareDir };
 }
 
-// ### Test: home-installed-tool-exec-path-mapped
+// ### Test: home-installed-tool-exec-path-resolved
 // Regression test for `scoder claude` failing with "execvp: No such file or
-// directory": `which` returns a host path under $HOME, but the sandbox replaces
-// /home with a tmpfs containing only /home/scoder, so the host path is absent.
-test("home-installed-tool-exec-path-mapped: exec target for a $HOME-installed tool is rewritten to /home/scoder", async () => {
+// directory": `which` returns a host path under $HOME, and the sandbox
+// replaces /home with a tmpfs — a $HOME-installed tool only resolves if its
+// own directory (~/.local/bin, bound by buildExtraBinds) is actually among
+// the sandbox's binds. The sandbox's $HOME is the real host $HOME now (no
+// separate rewritten path — see path-mirroring), so the exec target is the
+// same string on both sides; this just checks it appears as the built
+// command's exec target.
+test("home-installed-tool-exec-path-resolved: exec target for a $HOME-installed tool resolves inside the sandbox", async () => {
 	const name = "scoder-test-homedtool";
 	const tool = await createHomeInstalledTool(name);
 
@@ -2375,9 +2461,7 @@ test("home-installed-tool-exec-path-mapped: exec target for a $HOME-installed to
 	try {
 		const output = await runScoder(repoDir, ["--dry-run", name]);
 
-		// The exec target must be the sandbox path, never the host path
-		expect(output).toContain(`-- ${SCODER_HOME}/.local/bin/${name}`);
-		expect(output).not.toContain(`-- ${process.env.HOME}/.local/bin/${name}`);
+		expect(output).toContain(`-- ${SANDBOX_HOME}/.local/bin/${name}`);
 	} finally {
 		await cleanupRepo(repoDir);
 		await Bun.spawn(["rm", "-rf", tool.shareDir]).exited;
@@ -2418,10 +2502,25 @@ test("home-installed-tool-runs: a tool symlinked from ~/.local/bin into ~/.local
 });
 
 // ### Test: local-bin-symlink-target-mapped
-// The snapshot must rewrite absolute symlink targets into the sandbox
-// namespace. Keeping the host spelling leaves the entry dangling inside the
-// sandbox even though the resolvability check passed.
-test("local-bin-symlink-target-mapped: snapshot symlink targets are rewritten into the sandbox namespace", async () => {
+// The snapshot must copy in a symlink target that isn't reachable inside
+// this session's sandbox, rather than leaving a dangling reference.
+//
+// This used to also sweep every symlink in the snapshot and assert none of
+// them pointed at a literal `$HOME/...` string — back when the sandbox
+// remapped $HOME onto a separate `/home/scoder` namespace, ANY symlink
+// target still spelled as a raw `$HOME/...` path was necessarily a bug (the
+// rewrite to the sandbox namespace had been skipped somewhere). Now that the
+// sandbox's own $HOME is the real host $HOME (see path-mirroring), a
+// symlink target under $HOME is not itself suspicious — real $HOME-relative
+// entries in the machine's own ~/.local/bin (e.g. a genuinely installed
+// `claude`) correctly keep their real $HOME-relative target, whether or not
+// that target's directory happens to be bound into *this particular*
+// session (it dangles harmlessly if not, same as it always could). That
+// sweep is no longer a meaningful invariant, so it's dropped; the fixture
+// tool below (small and never bound by any preset) is what still exercises
+// the actual behaviour under test — it must be copied in whole, not left as
+// a dangling symlink.
+test("local-bin-symlink-target-mapped: an unresolvable symlink target is copied in, not left dangling", async () => {
 	const name = "scoder-test-maptarget";
 	const tool = await createHomeInstalledTool(name);
 
@@ -2436,33 +2535,6 @@ test("local-bin-symlink-target-mapped: snapshot symlink targets are rewritten in
 			throw new Error("scoder did not report a ~/.local/bin snapshot dir");
 		}
 		const snapshotDir = match[0];
-
-		// Whichever branch each entry took — kept as a symlink, or copied in —
-		// no entry may be a symlink to a host $HOME path. Those resolve on the
-		// host but dangle inside the sandbox, which is the original bug.
-		const findProc = await Bun.spawn(["find", snapshotDir, "-type", "l"], {
-			stdout: "pipe",
-			stderr: "pipe",
-		});
-		await findProc.exited;
-		const links = (await new Response(findProc.stdout).text())
-			.split("\n")
-			.filter((line) => line.length > 0);
-
-		const hostTargets: string[] = [];
-		for (const link of links) {
-			const linkProc = await Bun.spawn(["readlink", link], {
-				stdout: "pipe",
-				stderr: "pipe",
-			});
-			await linkProc.exited;
-			const target = (await new Response(linkProc.stdout).text()).trim();
-			if (target.startsWith(`${process.env.HOME}/`)) {
-				hostTargets.push(`${link} -> ${target}`);
-			}
-		}
-
-		expect(hostTargets).toEqual([]);
 
 		// The tool under test is small and unbound, so it is copied in whole
 		const copied = await fileExists(`${snapshotDir}/${name}`);
@@ -2709,9 +2781,10 @@ interface MockSshd {
 // ~/.ssh/config via getpwuid(), not $HOME, confirmed directly while writing
 // this fixture (see ssh-tunnel-opt-in.md). This shim never affects the
 // sandboxed ssh invocation under test, which reads the real generated
-// /home/scoder/.ssh/config: bwrap's --clearenv wipes the host PATH, and
-// getpwuid() resolves correctly to /home/scoder inside the sandbox because
-// setupSandboxIdentity overlays /etc/passwd for exactly this reason.
+// $HOME/.ssh/config: bwrap's --clearenv wipes the host PATH, and
+// getpwuid() resolves correctly to the sandbox's $HOME (the real host
+// $HOME — see path-mirroring) because setupSandboxIdentity overlays
+// /etc/passwd for exactly this reason.
 async function startMockSshd(port: number = MOCK_SSHD_PORT): Promise<MockSshd> {
 	const tmpDir = `/tmp/scoder-ssh-test-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
 	await Bun.spawn(["mkdir", "-p", tmpDir]).exited;
@@ -2959,7 +3032,7 @@ test.skipIf(!sshTunnelTestable)(
 					`${HOST_USER}@127.0.0.1`,
 					"/bin/bash",
 					"-c",
-					"grep -rl 'PRIVATE KEY' /home/scoder/.ssh /home/scoder/.ssh-control 2>/dev/null; echo DONE",
+					`grep -rl 'PRIVATE KEY' ${SANDBOX_HOME}/.ssh ${SANDBOX_HOME}/.ssh-control 2>/dev/null; echo DONE`,
 				],
 				{ cwd: repoDir, env: sshShimEnv(mock), stdout: "pipe", stderr: "pipe" },
 			);
@@ -3068,10 +3141,10 @@ test("ssh-dry-run-describes-without-connecting: --dry-run shows the bind without
 		]);
 
 		expect(output).toContain(
-			"--ro-bind <ssh-tunnel-tmp>/socket /home/scoder/.ssh-control",
+			`--ro-bind <ssh-tunnel-tmp>/socket ${SANDBOX_HOME}/.ssh-control`,
 		);
 		expect(output).toContain(
-			"--ro-bind <ssh-tunnel-tmp>/config/config /home/scoder/.ssh/config",
+			`--ro-bind <ssh-tunnel-tmp>/config/config ${SANDBOX_HOME}/.ssh/config`,
 		);
 		expect(output).not.toContain("--bind <ssh-tunnel-tmp>/socket");
 	} finally {

@@ -26,26 +26,28 @@ Every preset has an async function pair:
 - `configBinds(realHome, sandboxHome)` — returns bind mounts and directory specs
 - `validate()` — checks tool is installed, prints install instructions if missing
 
-Two more hooks are optional, and only some presets need them:
-- `resolveArgs(hostProjectDir, sandboxProjectDir, existingArgs)` — lets a
-  preset choose the tool's final argv once the project directory is known
-  (`configBinds` runs before it exists). Always called when present;
-  `existingArgs` is whatever the user already passed (`[]` for the `--ide`
-  companion, which has no way to supply its own). Each preset decides for
-  itself what to do with them — `rstudio` only fills in a default when the
-  user gave none at all; `eclipse` always prepends its own fixed flags
-  ahead of whatever the user passed. See `ToolPreset.resolveArgs` in
-  `src/types.ts`.
-- `prepareCommand(hostProjectDir, sandboxProjectDir, dependencyDirs)` — runs
-  a separate, complete command inside the sandbox before the tool/IDE exec,
-  for setup work that has to happen inside the sandbox's own mount
-  namespace. Only `eclipse` uses this today — see below and
-  `design/implementation/plans/eclipse-preset.md`. A non-zero exit here is
-  a loud, whole-launch failure (`wrapWithPrepareStep` in
-  `src/sandbox/builder.ts`), not something folded silently into the other
-  hooks. `dependencyDirs` is the sandbox-side destinations of every
+One more hook is optional, and only some presets need it:
+- `resolveArgs(hostProjectDir, sandboxProjectDir, existingArgs,
+  dependencyDirs)` — lets a preset choose the tool's final argv once the
+  project directory is known (`configBinds` runs before it exists).
+  Always called when present; `existingArgs` is whatever the user already
+  passed (`[]` for the `--ide` companion, which has no way to supply its
+  own). Each preset decides for itself what to do with them — `rstudio`
+  only fills in a default when the user gave none at all; `eclipse`
+  always prepends its own fixed flags ahead of whatever the user passed.
+  `dependencyDirs` is the sandbox-side destinations of every
   `.agentreadonly` `$HOME/...` entry already resolved for this session
-  (`ProtectionConfig.dependencyDirs` in `src/git/protection.ts`).
+  (`ProtectionConfig.dependencyDirs` in `src/git/protection.ts`) — e.g.
+  `eclipse` imports each of these as its own project. See
+  `ToolPreset.resolveArgs` in `src/types.ts`.
+
+An earlier version of this feature also had a `prepareCommand` hook,
+added specifically to run a separate command inside the sandbox before
+the tool/IDE exec (`eclipse`'s own dynamic workspace generation, before
+its plugin's `-importProject` flags were confirmed to work directly on
+the normal interactive launch). Removed once nothing needed it anymore —
+see `design/implementation/plans/eclipse-preset.md`'s "Design Decision 4"
+for why the separate stage turned out to be unnecessary.
 
 | Tool | Config (ro) | Data/Cache (rw) |
 |------|------------|-----------------|
@@ -188,34 +190,37 @@ rejected and what was verified against a real Eclipse install, is
   the design an earlier, much more involved version eventually
   converged on anyway, after the six bugs above. `configBinds` also
   binds a persisted, project-scoped workspace directory
-  (`~/.local/share/scoder-eclipse-workspaces/<project>`, read-write),
-  and an optional project-root `.eclipse.epf` (exported Eclipse
-  preferences) read-only at a fixed sandbox path, if present.
-- `prepareCommand` runs the plugin's headless-import application inside
-  the sandbox, before the interactive launch, importing the main project
-  and every `.agentreadonly` `$HOME/...` dependency as its own project
-  (`-importProject`, repeatable) — solving "a Java project references
-  other local projects that also need to be workspace projects" without
-  a manual step — plus `-importPreferences <epf path>` when a
-  `.eclipse.epf` was found. Safe to re-run on every launch: the plugin's
-  own code already branches on whether a project is open to decide
-  import vs. refresh. Both the primary preset's own `prepareCommand` and
-  the `--ide` companion's own run, in that order, if either or both
-  define one — `pi --ide eclipse` (eclipse's actual intended use case)
-  needs eclipse's own step to run even though it's the companion, not
-  the primary tool.
-- `resolveArgs` always prepends `-data <workspace>` to the interactive
-  launch, whatever args the user passed — intrinsically tied to project
-  identity, not something a user would reasonably want to override.
+  (`~/.local/share/scoder-eclipse-workspaces/<project>`, read-write).
+  It does **not** touch `.eclipse.epf` at all — see `resolveArgs` below.
+- `resolveArgs` always prepends, to the interactive launch, `-data
+  <workspace>`, `-importProject <sandboxProjectDir>`, one more
+  `-importProject` per `dependencyDirs` entry (importing the main
+  project and every `.agentreadonly` `$HOME/...` dependency as its own
+  workspace project — solving "a Java project references other local
+  projects that also need to be workspace projects" without a manual
+  step), and — only when a project-root `.eclipse.epf` (exported Eclipse
+  preferences) exists — `-importPreferences <sandboxProjectDir>/.eclipse.epf`,
+  **at its own in-project path, deliberately not moved anywhere read-only**:
+  the whole point is that edits made to it inside the sandbox take effect
+  next session, the same as any other project file. All of this on
+  **every** launch, whatever args the user passed — intrinsically tied to
+  project identity, not something a user would reasonably want to
+  override, and safe to repeat every time since the plugin's own code
+  already branches on whether a project is open to decide import vs.
+  refresh. No separate pre-launch stage: an earlier version ran the
+  plugin's own headless-import application as a distinct step first,
+  dropped once the plugin's own README confirmed these same flags work
+  directly on the ordinary interactive launch (see
+  eclipse-preset.md's Design Decision 4).
 
 Like `rstudio`, this is a GUI app needing the same X11
 socket/`DISPLAY`/`XAUTHORITY` access — but unlike `rstudio`'s, this has
 **not** been independently re-verified: this project has no host with GTK
-installed and a real X session to confirm the interactive phase against,
-only the headless prepare step. Whether preferences are genuinely picked
-up correctly from a bound-in `$HOME/.eclipse` in a real interactive
-session is likewise unverified here — the user intends to test this
-directly.
+installed and a real X session to confirm the interactive phase against.
+Whether `-importProject`/`-importPreferences` behave on the interactive
+launch exactly as the plugin's README describes, and whether preferences
+are genuinely picked up correctly from a bound-in `$HOME/.eclipse`, are
+likewise unverified here — the user intends to test this directly.
 
 [HAS_FEATURE](./sandbox-isolation.md)
 [HAS_FEATURE](./host-tool-binding.md)

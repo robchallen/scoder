@@ -45,11 +45,11 @@ independently re-verified for Eclipse specifically, see
 `design/features/tool-presets.md`. It also solves a problem `rstudio`
 doesn't have: an Eclipse workspace records absolute host paths back to
 each project, so a workspace built outside the sandbox has stale
-references inside it. Every launch, scoder runs a headless import step
-inside the sandbox first, building (or refreshing) a persisted, dedicated
-workspace against the sandbox's own project path, plus every
-`.agentreadonly` `$HOME/...` entry as its own project — so cross-project
-references resolve correctly. `$HOME/.eclipse` is bound in whole,
+references inside it. Every launch, scoder points Eclipse's own
+`-importProject` at a persisted, dedicated workspace and the sandbox's
+own project path, plus every `.agentreadonly` `$HOME/...` entry as its
+own project — so cross-project references resolve correctly, with no
+separate step before the IDE opens. `$HOME/.eclipse` is bound in whole,
 read-write, so your real preferences and configuration carry over rather
 than diverging.
 

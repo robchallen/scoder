@@ -22,19 +22,7 @@ export interface SandboxConfig {
 	// EM: design/features/ide-companion.md and wrapWithIdeBackground below.
 	ideBin?: string;
 	ideArgs?: string[];
-	// EM: Every preset's prepareCommand (see types.ts) that resolved to a
-	// EM: concrete sandbox-side bin/args pair — the primary tool's own, and
-	// EM: the --ide companion's own, in that order, if either or both
-	// EM: defined one. Run to completion, in sequence, inside the sandbox,
-	// EM: before the tool/IDE exec. See wrapWithPrepareStep and
-	// EM: design/implementation/plans/eclipse-preset.md.
-	prepareSteps?: PrepareStep[];
 	protectionConfig?: ProtectionConfig;
-}
-
-export interface PrepareStep {
-	bin: string;
-	args: string[];
 }
 
 // ### buildBwrapCommand
@@ -58,7 +46,6 @@ export async function buildBwrapCommand(
 		toolEnv,
 		ideBin,
 		ideArgs,
-		prepareSteps,
 		protectionConfig,
 	} = config;
 
@@ -340,14 +327,13 @@ export async function buildBwrapCommand(
 	// EM: `--` marks end-of-options, so a tool path beginning with `-` cannot be
 	// EM: mistaken for a bwrap flag. Previously this separated pasta's options
 	// EM: from the command; bwrap accepts it in the same role.
-	const innerCmd = ideBin
-		? wrapWithIdeBackground(toolBin, toolArgs, ideBin, ideArgs ?? [])
-		: [toolBin, ...toolArgs];
-
-	if (prepareSteps && prepareSteps.length > 0) {
-		cmd.push("--", ...wrapWithPrepareStep(prepareSteps, innerCmd));
+	if (ideBin) {
+		cmd.push(
+			"--",
+			...wrapWithIdeBackground(toolBin, toolArgs, ideBin, ideArgs ?? []),
+		);
 	} else {
-		cmd.push("--", ...innerCmd);
+		cmd.push("--", toolBin, ...toolArgs);
 	}
 
 	return cmd;
@@ -407,66 +393,6 @@ export function wrapWithIdeBackground(
 		...ideArgs,
 		toolBin,
 		...toolArgs,
-	];
-}
-
-// ### wrapWithPrepareStep
-// [IMPLEMENTS](/design/features/tool-presets.md)
-// Runs one or more presets' prepareCommand (see types.ts) to completion, in
-// order, inside the sandbox, before handing off to the real tool/IDE
-// command — used by the eclipse preset to (re)build its
-// dynamically-generated workspace on every launch, whether eclipse is the
-// primary tool or the --ide companion (both can supply their own step; see
-// design/implementation/plans/eclipse-preset.md).
-//
-// A non-zero exit from any step is treated as a whole-launch failure, not
-// something swallowed on the way to a broken interactive session: the
-// script prints a one-line diagnostic to stderr and exits with that step's
-// own status, mirroring wrapWithIdeBackground's own STATUS-forwarding
-// idiom. Later steps never run once an earlier one has failed.
-//
-// Same positional-argv convention as wrapWithIdeBackground/wrapWithFdShim,
-// nested one level for the outer step count: STEPS_COUNT tells the script
-// how many steps follow, each prefixed by its own STEP_ARGC so the loop
-// can peel off exactly that many words as that step's argv, leaving
-// finalCmd to be handed to `exec "$@"` untouched. Nothing here is
-// interpolated into the script string, so an argument containing spaces
-// or shell metacharacters is never reparsed as shell syntax.
-export function wrapWithPrepareStep(
-	prepareSteps: PrepareStep[],
-	finalCmd: string[],
-): string[] {
-	// biome-ignore-start lint/suspicious/noTemplateCurlyInString: this is a
-	// literal bash "${...}" reference in a generated shell script, not a
-	// forgotten JS template placeholder — this is a plain string, not a
-	// template literal, so JS never interpolates it.
-	const script =
-		'STEPS_COUNT="$1"; shift; ' +
-		"for ((s=0; s<STEPS_COUNT; s++)); do " +
-		'STEP_ARGC="$1"; shift; ' +
-		"STEP_ARGV=(); " +
-		'for ((i=0; i<STEP_ARGC; i++)); do STEP_ARGV+=("$1"); shift; done; ' +
-		'"${STEP_ARGV[@]}"; STATUS=$?; ' +
-		'if [ "$STATUS" -ne 0 ]; then ' +
-		'echo "scoder: prepare step $((s+1))/$STEPS_COUNT failed (exit $STATUS)" >&2; ' +
-		'exit "$STATUS"; ' +
-		"fi; " +
-		"done; " +
-		'exec "$@"';
-	// biome-ignore-end lint/suspicious/noTemplateCurlyInString: see above
-	const flattenedSteps = prepareSteps.flatMap((step) => [
-		(1 + step.args.length).toString(),
-		step.bin,
-		...step.args,
-	]);
-	return [
-		"bash",
-		"-c",
-		script,
-		"_",
-		prepareSteps.length.toString(),
-		...flattenedSteps,
-		...finalCmd,
 	];
 }
 

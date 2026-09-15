@@ -21,31 +21,20 @@ export interface ToolPreset {
 	// (possibly none) — unlike configBinds, which never sees user args at
 	// all, this hook decides for itself whether to leave them untouched
 	// (rstudio: only fills in a default when the user gave none), prepend
-	// fixed flags ahead of them (eclipse: -data/-configuration must always
+	// fixed flags ahead of them (eclipse: -data/-importProject must always
 	// be present, whatever else the user passed), or something else
 	// entirely. existingArgs is `[]` for the --ide companion, which has no
-	// way for the user to supply its own args directly.
+	// way for the user to supply its own args directly. dependencyDirs is
+	// the sandbox-side destinations of every .agentreadonly $HOME/... entry
+	// already resolved for this session (see ProtectionConfig.dependencyDirs)
+	// — e.g. eclipse imports each of these as its own project, alongside
+	// the main one, so cross-project references resolve inside the sandbox.
 	resolveArgs?: (
 		hostProjectDir: string,
 		sandboxProjectDir: string,
 		existingArgs: string[],
-	) => Promise<string[]>;
-	// Optional: runs a separate, complete command inside the sandbox,
-	// before the tool/IDE exec — for setup work that has to happen inside
-	// the sandbox's own mount namespace (see eclipse-preset.md: a
-	// dynamically-generated Eclipse workspace has to be built by a process
-	// that sees the sandbox's own paths, not the host's). A failed prepare
-	// step is a loud, whole-launch failure, not something folded silently
-	// into configBinds or resolveArgs. dependencyDirs is the sandbox-side
-	// destinations of every .agentreadonly $HOME/... entry already
-	// resolved for this session (see ProtectionConfig.dependencyDirs) —
-	// e.g. eclipse imports each of these as its own project, alongside the
-	// main one, so cross-project references resolve inside the sandbox.
-	prepareCommand?: (
-		hostProjectDir: string,
-		sandboxProjectDir: string,
 		dependencyDirs: string[],
-	) => Promise<{ bin: string; args: string[] } | null>;
+	) => Promise<string[]>;
 }
 
 export interface ToolBindSpec {

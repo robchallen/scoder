@@ -37,25 +37,17 @@ async function ensureDir(path: string): Promise<void> {
 // EM: ### Eclipse preset support
 // EM: See design/implementation/plans/eclipse-preset.md for the full
 // EM: investigation, including a since-superseded approach (vendoring the
-// EM: import-projects plugin jar and registering it via a scoder-private
-// EM: bundles.info) that this was simplified away from once a proper p2
-// EM: update site existed: the plugin is now a prerequisite the user
-// EM: installs into their own Eclipse once, the same way any other
-// EM: Eclipse feature is installed — scoder no longer vendors, binds, or
-// EM: registers anything plugin-related at all. Kept together, ahead of
-// EM: TOOL_PRESETS, since configBinds/prepareCommand/resolveArgs all need
-// EM: the exact same computed layout and must never disagree with each
-// EM: other about it.
-
-// EM: The sandbox path an optional, project-supplied .eclipse.epf
-// EM: (exported Eclipse preferences) is bound at — a fixed,
-// EM: always-creatable location directly under /home/scoder/.local/share
-// EM: (no extra --dir scaffolding needed: builder.ts's own fixed --dir
-// EM: list already includes that directory). prepareCommand doesn't
-// EM: receive sandboxHome as a parameter (unlike configBinds), so this is
-// EM: hardcoded the same way builder.ts/index.ts already hardcode
-// EM: SCODER_HOME, not derived per-call.
-const ECLIPSE_SANDBOX_EPF_PATH = "/home/scoder/.local/share/scoder-eclipse.epf";
+// EM: import-projects plugin jar, registering it via a scoder-private
+// EM: bundles.info, and running its import as a separate headless
+// EM: pre-launch stage) that this was simplified away from: the plugin is
+// EM: now a prerequisite the user installs into their own Eclipse once,
+// EM: the same way any other Eclipse feature is installed, and its own
+// EM: -importProject/-importPreferences flags work directly on the normal
+// EM: interactive launch (confirmed from the plugin's own current
+// EM: README) — no separate headless stage needed at all. Kept together,
+// EM: ahead of TOOL_PRESETS, since configBinds/resolveArgs both need the
+// EM: exact same computed layout and must never disagree with each other
+// EM: about it.
 
 interface EclipseLayout {
 	sandboxEclipseBin: string;
@@ -91,11 +83,11 @@ function pushIntermediateDirs(
 }
 
 // ### resolveEclipseLayout
-// Computes every path the eclipse preset's three hooks (configBinds,
-// prepareCommand, resolveArgs) need to agree on. Called independently from
-// each of them rather than threaded through as shared state — ToolPreset's
-// hooks are plain functions with no shared closure over per-launch state —
-// but every input is either fixed (the host's own filesystem) or derived
+// Computes every path the eclipse preset's two hooks (configBinds,
+// resolveArgs) need to agree on. Called independently from each of them
+// rather than threaded through as shared state — ToolPreset's hooks are
+// plain functions with no shared closure over per-launch state — but
+// every input is either fixed (the host's own filesystem) or derived
 // purely from hostProjectDir, so recomputing it is deterministic and safe
 // to call more than once per launch.
 async function resolveEclipseLayout(
@@ -511,7 +503,12 @@ export const TOOL_PRESETS: Record<string, ToolPreset> = {
 		// EM: An explicit argument from the user always wins outright — this
 		// EM: only fills in a default when there isn't one, unlike eclipse's
 		// EM: own resolveArgs, which always prepends its fixed flags.
-		resolveArgs: async (hostProjectDir, sandboxProjectDir, existingArgs) => {
+		resolveArgs: async (
+			hostProjectDir,
+			sandboxProjectDir,
+			existingArgs,
+			_dependencyDirs,
+		) => {
 			if (existingArgs.length > 0) {
 				return existingArgs;
 			}
@@ -655,75 +652,62 @@ export const TOOL_PRESETS: Record<string, ToolPreset> = {
 			});
 
 			// EM: An optional, project-supplied Eclipse preferences export
-			// EM: (exported via File > Export > Preferences natively),
-			// EM: imported via -importPreferences (see prepareCommand).
-			// EM: Bound read-only at its own fixed sandbox path — not left
-			// EM: at its in-project path, which would inherit the rest of
-			// EM: the project tree's read-write bind.
-			const epfHostPath = `${process.cwd()}/.eclipse.epf`;
-			if (await fileExists(epfHostPath)) {
-				binds.push({
-					type: "ro-bind",
-					source: epfHostPath,
-					dest: ECLIPSE_SANDBOX_EPF_PATH,
-				});
-			}
+			// EM: (exported via File > Export > Preferences natively) is
+			// EM: deliberately left where it is — the project root, part of
+			// EM: the regular read-write project bind — not moved to some
+			// EM: separate, read-only sandbox path. Making it read-only
+			// EM: would need a bind layered *after* the main project bind
+			// EM: (the way .agentreadonly's own protected paths work, see
+			// EM: src/git/protection.ts), which configBinds has no way to
+			// EM: do; but read-write is also the actually-wanted behaviour
+			// EM: here, not just an accepted limitation — the whole point
+			// EM: of importing it fresh on every launch (see resolveArgs)
+			// EM: is that edits to it inside the sandbox take effect next
+			// EM: session, the same way any other project file would.
 
 			return { binds, dirs, env };
 		},
 
-		// EM: The unconditional, every-launch pre-launch step that makes the
-		// EM: dynamic workspace generation work — see Design points 4/5 in
-		// EM: eclipse-preset.md. Idempotent by construction (the plugin's own
-		// EM: project.isOpen() branch), so re-running this on every launch,
-		// EM: against the same persisted workspace, is safe.
-		prepareCommand: async (
+		// EM: Unlike rstudio's own resolveArgs, -data/-importProject/
+		// EM: -importPreferences are always prepended, whatever the user
+		// EM: passed — all intrinsically tied to project identity, not
+		// EM: something a user would reasonably want to override. See
+		// EM: Design points 4-6 in eclipse-preset.md.
+		//
+		// No separate headless pre-launch stage: the plugin's own
+		// -importProject/-importPreferences work directly on the normal
+		// interactive launch (confirmed from the plugin's own current
+		// README — "When launching Eclipse, add the -importProject ...
+		// command line parameter... will ultimately place you in the
+		// IDE"), so there's nothing a separate prepareCommand stage would
+		// add here. An earlier version ran the plugin's own headless
+		// application as a distinct pre-launch step instead — dropped once
+		// this was confirmed, since it bought nothing beyond an extra JVM
+		// startup.
+		resolveArgs: async (
 			hostProjectDir,
 			sandboxProjectDir,
+			existingArgs,
 			dependencyDirs,
 		) => {
-			const layout = await resolveEclipseLayout(hostProjectDir);
-			if (!layout) {
-				error("eclipse install could not be located for the prepare step");
-				return null;
-			}
-
-			// EM: Recomputed independently here (same fileExists check
-			// EM: configBinds already made) so this never passes
-			// EM: -importPreferences a path that was never bound — mirrors
-			// EM: how resolveEclipseLayout itself is independently
-			// EM: recomputed by every hook rather than threaded through as
-			// EM: shared state.
-			const hasEpf = await fileExists(`${hostProjectDir}/.eclipse.epf`);
-
-			const args = [
-				"-nosplash",
-				"-clean",
-				"-application",
-				"com.seeq.eclipse.importprojects.headlessimport",
-				"-data",
-				layout.workspaceSandboxDir,
-				"-importProject",
-				sandboxProjectDir,
-				...dependencyDirs.flatMap((dir) => ["-importProject", dir]),
-				...(hasEpf ? ["-importPreferences", ECLIPSE_SANDBOX_EPF_PATH] : []),
-			];
-
-			return { bin: layout.sandboxEclipseBin, args };
-		},
-
-		// EM: Unlike rstudio's own resolveArgs, -data is always prepended,
-		// EM: whatever the user passed — the workspace path is intrinsically
-		// EM: tied to project identity, not something a user would
-		// EM: reasonably want to override. See Design point 6 in
-		// EM: eclipse-preset.md.
-		resolveArgs: async (hostProjectDir, _sandboxProjectDir, existingArgs) => {
 			const layout = await resolveEclipseLayout(hostProjectDir);
 			if (!layout) {
 				return existingArgs;
 			}
 
-			return ["-data", layout.workspaceSandboxDir, ...existingArgs];
+			const hasEpf = await fileExists(`${hostProjectDir}/.eclipse.epf`);
+
+			return [
+				"-data",
+				layout.workspaceSandboxDir,
+				"-importProject",
+				sandboxProjectDir,
+				...dependencyDirs.flatMap((dir) => ["-importProject", dir]),
+				...(hasEpf
+					? ["-importPreferences", `${sandboxProjectDir}/.eclipse.epf`]
+					: []),
+				...existingArgs,
+			];
 		},
 
 		validate: async () => {

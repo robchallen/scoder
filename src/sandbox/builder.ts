@@ -166,11 +166,7 @@ export async function buildBwrapCommand(
 	// EM: sandbox on at least one real host (bwrap itself failing,
 	// EM: surfaced only as a generic, uninformative pasta attach error
 	// EM: with no indication /dev was the cause). Confirmed working
-	// EM: directly for both a plain tool (`scoder pi`) and a GUI
-	// EM: companion (`scoder --ide eclipse pi`). /dev/ptmx and /dev/full
-	// EM: are deliberately not included — not confirmed to be needed by
-	// EM: anything tested so far; add /dev/ptmx if something needs to
-	// EM: allocate its own fresh pty. See design/features/sandbox-isolation.md.
+	// EM: directly for both a plain tool (`scoder pi`) See design/features/sandbox-isolation.md.
 	cmd.push(
 		"--dev-bind",
 		"/dev/null",
@@ -178,6 +174,10 @@ export async function buildBwrapCommand(
 		"--dev-bind",
 		"/dev/zero",
 		"/dev/zero",
+		//TODO: added /dev/full and /dev/ptmx but have not updated documentation and tests
+		"--dev-bind",
+		"/dev/full",
+		"/dev/full",
 		"--dev-bind",
 		"/dev/urandom",
 		"/dev/urandom",
@@ -190,6 +190,9 @@ export async function buildBwrapCommand(
 		"--dev-bind",
 		"/dev/pts",
 		"/dev/pts",
+		"--dev-bind",
+		"/dev/ptmx",
+		"/dev/ptmx",
 		"--dev-bind",
 		"/dev/fd",
 		"/dev/fd",

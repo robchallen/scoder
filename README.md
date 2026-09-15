@@ -49,11 +49,18 @@ references inside it. Every launch, scoder runs a headless import step
 inside the sandbox first, building (or refreshing) a persisted, dedicated
 workspace against the sandbox's own project path, plus every
 `.agentreadonly` `$HOME/...` entry as its own project — so cross-project
-references resolve correctly. See
+references resolve correctly. `$HOME/.eclipse` is bound in whole,
+read-write, so your real preferences and configuration carry over rather
+than diverging.
+
+**Requires the
+[import-projects plugin](https://github.com/robchallen/eclipse-import-projects-plugin)
+installed into your Eclipse first** (`Help > Install New Software...`,
+`>= 2.0.0`) — scoder does not install or vendor it. An optional
+`.eclipse.epf` at the project root (exported via
+`File > Export > Preferences`) is imported automatically if present. See
 `design/implementation/plans/eclipse-preset.md` for the full
-investigation, including why Eclipse's own runtime configuration is
-reused from your real, native install when possible rather than always
-forced into a separate scoder-specific location.
+investigation.
 
 ## How it works
 

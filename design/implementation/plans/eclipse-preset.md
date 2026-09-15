@@ -34,9 +34,8 @@ written via `DataOutputStream`/read via `DataInputStream`, wrapped in
 Eclipse's own `SafeChunkyInputStream`/`SafeChunkyOutputStream` framing
 (checksummed, crash-safe, versioned — the source comment documents format
 changes as recent as "since 3.23"). Confirmed directly against a real file
-produced by a real Eclipse (see Verified Groundwork): a short binary
-header, a length-prefixed UTF string holding `URI//file:<path>`, then
-padding and a trailer.
+produced by a real Eclipse: a short binary header, a length-prefixed UTF
+string holding `URI//file:<path>`, then padding and a trailer.
 
 This rules out hand-writing `.location` ourselves as a robust option —
 it's not a portable format, and it's changed shape across versions. The
@@ -67,377 +66,77 @@ Rejected for this specific need: Oomph's whole design centers on
 fresh install — heavier machinery than needed here, since scoder already
 has the project on disk and mounted; there's nothing to clone.
 
+## The plugin: a prerequisite, not vendored
+
+Eclipse's own project-import mechanism doesn't exist out of the box — it
+comes from a real, actively-maintained plugin,
+[`robchallen/eclipse-import-projects-plugin`](https://github.com/robchallen/eclipse-import-projects-plugin)
+(a fork of the original `seeq12/eclipse-import-projects-plugin`, now
+published from its own proper p2 update site). **scoder requires this
+plugin to already be installed into the host's Eclipse before scoder is
+run** — the same way any other Eclipse feature is installed
+(`Help > Install New Software...`, or the p2 director for scripted
+provisioning) — and does not vendor, inject, or otherwise manage the
+plugin itself.
+
+This is a deliberate simplification, not the original plan: an earlier
+version of this preset vendored a pinned jar and went to considerable
+lengths to register it with Equinox at every launch without touching the
+user's real Eclipse install or configuration. That approach worked but
+was fragile in exactly the way trying to reverse-engineer another
+program's internal state management always is — see "History: the
+vendored-plugin approach" below for what it took and why it was dropped.
+Requiring the plugin as a prerequisite is both simpler and more robust:
+nothing scoder does depends on guessing where Equinox's bundle list lives
+or how it's structured.
+
+Confirmed directly, from the plugin's own current README: the relevant
+CLI flags are `-importProject <folder>` (recursively finds and
+imports/refreshes every `.project` under it; repeatable) and
+`-importPreferences <file>.epf` (also repeatable), and the headless
+application id — `com.seeq.eclipse.importprojects.headlessimport` — is
+unchanged across the `1.x`/`2.x`/`3.x` line. (`-importProject` replaced
+the older `-import` in `2.0.0`; scoder targets `2.0.0+`.)
+
 ## Verified Groundwork
 
 Nothing below is asserted from documentation alone — a real, current
-(February 2026) Eclipse Platform Runtime Binary (4.39) was downloaded and
-actually run:
+Eclipse Platform Runtime Binary (4.39) and the plugin's own real jar were
+downloaded and actually run, headlessly (no GTK/display needed for any of
+this: the headless-import application never touches SWT/GTK, confirmed
+directly — the plain interactive workbench crashes immediately in a
+GTK-less environment, the headless application does not):
 
 | Claim | Result |
 |---|---|
 | `.location` is a binary, `DataOutputStream`-written, checksummed format (from reading Eclipse's actual source) | **Yes** — confirmed by inspecting a real produced file: binary header, length-prefixed `URI//file:<path>` string, padding, trailer — matches the source exactly. |
-| A real, currently-maintained, MIT-licensed plugin exists that can import a project into a workspace from the command line ([seeq12/eclipse-import-projects-plugin](https://github.com/seeq12/eclipse-import-projects-plugin)) | **Yes** — confirmed: downloaded its pre-built `1.4.0` jar directly from the repo, dropped it into the Eclipse install's `plugins/` directory. |
-| The plugin has a genuine **headless** mode (`-application com.seeq.eclipse.importprojects.headlessimport`) that needs no display | **Yes** — ran it with no `DISPLAY`, no X server, no GTK libraries present on this host at all (confirmed separately: plain interactive Eclipse crashes immediately in this same environment with `libgtk-3.so.0: cannot open shared object file`) — the headless application never touches SWT/GTK and completed cleanly. |
-| The plugin's compiled `1.4.0.jar` actually works against this modern (4.39, Feb 2026) Eclipse, not just the 2012–2015 releases its own README claims testing against | **Yes** — the bundle loaded and reported `ACTIVE` in the OSGi console, and the import genuinely ran (see next row). Its own README's compatibility claim was outdated but the artifact still works. |
-| A real project is genuinely imported and persisted, not just processed in-memory | **Yes** — ran the headless import against a fresh workspace with the `-import <dir>` flag: log showed `Searching for projects in ...` then `Importing project fake-project ...`; the workspace's `.metadata/.plugins/org.eclipse.core.resources/.projects/fake-project/.location` file was created, containing exactly the expected binary/URI content. A **second, separate process invocation** against the same workspace directory correctly reported `Refreshing project fake-project` (not `Importing`) and self-recovered from an "unsaved changes" warning left by the first run — confirming genuine, correct persistence across independent launches, not an in-memory artifact of one process. |
-| A vendored file can be injected into an arbitrary nested path inside an otherwise fully **read-only**-mounted directory tree via bwrap, without needing the real install to already contain it or be writable at all | **No — this specific claim was wrong, corrected after real-world use.** The original test bound a new *source* onto an already-*existing* destination file (the jar had already been copied into that fixture's `plugins/` by earlier manual testing) — a genuinely different, easier case than *creating* a brand-new destination node. Against a real, never-touched install, this fails exactly as reported: `bwrap: Can't create file at <install>/plugins/<jar>: Read-only file system`. bwrap needs to create the destination node before the bind can land there, and by the time a preset's own binds run, `builder.ts`'s wholesale `/opt` (or `/usr`, etc.) bind has already made that parent directory read-only — pushing a more specific bind *later in the same array* doesn't undo that. See "The plugin-injection bug, and the real fix" below for what replaced this. |
-| The plugin's own doc examples are internally inconsistent about the exact flag name (`-import` vs `-importProject`) | **Real risk, confirmed the hard way** — the repo's current README says the flag was renamed to `-importProject` in `2.0.0`, and its own "Headless" section example still uses the old `-import`. The actual compiled `1.4.0.jar` (extracted and inspected directly with `javap`) uses `-import` — the `master` branch source (`-importProject`, plus a `-importPreferences` feature) is *ahead of* the released jar, not what it contains. Using the README's newer syntax against the actual shipped jar silently does nothing (no error, no log entry, exit code 0) — this is exactly what happened on the first attempt, and it does not fail loudly. |
-| An explicit `-configuration <dir>` flag redirects Equinox's own writable state (OSGi bundle cache, `org.eclipse.core.runtime`, `org.eclipse.equinox.app`, `config.ini`) away from a read-only install, without relying on Eclipse's own automatic per-user fallback area | **Yes** — confirmed directly: ran the prepare step against an install bound genuinely read-only (`--ro-bind`, not just a permissions test), with `-configuration <writable-dir>` pointing elsewhere; every file that had previously been written into the install's own (writable, in that earlier test) `configuration/` directory was instead written to the specified directory, correctly, with the install tree remaining untouched. |
-| A single `-import <dir>` recursively finds **every** `.project` file under that directory, however deeply nested, and multiple separate `-import` flags in one invocation each import independently | **Yes** — confirmed directly: three separately-mounted directories (a main project, a flat dependency, and a dependency with its `.project` three levels deep) were all imported correctly in one headless-import run, each logged individually (`Searching for projects in ...` / `Importing project ...`), and all three ended up registered in the workspace. |
-
-### The `~/.eclipse/<hash>` fallback, read from Eclipse's actual source
-
-Real-world feedback asked specifically whether the default configuration
-location is `<install-dir>` or `~/.eclipse` — read Equinox's own current
-implementation
-([`EquinoxLocations.java`](https://github.com/eclipse-equinox/equinox/blob/master/bundles/org.eclipse.osgi/container/src/org/eclipse/osgi/internal/location/EquinoxLocations.java),
-`computeDefaultConfigurationLocation()`/`computeDefaultUserAreaLocation()`/`getInstallDirHash()`),
-not just documentation about it. The answer is exactly what was
-suspected, and more precisely specified than a guess would be:
-
-1. **Try `<install-dir>/configuration` first.** Genuinely tested for
-   writability, not assumed: `StorageUtil.canWrite()` calls
-   `Files.isWritable()` and, if that's inconclusive, actually attempts to
-   create and delete a temp file there. Confirmed directly, in isolation
-   with a small standalone Java program under a real bwrap `--ro-bind`:
-   both checks correctly detect a genuinely read-only mount (`false`, then
-   `IOException: Read-only file system`) — the check itself is sound.
-2. **If that fails, fall back to `<user.home>/.eclipse/<app-id>_<app-version>_<hash>/configuration`**,
-   where `<hash>` is `installDir.getCanonicalPath().hashCode()` (falling
-   back to `getAbsolutePath().hashCode()` only if the canonical path can't
-   be resolved) — **a hash of the install directory's own path string**,
-   nothing host- or sandbox-specific.
-
-One thing this investigation could not fully explain: rerunning the exact
-headless-import scenario against an install made genuinely read-only via
-`--ro-bind` never actually produced a `~/.eclipse/...` directory, despite
-independently confirming the underlying writability check behaves
-correctly in isolation. Plausibly the headless-import application (unlike
-the full interactive workbench) never reaches whatever code path first
-needs the configuration area badly enough to trigger the fallback — not
-conclusively isolated, and not clearly relevant besides.
-
-**What is clearly relevant: since the hash is computed purely from the
-install directory's own path, and scoder already mounts `/opt` (and
-other non-`$HOME` system paths) at the identical real absolute path
-both inside and outside the sandbox** — confirmed directly against the
-current code, `src/sandbox/builder.ts`: `--ro-bind /opt /opt`, not
-remapped the way `$HOME` is — **Eclipse running inside the sandbox would
-compute the exact same hash, and so look for the exact same directory
-name, as it does on the real host.** This means scoder doesn't need to
-invent its own configuration location at all: it can instead look for
-whatever `~/.eclipse/<app>_<version>_<hash>/` directory the user's own,
-real, already-accumulated Eclipse usage has already created on the host,
-and bind that same directory into the sandbox at the mirrored path —
-letting Eclipse's own default resolution find and reuse it natively, with
-no scoder-specific location and no divergence from the user's real
-configuration. See the revised Decision 5 below — the design changed as
-a direct result of this.
-
-If no such host directory exists yet (a first-ever run, or an install the
-user's own account can actually write to directly, so it never needed a
-fallback), there's nothing to reuse, and scoder does need to create
-somewhere writable and persist it — but that's now the fallback case, not
-the default design.
-
-### The plugin-injection bug, and the real fix
-
-Real-world use of the implemented preset hit exactly what the corrected
-row above now says it should: `bwrap: Can't create file at
-/opt/eclipse/plugins/com.seeq.eclipse.importprojects_1.4.0.jar: Read-only
-file system`. The fix is not a bwrap ordering trick — it's to stop trying
-to put the jar under the install's own `plugins/` directory at all.
-
-Modern Eclipse installs (this one included) don't load their bundle set
-from a long `osgi.bundles=` list in `config.ini` the way older ones did —
-`config.ini` lists just the OSGi framework itself plus
-`org.eclipse.equinox.simpleconfigurator`, which then reads the *real*
-bundle list from `bundles.info`
-(`<configuration-area>/org.eclipse.equinox.simpleconfigurator/bundles.info`),
-one line per bundle: `<symbolic-name>,<version>,<location>,<start-level>,<auto-start>`.
-Confirmed directly, headlessly (no GTK needed for any of this):
-
-- `<location>` accepts an **absolute `file:` URL**, not just a path
-  relative to the install — so the vendored jar can live anywhere
-  reachable inside the sandbox, not just under the read-only install.
-- `bundles.info` lives inside the **writable** `-configuration` area —
-  either the reused host directory or the scoder-managed fallback, both
-  already bound read-write — so editing it is plain host-side file I/O,
-  no bwrap trick needed at all.
-- Handing Equinox a `bundles.info` containing *only* the new plugin's own
-  line does **not** work — confirmed directly: it fails with
-  `Unresolved requirement: Require-Bundle: org.eclipse.ui`, because the
-  rest of the normal bundle set (which a `-configuration` dir with no
-  `bundles.info` of its own would otherwise transparently inherit from
-  the install's own "shared configuration area", an Equinox mechanism
-  this investigation also confirmed exists) is not merged in once an
-  instance-level `bundles.info` is present — it's replaced outright. So
-  the fix reads whichever base list is available (the reused host
-  directory's own `bundles.info` if it has one, else the install's own
-  default one, shipped at
-  `<install>/configuration/org.eclipse.equinox.simpleconfigurator/bundles.info`),
-  and writes that full list back out with the plugin's own line appended
-  (or replaced, if already present — idempotent across launches, same as
-  everything else here).
-- Confirmed end to end, headlessly: with the jar bound at a fixed,
-  always-creatable sandbox path (`/home/scoder/.local/share/scoder-
-  eclipse-plugin/`, never under any read-only system bind) and referenced
-  from `bundles.info` by that path, the headless-import application
-  starts and imports correctly — no install-tree mutation attempted at
-  all.
-- **When reusing the user's own real `~/.eclipse/<hash>` directory**, this
-  writes a sandbox-only path into their real, native `bundles.info`.
-  Confirmed directly this is benign: a `bundles.info` entry whose
-  location doesn't resolve is silently skipped by Equinox — no error, no
-  effect on any other bundle — and would only matter if they ran this
-  exact plugin's own headless-import application natively themselves,
-  which isn't a real workflow. Left in place rather than cleaned up
-  afterward (no reliable "scoder is done with this install" signal to
-  clean up on), and self-healing anyway: every future scoder launch
-  rewrites the same entry idempotently.
-
-### The second bug: skipping Equinox's own *first* choice
-
-Real-world use again surfaced a real gap, this time not a broken
-mechanism but a wrong implementation of an already-correct design: the
-sandboxed Eclipse launched into what looked like a totally fresh,
-unconfigured state — no real preferences, no previously-installed
-plugins, nothing familiar — on a machine where the user's own account
-already owns `/opt/eclipse` outright and their native Eclipse writes
-straight into `<install>/configuration` itself, never needing the
-`~/.eclipse/<hash>` fallback at all. The code, though, only ever checked
-`~/.eclipse/<hash>` (finding nothing, since none was ever created) and
-fell straight through to the scoder-managed fallback — silently using an
-empty, brand-new directory instead of the user's real one, even though
-Decision 5's own written design (and the Equinox source it's based on)
-says to check `<install>/configuration` itself *first*, before ever
-considering `~/.eclipse/<hash>`. The implementation simply never wrote
-that first check.
-
-Fixed by adding it: `resolveEclipseLayout` now checks whether
-`<install>/configuration` both exists and is writable by the current
-user (`isWritableDir`, a plain `access(W_OK)` against the real host
-filesystem) *before* looking at `~/.eclipse/<hash>` at all. If so, that
-directory is bound onto itself with a plain `--bind` (read-write),
-overriding the wholesale/defensive install-dir `--ro-bind` that already
-covers it — confirmed directly this composes correctly: binding an
-*already-existing* directory read-write over an already-read-only parent
-works (unlike creating a new file there, the plugin-injection bug above),
-and the override correctly carries the *real* directory's own existing
-content, not an empty one. No `-configuration` flag is passed in this
-case either, exactly as for the `~/.eclipse/<hash>` case — both are now
-just the two forms "a real, already-existing host directory is being
-reused directly," covered by the same `reuseHostConfig` flag.
-
-**A smaller, defensive fix alongside it**: the hash match against
-`~/.eclipse/` entries now also tries the raw (possibly negative) hash
-string, not just its absolute value — a hedge against the "Equinox forces
-this non-negative" detail in this doc's own source citation being
-slightly off, rather than silently missing a real directory over a sign
-mismatch. Not confirmed either way to have been the actual cause of
-anything (the missing first-choice check above was reproduced and fixed
-independently of this), but cheap enough to add defensively while in this
-code anyway.
-
-### The third bug: the directory name isn't just `<app>_<version>_<hash>`
-
-Immediately after the second bug's fix, real-world use surfaced a third
-one in the same area: the user's real `~/.eclipse/` directory is named
-`org.eclipse.platform_4.39.0_1473617060_linux_gtk_x86_64` — the hash is
-followed by *more* underscore-separated segments (`linux`, `gtk`,
-`x86_64` — OS/WS/ARCH, not part of this doc's original,
-under-specified `<app>_<version>_<hash>` sketch). The match was written
-as `name.endsWith(`_${hash}`)`, which only matches when the hash is the
-*last* segment — never true here, so it fell through to the
-scoder-managed fallback exactly the same way the second bug did, just
-via a different, narrower mismatch this time.
-
-Fixed by matching the hash as its own segment *anywhere* in the name,
-not only at the end: split the entry name on `_` and check whether the
-hash string is one of the resulting segments (`segments.includes(hash)`),
-rather than testing the whole name for a trailing substring. Confirmed
-directly against the user's own real directory name shape, with a fake
-install reproducing the exact hash: correctly matched and bound, with
-the existing (fake) custom-installed plugin's own `bundles.info` entry
-still preserved alongside the newly-appended one.
-
-### The fourth bug: the reused directory itself isn't the configuration area
-
-Immediately after the third fix, the user pointed out the vendored jar's
-bind still looked wrong — expecting something under a `plugins/`
-directory nested inside the reused `~/.eclipse/<hash>` directory. That
-specific expectation turned out not to be quite right (see below), but
-chasing it surfaced a real, independent bug: `configHostDir` for the
-reused case was set to `~/.eclipse/<hash>` **directly** — but this
-investigation's own earlier, source-cited finding (see "The
-`~/.eclipse/<hash>` fallback" above) already says the actual location is
-one level deeper: `<user.home>/.eclipse/<app>_<version>_<hash>/`
-**`configuration`**. The implementation had simply dropped that trailing
-segment, disagreeing with its own citation — `bundles.info` was ending
-up at `~/.eclipse/<hash>/org.eclipse.equinox.simpleconfigurator/...`
-instead of `~/.eclipse/<hash>/configuration/org.eclipse.equinox.simpleconfigurator/...`,
-one level too shallow for Equinox to ever find it.
-
-Fixed, at the time, by appending the missing `/configuration` segment —
-later reverted (see "The fifth bug" below), once real-world testing
-turned up something that made the exact sub-path moot for the purpose
-that motivated this fix in the first place: the user's own real machine
-turned out to have bundles.info at *both*
-`~/.eclipse/<hash>/configuration/org.eclipse.equinox.simpleconfigurator/bundles.info`
-*and* `~/.eclipse/<hash>/org.eclipse.equinox.simpleconfigurator/bundles.info`
-at once — which one Equinox's own default resolution actually treats as
-canonical was never conclusively pinned down. Binding the *whole*
-`~/.eclipse/<hash>` directory (not narrowed to a `configuration/`
-subpath) is a safe superset regardless of which sub-location matters for
-Equinox's own instance-preferences/bundle-cache resolution (Decision 5) —
-and, as of the fifth bug's fix, no longer matters at all for plugin
-registration, which now never reads or writes anything under this
-directory in the first place.
-
-### The fifth bug: don't touch the real bundles.info at all
-
-Chasing the fourth bug surfaced the deeper problem: *any* location
-picked for editing a real bundles.info runs into the same fundamental
-issue — a value written into a file that's read both natively and inside
-the sandbox can only ever be correct in one of those two contexts, since
-`$HOME` genuinely has two different spellings (the real one natively,
-`/home/scoder` inside the sandbox), and this project deliberately never
-exposes the real one inside the sandbox anywhere else. Writing the
-sandbox-only jar path into a file the user's own native Eclipse might
-also read, permanently, was flagged as "a problem" by real-world use,
-even though it had already been confirmed benign (an unresolvable
-bundle entry is silently skipped, no crash, no effect on anything else) —
-rightly: benign isn't the same as good hygiene, and a real fix was
-findable.
-
-The fix, confirmed directly through the real `eclipse` binary, exactly
-as scoder invokes it: Equinox's simpleconfigurator reads its bundle list
-from wherever the system property
-`org.eclipse.equinox.simpleconfigurator.configUrl` points, and this is
-overridable per-launch via a **`-vmargs`** argument
-(`-vmargs -Dorg.eclipse.equinox.simpleconfigurator.configUrl=file:<path>`)
-— confirmed this correctly redirects Equinox to a completely separate
-file, with the *real* one (checked before and after) byte-for-byte
-untouched. `-vmargs` has to be the trailing section of the whole command
-line (confirmed: everything after it goes to the JVM, not Eclipse's own
-framework), so it's appended *after* `-import ...`/`existingArgs`, not
-prepended alongside `-data`/`-configuration`.
-
-This means scoder now builds its own, entirely separate,
-scoder-private `bundles.info` on every launch — a plain temp file (same
-one-shot-per-launch convention as `.agentreadonly`'s overlay, `resolv.conf`,
-etc.), read from whichever real bundles.info is found first (trying both
-locations from the fourth bug's ambiguity, then the install's own shipped
-default, purely as a *template*), with this plugin's own line appended,
-bound in read-only alongside the vendored jar (both at fixed,
-always-creatable sandbox paths). **The real bundles.info, wherever it
-actually lives, is never read for anything but that one-time template
-copy, and never written to at all.** The `~/.eclipse/<hash>` vs.
-`<install>/configuration` question from Decision 5 is now *only* about
-where Equinox's own instance preferences and bundle cache live — plugin
-registration doesn't care which one is in play, or which of the two real
-bundles.info locations the fourth bug found is canonical.
-
-Five bugs, all in the same small area, is worth naming honestly rather
-than looking past — four of them stemming from the same root cause
-(assuming a single, home-relative absolute path can be written once and
-read correctly from both inside and outside the sandbox) before landing
-on the fix that sidesteps the assumption entirely rather than working
-around it piecemeal. None were found by this investigation's own headless
-testing (which never reused a real, externally-named `~/.eclipse/<hash>`
-directory end-to-end); all five were caught by real use against a real
-install. The lesson carried forward, not just noted here: this specific
-mechanism (locating and reusing an existing, externally-named directory
-on the host) is exactly the kind of thing worth testing against the
-messiest real example available, not the cleanest one this investigation
-happened to construct — and when a fix starts accumulating special cases,
-it's worth stepping back and asking whether the underlying assumption is
-the actual problem.
-
-### The sixth bug: the fifth fix picked the wrong file as its template, self-inflicted by the fourth
-
-Real-world use of the fifth fix reported losing every plugin the user
-had actually installed beyond the base Eclipse Platform — a genuine
-regression, traced to a self-inflicted cause: the fourth bug's fix (since
-reverted) had `configHostDir` pointing at
-`~/.eclipse/<hash>/configuration` for a while, and the *old*
-bundles.info-editing code (also since removed) wrote directly into
-*that* path — creating
-`~/.eclipse/<hash>/configuration/org.eclipse.equinox.simpleconfigurator/bundles.info`
-on the real host filesystem **for the first time**, since nothing
-existed there yet. Because nothing existed there yet, that write's own
-base content came from `<install>/configuration`'s bare shipped default
-(the only thing available to copy from at the time) — not the user's
-real, current bundle list, which only ever lived in the *real*,
-un-nested `~/.eclipse/<hash>/org.eclipse.equinox.simpleconfigurator/bundles.info`.
-
-The fifth fix's own candidate list (see `buildEclipseBundlesInfoContent`
-above) checked the nested path *first* — meaning it picked up this
-stale, scoder-created file as its "base template" instead of the real
-one, silently dropping every plugin the user had actually installed.
-
-Fixed by reordering the candidates: the un-nested path
-(`${configHostDir}/org.eclipse.equinox.simpleconfigurator/bundles.info`)
-is tried first, the nested one second (now understood to likely be
-scoder's own leftover debris rather than a genuine Equinox artifact —
-worth deleting by hand on a machine that hit this), then the install's
-own shipped default last. Confirmed directly with a fake install
-reproducing both files at once (the un-nested one carrying an extra
-"installed" plugin entry, the nested one bare) — the scoder-private
-bundles.info now correctly includes the extra plugin.
-
-This is also a reminder that "the fourth bug's fix" and "the fifth bug's
-fix" were not independent: the fourth bug's own fix, despite being later
-reverted in code, had already left a real, persistent side effect on a
-real machine — a caution for any future fix in this area that writes to
-a real, user-owned path, even briefly during development: reverting the
-code doesn't revert what it already wrote to a real disk.
+| The plugin has a genuine **headless** mode that needs no display | **Yes** — ran it with no `DISPLAY`, no X server, no GTK libraries present at all — completed cleanly. |
+| A real project is genuinely imported and persisted, not just processed in-memory | **Yes** — the workspace's `.location` file was created with the expected binary/URI content; a **second, separate process invocation** against the same workspace correctly reported refreshing rather than re-importing, confirming genuine persistence across independent launches. |
+| A single `-importProject <dir>` recursively finds **every** `.project` file under that directory, however deeply nested, and multiple separate `-importProject` flags in one invocation each import independently | **Yes** — confirmed directly: three separately-mounted directories (a main project, a flat dependency, and a dependency with its `.project` three levels deep) were all imported correctly in one headless-import run. |
+| The plugin's own code is idempotent — re-running against an already-imported project refreshes rather than re-imports | **Yes** — confirmed directly across independent process invocations, including self-recovery from an "unsaved changes" warning left by a prior run. |
 
 ## Design
 
-1. **Vendor the plugin jar in scoder's own repo**, pinned by its exact
-   sha256 (`133c61b284c61b889836560c06619e1ff3619080b733537f4137d1accb28ab2d`
-   for the verified `com.seeq.eclipse.importprojects_1.4.0.jar`), rather
-   than requiring the user's own Eclipse install to already have it — the
-   user's own idea ("require the eclipse installation has specific
-   plugins") is improved on here: nothing about the user's install needs
-   to change at all. The `eclipse` preset's `configBinds` binds it
-   read-only at a fixed, always-creatable sandbox path
-   (`/home/scoder/.local/share/scoder-eclipse-plugin/`, never under any
-   read-only system bind) and registers it with Equinox via a completely
-   separate, scoder-private `bundles.info` (built fresh every launch from
-   whichever real one is found, purely as a base template, then bound in
-   alongside the jar) — pointed at via a trailing `-vmargs
-   -Dorg.eclipse.equinox.simpleconfigurator.configUrl=file:<path>`
-   argument, not by editing any real bundles.info at all. **Not** by
-   injecting the jar into `<eclipse-install>/plugins/` (real-world use
-   proved that cannot work — see "The plugin-injection bug, and the real
-   fix" above) — and, after further real-world use, **not** by editing
-   the real, reused `-configuration` directory's own `bundles.info`
-   either (see "The fifth bug" above).
-2. **A second, separate writable location for Eclipse's own runtime
-   state** (the `-configuration` area, plus the p2 agent area, which
-   needs nothing special since it already defaults to `$HOME`/`/home/scoder`,
-   itself always writable) — not the same thing as the plugin's own install
-   directory. Rather than always inventing a scoder-specific location,
-   **prefer reusing whichever real, already-existing host directory
-   Equinox's own default resolution would use, in the same order it
-   checks them** (see Decision 5): first `<install-dir>/configuration`
-   itself, if the current user can already write to it directly (the
-   common case on a personal machine); else whatever
-   `~/.eclipse/<app>_<version>_<hash>/` directory the user's own real,
-   native Eclipse usage has already created on the host (see "The
-   `~/.eclipse/<hash>` fallback" in Verified Groundwork) — since that hash
-   is computed purely from the install directory's own path, and scoder
-   already mounts `/opt`-style install paths unchanged between host and
-   sandbox, the same directory name applies in both places. Either way,
-   bind-mount it into the sandbox at the identical mirrored path and pass
-   no `-configuration` at all, letting Eclipse's own default resolution
-   find it — this means no divergence between the user's sandboxed and
-   native Eclipse configuration. Only when neither real directory exists
-   (first-ever run anywhere, and the install directory itself isn't
-   writable) does scoder fall back to an explicit, scoder-managed
-   `-configuration <dir>`.
+1. **The Eclipse installation directory itself**: bound read-write when it
+   lives under `$HOME` (a personal install the user's own account already
+   owns — Eclipse may need to write there, e.g. updating its own p2
+   profile), bound read-only otherwise. The read-only case is mostly
+   defensive, not load-bearing in the common case: a system install under
+   `/opt` or `/usr` is already covered by `builder.ts`'s own wholesale
+   binds, so this is usually just a harmless repeat mount — it only
+   matters for an install somewhere those don't already reach.
+2. **`$HOME/.eclipse`, bound whole and read-write, if it exists.** This is
+   Equinox's own per-user state — instance preferences, and (per-install,
+   hash-named subdirectories under it — see "History" below) its own
+   runtime configuration area when the install itself isn't directly
+   writable. Bound as a whole directory, at its own identically-mapped
+   sandbox path, rather than trying to compute which specific
+   subdirectory matters or reconstruct Equinox's own resolution logic:
+   Eclipse's own default resolution then finds whatever it would
+   natively, with **no explicit `-configuration` flag needed at all**.
+   Preferences should be picked up automatically this way; not yet
+   independently re-verified end-to-end against a real interactive
+   Eclipse session (no GTK host available in this investigation).
 3. **A persistent, project-scoped workspace directory**, the same shape
    as `rstudio`'s own `~/.config/rstudio`/`~/.local/share/rstudio`:
    `~/.local/share/scoder-eclipse-workspaces/<projDir>` on the host,
@@ -449,53 +148,47 @@ code doesn't revert what it already wrote to a real disk.
    below); that part works identically whether the workspace persists or
    not, since the prepare step re-imports everything on every launch
    regardless.
-4. **A new, unconditional pre-launch step**, run *inside* the sandbox
-   before the interactive Eclipse process starts: the vendored plugin's
-   headless-import application, pointed at that persisted workspace, with
-   one `-import <path>` for the **sandbox-side** project path
-   (`sandboxProjDir`) *and one more for every `.agentreadonly`
-   `$HOME/...` entry already resolved for this session* — solving the
-   "Java projects reference a lot of local dependency projects, each of
-   which also needs to be an imported project" problem directly:
-   confirmed a single invocation with multiple `-import` flags correctly
-   imports a main project and multiple separately-mounted dependencies —
-   including one with its `.project` several directories deep — in one
-   shot, with no per-dependency manual step and no dependency on whether
-   the workspace itself is persisted. This must run inside the sandbox,
-   not on the host: the `.location` file records whatever path the
-   process writing it can see, and only the sandbox-side paths are what
-   the *interactive* Eclipse — which also runs inside the sandbox — will
-   actually need to resolve later. Running the prepare step on the host
-   would stamp paths that don't exist anywhere the interactive process
-   can see them.
-5. **Idempotent by construction, not by scoder's own logic** — the
-   plugin's own code already branches on `project.isOpen()` to decide
-   `import` vs `refresh`, confirmed directly (case 5 in Verified
-   Groundwork): rerunning the exact same prepare step — main project,
-   every dependency, all of it — against the same persisted workspace is
-   safe and correct on every single launch, with no special-casing needed
-   for "first run vs. subsequent runs," and no harm done by passing a
-   `.agentreadonly` entry that isn't actually an Eclipse project at all
-   (the plugin's own recursive search just finds nothing under it and
-   logs no import for that path).
-6. **The interactive Eclipse launch, afterward, is pointed at that same
+4. **An optional, project-supplied `.eclipse.epf`** (Eclipse preferences,
+   exported natively via `File > Export > Preferences`) at the root of
+   the scoder project directory: if present, bound read-only at a fixed
+   sandbox path (not left at its in-project location, which would
+   otherwise inherit the rest of the project tree's read-write bind) and
+   passed to the prepare step via `-importPreferences`.
+5. **A new, unconditional pre-launch step**, run *inside* the sandbox
+   before the interactive Eclipse process starts: the plugin's
+   headless-import application, pointed at the persisted workspace, with
+   one `-importProject <path>` for the **sandbox-side** project path and
+   one more for every `.agentreadonly` `$HOME/...` entry already resolved
+   for this session — solving "a Java project references other local
+   projects that also need to be workspace projects" without a manual
+   step. Confirmed a single invocation with multiple `-importProject`
+   flags correctly imports a main project and multiple separately-mounted
+   dependencies — including one nested several directories deep — in one
+   shot. This must run inside the sandbox, not on the host: the
+   `.location` file records whatever path the process writing it can
+   see, and only the sandbox-side paths are what the *interactive*
+   Eclipse — which also runs inside the sandbox — will actually need to
+   resolve later.
+6. **Idempotent by construction, not by scoder's own logic** — the
+   plugin's own code already branches on whether a project is open to
+   decide import vs. refresh, confirmed directly: rerunning the exact
+   same prepare step against the same persisted workspace is safe and
+   correct on every single launch, with no special-casing needed for
+   "first run vs. subsequent runs."
+7. **The interactive Eclipse launch, afterward, is pointed at that same
    workspace** via `-data <persisted-workspace>` — always supplied by the
    preset itself (not merely a default-when-no-args-given the way
    `rstudio`'s `.Rproj` detection works), since the workspace path is
    intrinsically tied to project identity, not something a user would
-   reasonably want to override. Whatever configuration-area decision the
-   prepare step made (reused host directory, bound at its mirrored path
-   with no `-configuration` flag; or an explicit fallback directory with
-   `-configuration <dir>`) is repeated identically for the interactive
-   launch, so both steps agree on where Equinox's state lives. Any of the
-   user's own arguments are appended after it.
+   reasonably want to override. Any of the user's own arguments are
+   appended after it.
 
 ## New Preset-System Capability Needed
 
 `rstudio` needed `configBinds` (binds/dirs/env) and `resolveArgs`
 (argv-once-`sandboxProjDir`-is-known). Neither covers "run a separate,
 complete command inside the sandbox first, and only then exec the real
-target." This plan needs a third, new hook:
+target." This plan needed a third, new hook:
 
 ```typescript
 // Runs inside the sandbox, before the tool/IDE exec. Failure here should
@@ -521,23 +214,18 @@ optional step**: eclipse's real use case is as the `--ide` companion (`pi
 --ide eclipse`), so both the primary preset's own `prepareCommand` and
 the `--ide` companion's own are collected (in that order) and run in
 sequence by `wrapWithPrepareStep` — a whole-launch failure on the first
-one that exits non-zero, later steps never run. This is a real, if fairly
-small, extension to `src/sandbox/builder.ts`'s wrapper-generation code,
-not something that fits inside the existing `wrapWithIdeBackground` shape
-unchanged.
+one that exits non-zero, later steps never run.
 
 **A second, smaller plumbing gap**: `dependencyDirs` above isn't actually
 available as its own list anywhere today. `.agentreadonly`'s `$HOME/...`
 entries become ordinary `BindMount`s mixed into
-`protectionConfig.safeBinds` alongside many unrelated things (the
-agents/`.local/bin` snapshots, `resolv.conf`, ssh access, `.agentports`,
-`scratch`, identity binds, the `AGENTS.md` overlay itself) — there's no
+`protectionConfig.safeBinds` alongside many unrelated things — there's no
 existing, distinct "here are just the `.agentreadonly` `$HOME` bind
 destinations" list a preset could read. `.agentreadonly` parsing
-(`src/git/protection.ts`) would need to also expose that subset
-distinctly, rather than have `eclipse`'s `prepareCommand` try to infer
-which `safeBinds` entries are dependency-project-shaped by guessing from
-their shape.
+(`src/git/protection.ts`) exposes that subset distinctly
+(`ProtectionConfig.dependencyDirs`), rather than having `eclipse`'s
+`prepareCommand` try to infer which `safeBinds` entries are
+dependency-project-shaped by guessing from their shape.
 
 ## Design Decisions
 
@@ -553,252 +241,189 @@ launch to keep it honest" both correct and cheap.
 
 Worth being explicit about, since it wasn't obvious going in: this
 decision is **not** what makes dependency projects resolve correctly.
-That's solved by Design point 4 (every `.agentreadonly` entry gets its own
-`-import`, every single launch) regardless of whether the workspace
+That's solved by Design point 5 (every `.agentreadonly` entry gets its own
+`-importProject`, every single launch) regardless of whether the workspace
 itself persists — an ephemeral, from-scratch-every-time workspace would
 import the main project and every dependency exactly the same way, just
-without carrying editor state between sessions. Persistence and
-dependency-import were, at first glance, easy to conflate into one
-"ephemeral vs. persistent" choice; they turned out to be orthogonal once
-the plugin's own multi-`-import`, always-idempotent behaviour was
-actually tested.
+without carrying editor state between sessions.
 
-### 2. The vendored jar is pinned, not "whatever's newest"
-
-The plugin's own `master` branch is ahead of its last built artifact in a
-way that changes the actual command-line flag — confirmed the hard way
-(Verified Groundwork, last row). Scoder should vendor the *exact*,
-already-verified-working `1.4.0.jar` (sha256 above), not attempt to build
-from source or track `master`. Re-verify explicitly, the same way, before
-ever bumping to a newer build.
-
-### 3. GTK/X11 are the same accepted trade-off as RStudio, unverified for Eclipse specifically
+### 2. GTK/X11 are the same accepted trade-off as RStudio, unverified for Eclipse specifically
 
 Eclipse's UI is SWT/GTK, not Electron/Chromium — the same class of
 X11-needing desktop app as `rstudio`, so the same
 `/tmp/.X11-unix`/`DISPLAY`/`XAUTHORITY` binds and the same
 [0002-rstudio-x11-access](/architecture/decision-records/0002-rstudio-x11-access.md)
 trade-off apply by direct analogy. Not independently re-verified for
-Eclipse specifically in this investigation: this environment has no GTK
-libraries installed at all (confirmed directly — the interactive
-application crashes immediately with `libgtk-3.so.0: cannot open shared
-object file`), so only the headless (no-display) prepare step could
-actually be tested end-to-end here, not the interactive GUI phase itself.
-Whether `XDG_RUNTIME_DIR`/`DBUS_SESSION_BUS_ADDRESS` passthrough matters
-for Eclipse the way it was hypothesized to for RStudio's Electron shell is
-unknown — SWT/GTK's own D-Bus dependence (if any) hasn't been
-investigated. A host with GTK installed and a real X session is needed to
-close this gap before implementation.
+Eclipse specifically in this investigation: this project has no host with
+GTK installed and a real X session to confirm it against, so only the
+headless (no-display) prepare step could actually be tested end-to-end
+here, not the interactive GUI phase itself. A host with GTK installed and
+a real X session is needed to close this gap.
 
-### 4. `-clean` was used in every successful test; whether it's strictly required is unresolved
+### 3. `-clean` was used in every successful test; whether it's strictly required is unresolved
 
 Every verified test above passed `-clean` to the prepare step. Whether
-that's required specifically because a plugin jar was added to an
-Eclipse install that direction had already been launched at least once
-before (a real OSGi bundle-cache staleness concern) or is unnecessary for
-scoder's actual case — a fresh mount namespace, and so a "first launch"
-from Eclipse's own perspective, every single time — was not conclusively
-isolated. Cheap to just always pass it (a small, one-time startup cost on
-the prepare step only) rather than resolve this precisely; worth
-revisiting if the prepare step's latency ever matters.
+that's strictly required, or unnecessary for scoder's actual case (a
+fresh mount namespace, and so a "first launch" from Eclipse's own
+perspective, every single time), was not conclusively isolated. Cheap to
+just always pass it rather than resolve this precisely.
 
-### 5. Reuse the host's own `~/.eclipse/<hash>` directory when it exists; fall back to explicit `-configuration` only when it doesn't
+### 4. No explicit `-configuration` flag — `$HOME/.eclipse` is bound whole instead
 
-Directly prompted by real-world feedback, and revised once already in
-response to it: the user pointed out that always forcing a
-scoder-invented `-configuration` directory means their sandboxed Eclipse
-configuration permanently diverges from their native one — a real,
-stated downside, even though some divergence (workspace, obviously) is
-unavoidable. They asked whether the default configuration location is
-`<install-dir>` or `~/.eclipse`, prompting a direct read of Equinox's
-current source rather than relying on memory or docs (see "The
-`~/.eclipse/<hash>` fallback" in Verified Groundwork for the full
-citation trail). The answer: both, in that order — `<install-dir>/configuration`
-first (genuinely writability-tested), falling back to
-`~/.eclipse/<app>_<version>_<hash>/configuration`, where `<hash>` is
-computed purely from the install directory's own path string.
+An earlier version of this preset spent five separate rounds of real-world
+bug-fixing trying to precisely reconstruct Equinox's own default
+`-configuration` resolution algorithm (`<install-dir>/configuration`
+first, falling back to a specific hash-named directory under
+`~/.eclipse/`) well enough to reliably reuse the user's real, existing
+configuration state. Every one of those bugs traced back to the same
+root cause: trying to be *more precise* than necessary about exactly
+which real, external directory or file mattered. The design settled on
+here sidesteps that whole class of bug: bind `$HOME/.eclipse` as a single
+whole directory (Design point 2) and pass no `-configuration` flag at
+all, letting Eclipse's own already-correct internal resolution logic (not
+scoder's own reimplementation of it) decide what to do with whatever's in
+there — a strict superset of "reuse whichever specific subdirectory
+matters," without scoder needing to know or reconstruct which one that
+is. See "History" below for the specific bugs this replaces.
 
-That last fact is what resolves the tension: scoder's own `builder.ts`
-already binds `/opt`-style install paths at their identical real absolute
-location both inside and outside the sandbox, so for a typical
-`/opt`-installed Eclipse the hash — and therefore the fallback directory
-name — is the same in both contexts. So instead of always forcing a
-scoder-specific location, this now mirrors Equinox's *own* two-step
-check, in the same order, rather than jumping straight to the second
-step (a real gap in an earlier version of this implementation, found and
-fixed after real-world use — see "The second bug" below):
-
-1. **Is `<install-dir>/configuration` itself writable by the current
-   user?** Common on a personal machine (installed without `sudo`, or
-   `chown`'d to themselves) — if so, that's exactly what their own native
-   Eclipse already uses, not a fallback at all. scoder binds it onto
-   itself, read-write (overriding the wholesale/defensive read-only
-   install-dir bind that already covers it), and passes no
-   `-configuration` flag — Eclipse's own default resolution finds it,
-   identically to a native run.
-2. **Else, does `~/.eclipse/<app>_<version>_<hash>/` already exist on the
-   host** (built up from the user's own prior native usage, on a machine
-   where step 1 doesn't apply — e.g. a shared, `sudo`-installed
-   instance)? If so, scoder bind-mounts that exact directory into the
-   sandbox at the mirrored path, again with no `-configuration` flag —
-   the sandboxed and native configurations are the *same* directory, not
-   merely similarly-shaped ones.
-3. **Else** (first-ever run anywhere, and the install directory itself
-   isn't writable), scoder creates and passes an explicit, scoder-managed
-   `-configuration <dir>` — confirmed directly to correctly redirect
-   every file that would otherwise be written into the install's own
-   `configuration/` directory, for that fallback case.
-
-One thing this could not fully explain: a full Eclipse headless-import
-run against a genuinely `--ro-bind`-mounted install did not itself
-produce the `~/.eclipse/<hash>` fallback directory, despite a standalone
-test independently confirming the writability-check mechanism it relies
-on behaves correctly under the same read-only bind. This doesn't block
-the design above — scoder proactively computing and checking for the
-expected directory name doesn't depend on Eclipse's own runtime fallback
-logic actually triggering it — but it's flagged rather than glossed
-over.
-
-## Changes Required (sketch — implementation not started)
+## Changes Required
 
 ### `src/types.ts`
 
 `ToolPreset` gains the optional `prepareCommand` hook described above
-(with its `dependencyDirs` parameter).
+(with its `dependencyDirs` parameter), and `resolveArgs` changed from
+"only called when the user gave no args" to "always called, existing args
+passed in" — eclipse's own `-data <workspace>` must always be prepended,
+whatever the user passed, since the workspace path is intrinsically tied
+to project identity. `rstudio`'s own `resolveArgs` was updated to
+preserve its exact prior behaviour under the new contract.
 
 ### `src/git/protection.ts`
 
-`.agentreadonly` `$HOME/...` parsing needs to also expose the resolved
-sandbox-side destinations as their own distinct list (e.g. on
-`ProtectionConfig`), not just as entries mixed into `safeBinds` — the
-plumbing gap noted above.
+`ProtectionConfig` gains `dependencyDirs` — the sandbox-side destinations
+of every `.agentreadonly` `$HOME/...` entry, exposed as its own distinct
+list (see the plumbing gap above).
 
 ### `src/sandbox/builder.ts`
 
-- New vendored-jar-injection bind in whatever produces the `eclipse`
-  preset's own `configBinds` output (see `src/tools/presets.ts` below) —
-  no `builder.ts` change needed for this part specifically, it's just
-  another `BindMount`.
-- A new wrapper, in the same family as `wrapWithIdeBackground`, that runs
-  the prepare command to completion (checking its exit status) before
-  proceeding to the existing foreground/background tool-launch logic.
-  Needs its own positional-argument-passing design, following
-  `wrapWithFdShim`/`wrapWithIdeBackground`'s existing convention.
+`SandboxConfig` gains `prepareSteps: PrepareStep[]` (the primary preset's
+own and the `--ide` companion's own, in that order, if either or both
+define one). `wrapWithPrepareStep` runs them in sequence, inside the
+sandbox, before the tool/IDE exec — a whole-launch failure on the first
+non-zero exit.
 
 ### `src/tools/presets.ts`
 
-**Implemented** — see `src/tools/presets.ts`'s `eclipse` preset,
-`resolveEclipseLayout`, and the surrounding helpers, plus the follow-on
-commits to this plan doc for the exact final shape (including one real
-production bug and its fix — see "The plugin-injection bug, and the real
-fix" above). In brief:
+The `eclipse` preset:
 - `configBinds`: X11/XAUTHORITY/XDG_RUNTIME_DIR/DBUS_SESSION_BUS_ADDRESS
-  binds and env, by direct analogy with `rstudio`'s own (Decision 3);
-  `ensureDir`+bind the persisted workspace directory; locate the host's
-  Eclipse installation (needed regardless, to resolve where `plugins/`
-  is, and as one of the base bundle-list template sources) and bind the
-  vendored plugin jar read-only at a fixed, always-creatable sandbox
-  path. Register it with Equinox via a completely separate,
-  scoder-private `bundles.info` (`buildEclipseBundlesInfoContent` +
-  `writeTempFile`), bound in read-only alongside the jar, pointed at via
-  a trailing `-vmargs -D...configUrl=file:<path>` argument added by
-  `prepareCommand`/`resolveArgs` — **not** by injecting the jar into the
-  install's own `plugins/` (real-world use proved that doesn't work), and
-  **not** by editing any real bundles.info at all (real-world use proved
-  *that* doesn't work well either — see "The fifth bug" above). Also
-  resolve the actual configuration directory to use for `-configuration`
-  purposes, checking in the same order Equinox itself would (Decision
-  5): first, is `<install-dir>/configuration` itself writable by the
-  current user (`isWritableDir`) — if so, bind it onto itself, read-write,
-  and record "no `-configuration` flag needed"; else, does a matching
-  `~/.eclipse/<app>_<version>_<hash>/` directory already exist on the
-  host — if so, bind *that whole directory* in at the identical mirrored
-  path, read-write, same "no flag needed" record (bound as a whole, not
-  narrowed to a `configuration/` subpath — see "The fourth bug" and "The
-  fifth bug" above for why the exact internal sub-structure turned out
-  not to matter); else, `ensureDir`+bind a scoder-managed fallback
-  directory (keyed by the hash alone) and record its path for use as an
-  explicit `-configuration <dir>`. **A real bug, found and fixed after
-  real-world use**: an earlier version of this implementation skipped
-  the first check entirely, going straight to the `~/.eclipse/<hash>`
-  one — silently using the (empty) fallback directory instead of a
-  personal-machine user's own real, already-populated Eclipse
-  configuration. See "The second bug" above. **Deviation from the sketch
-  above**: rather than reconstructing the full directory name from the
-  install's `.eclipseproduct` marker, the implementation matches on the
-  hash alone, as its own underscore-delimited segment anywhere in the
-  entry name (not merely a suffix — see "The third bug": a real
-  directory name has OS/WS/ARCH segments *after* the hash) — the hash is
-  the only part actually load-bearing for correctness (it's what ties
-  the directory to this specific install path); getting an app id or
-  version string wrong would otherwise risk missing a real, existing
-  directory for no good reason. `.eclipseproduct` is never
-  read.
+  binds and env, by direct analogy with `rstudio`'s own (Decision 2);
+  locates the host's Eclipse install (`which eclipse`, resolved through
+  any symlinks) and binds it read-write if under `$HOME`, read-only
+  otherwise; binds `$HOME/.eclipse` whole, read-write, if it exists
+  (Decision 4); `ensureDir`+binds the persisted workspace directory
+  (Design point 3); binds an optional project-root `.eclipse.epf`
+  read-only at a fixed sandbox path if present.
 - `prepareCommand`: returns the headless-import invocation
-  (`<eclipse-bin> -nosplash -clean [-configuration <fallback config
-  dir>] -application com.seeq.eclipse.importprojects.headlessimport
-  -data <persisted workspace> -import <sandboxProjDir> -import <dep1>
-  -import <dep2> ... -vmargs -D...configUrl=file:<scoder bundles.info>`
-  — the `-configuration` flag included only in the fallback case; one
-  `-import` for `sandboxProjDir`, then one more for each entry in
-  `dependencyDirs`; `-vmargs ...` always trailing, and only added at all
-  when a base bundles.info template was actually found to build the
-  scoder-private one from).
-- The interactive launch's own args always begin with `[-configuration
-  <fallback config dir>] -data <persisted workspace>` and always end
-  with the same trailing `-vmargs -D...configUrl=...` (same
-  conditional-inclusion rule as the prepare step, so both agree — Equinox
-  loads the identical bundle set either way) — with any user-supplied
-  arguments in between, appended after the fixed prefix but before
-  `-vmargs`, since `-vmargs` must stay the trailing section of the whole
-  command line. This needed `resolveArgs`
-  to change from "only called when the user gave no args" to "always
-  called, existing args passed in" — a real, if small, change to
-  `ToolPreset`'s own contract (`src/types.ts`), not something eclipse
-  alone could work around; `rstudio`'s own `resolveArgs` was updated to
-  preserve its exact prior behaviour under the new contract.
-- `validate`: `commandExists("eclipse")`, plus a re-check of the vendored
-  jar's sha256 against the pinned value on every run (`verifyEclipseJar`)
-  — not in the original sketch, added since the jar ends up referenced
-  from `bundles.info` and is worth not just trusting blindly at a fixed
-  repo path.
-- **`--ide` support**: both the primary preset's own `prepareCommand` and
-  the `--ide` companion's own are collected and run, in that order, before
-  either actually starts (see the "New Preset-System Capability Needed"
-  section above) — `pi --ide eclipse` is eclipse's actual intended use
-  case, not merely `scoder eclipse` on its own, so this needed to work
-  from the start rather than being deferred.
+  (`<eclipse-bin> -nosplash -clean -application
+  com.seeq.eclipse.importprojects.headlessimport -data <persisted
+  workspace> -importProject <sandboxProjDir> -importProject <dep1> ...
+  [-importPreferences <epf path>]` — one `-importProject` per
+  `dependencyDirs` entry; `-importPreferences` only when `.eclipse.epf`
+  was found).
+- `resolveArgs`: interactive launch always begins with `-data <persisted
+  workspace>`, with any user-supplied arguments appended after.
+- `validate`: `commandExists("eclipse")` — same shape as every other
+  preset. Does **not** verify the plugin itself is installed; a missing
+  plugin surfaces as a loud prepare-step failure (Eclipse's own
+  "application not found" error), not a silent one.
 
-### Vendored asset
+## History: the vendored-plugin approach (superseded)
 
-`com.seeq.eclipse.importprojects_1.4.0.jar` (MIT licensed, 8283 bytes),
-checked into the scoder repo alongside its sha256, with a short note on
-provenance and the exact verification performed (this document).
+An earlier version of this preset vendored a pinned build of the
+plugin's predecessor (`seeq12/eclipse-import-projects-plugin`
+`1.4.0.jar`) directly in the scoder repo, and went to considerable
+lengths to make it available to a sandboxed Eclipse without ever
+modifying the user's real, native Eclipse install or configuration. That
+approach worked, but cost six rounds of real-world bug-fixing, all in the
+same small area, all stemming from variations on the same root cause:
+assuming a single, home-relative absolute path (or a specific,
+reconstructed sub-location) could be written once and read correctly
+from both inside and outside the sandbox, or precisely reconstructed by
+reimplementing Equinox's own internal resolution logic from source. None
+of the six were caught by this investigation's own headless testing
+(which never exercised a real, externally-named `~/.eclipse/<hash>`
+directory end-to-end); all six were caught by real use against a real
+install.
+
+In order:
+
+1. **Injecting the jar into `<install>/plugins/` didn't work.** bwrap's
+   `--ro-bind` needs to *create* a destination node for a file that
+   doesn't already exist there, which fails once the parent is already
+   mounted read-only by `builder.ts`'s own wholesale system binds — a
+   claim this investigation had originally (wrongly) verified against a
+   subtly easier case (binding a new source over an *already-existing*
+   destination file, not creating a new one).
+2. **Fixed by registering the jar via a hand-built `bundles.info`** —
+   Equinox's real bundle list, editable as plain host-side file I/O
+   inside whichever `-configuration` directory was in use. Real-world use
+   then found this skipped Equinox's own actual *first* choice
+   (`<install-dir>/configuration`, when directly writable) and fell
+   straight to a `~/.eclipse/<hash>` check that was itself Equinox's
+   *second* choice, silently landing sandboxed sessions in an empty,
+   unconfigured state on a personal machine.
+3. **The `~/.eclipse/<hash>` directory-name match was also wrong** — a
+   real directory name has OS/WS/ARCH segments appended *after* the hash
+   (`org.eclipse.platform_4.39.0_<hash>_linux_gtk_x86_64`), which an
+   `endsWith` check never matched.
+4. **The reused directory itself wasn't the configuration area** —
+   Equinox's own source says the real location is one level deeper
+   (`~/.eclipse/<hash>/configuration`), not the per-hash directory
+   directly; fixed, then later found moot once bug 5 removed the need to
+   touch any real `bundles.info` location at all.
+5. **The deeper problem: don't touch the real `bundles.info` at all.** Any
+   value written into a file read both natively and inside the sandbox
+   can only be correct in one of those two contexts, since `$HOME` has
+   two different spellings and this project deliberately never exposes
+   the real one inside the sandbox. The actual fix: Equinox's
+   `org.eclipse.equinox.simpleconfigurator.configUrl` system property,
+   overridable per-launch via a trailing `-vmargs` argument, letting
+   scoder point Equinox at a completely separate, scoder-private
+   `bundles.info` — confirmed directly through the real `eclipse` binary
+   that the real one is left byte-for-byte untouched either way.
+6. **The scoder-private `bundles.info`'s own base-list template picked the
+   wrong file** — a self-inflicted regression from bug 4's own,
+   since-reverted fix, which had briefly created a stale, plugin-less
+   `bundles.info` at the "deeper" nested path as a side effect of merely
+   running; the fix's own candidate list checked that stale file first,
+   silently dropping every plugin the user had actually installed.
+
+The lesson carried forward, even though the specific mechanism it applied
+to no longer exists in the code: this class of "reverse-engineer another
+program's real, external state well enough to safely graft something
+onto it without disturbing anything else" is exactly the kind of thing
+that looks solvable in isolation and keeps finding new edges in the real
+world. Requiring the plugin as a genuine prerequisite — the same way any
+other Eclipse feature is installed — sidesteps needing to solve it at
+all.
 
 ## Open Questions, Not Resolved Here
 
-- **Locating the Eclipse installation's own directory** (needed to know
-  where its `plugins/` and default `bundles.info` are, and as the
-  install-hash basis for Decision 5). Real-world feedback confirms at
+- **Locating the Eclipse installation's own directory** (needed to
+  decide read-write-if-under-`$HOME`). Real-world feedback confirms at
   least one real shape directly: a root-installed `/opt/eclipse` with
-  `plugins/` as a plain sibling of the `eclipse` binary, exactly matching
-  this investigation's own tarball extraction — so `which eclipse`,
-  followed to its real target through any symlinks, with `plugins/`
-  resolved as its sibling, should work for that shape. Not tested here
-  against a distro-packaged (`apt`/`.deb`) install, which historically
-  sometimes uses an indirect launcher script rather than a direct symlink
-  to the real binary — worth confirming before relying on "sibling of the
-  resolved binary" as a universal rule. Separately: the *per-user
-  fallback directory* concern this same feedback originally raised is
-  resolved, not just open — see Decision 5.
-- **GTK/D-Bus behavior for the actual interactive GUI phase** (Decision 3)
-  — needs a host with GTK installed to close out.
-- **`-clean`'s necessity** (Decision 4) — cheap to leave unresolved and
+  `plugins/` as a plain sibling of the `eclipse` binary — so `which
+  eclipse`, followed to its real target through any symlinks, should
+  work for that shape. Not tested here against a distro-packaged
+  (`apt`/`.deb`) install, which historically sometimes uses an indirect
+  launcher script rather than a direct symlink to the real binary.
+- **GTK/D-Bus behavior for the actual interactive GUI phase** (Decision
+  2), and whether preferences are genuinely picked up correctly from a
+  bound-in `$HOME/.eclipse` in a real interactive session — both need a
+  host with GTK installed to close out; the user intends to test this
+  directly.
+- **`-clean`'s necessity** (Decision 3) — cheap to leave unresolved and
   just always pass it.
-- Whether to also expose `-importPreferences <file>.epf` (present in the
-  plugin's newer, unreleased source, not in the verified `1.4.0.jar`) as
-  a future way to bring in a user's own Eclipse preferences — parked,
-  not needed to solve the core workspace problem this plan addresses.
 
 [IMPACTS](/src/types.ts)
 [IMPACTS](/src/sandbox/builder.ts)

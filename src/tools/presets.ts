@@ -1,16 +1,11 @@
-import { createHash } from "node:crypto";
-import {
-	access,
-	constants as fsConstants,
-	readdir,
-	realpath,
-} from "node:fs/promises";
+import { readdir, realpath } from "node:fs/promises";
 import { dirname } from "node:path";
 import { getProjDir } from "../git/worktree.ts";
 import type { BindMount, ToolBindSpec, ToolPreset } from "../types.ts";
 import { error, warning } from "../utils/logger.ts";
 import {
 	getRealHome,
+	isUnderAny,
 	resolveHomePrefixes,
 	toSandboxPath,
 } from "../utils/paths.ts";
@@ -39,85 +34,39 @@ async function ensureDir(path: string): Promise<void> {
 	await Bun.spawn(["mkdir", "-p", path]);
 }
 
-// EM: Mirrors Equinox's own StorageUtil.canWrite() closely enough for our
-// EM: purposes (see eclipse-preset.md's "~/.eclipse/<hash> fallback"
-// EM: section): a plain access(W_OK) check on the host correctly detects
-// EM: a directory the current user genuinely cannot write to, which is
-// EM: all resolveEclipseLayout needs — this runs on the HOST filesystem,
-// EM: checking the real, current user's own permissions, before any
-// EM: sandbox exists to complicate it.
-async function isWritableDir(path: string): Promise<boolean> {
-	try {
-		await access(path, fsConstants.W_OK);
-		return true;
-	} catch {
-		return false;
-	}
-}
-
 // EM: ### Eclipse preset support
 // EM: See design/implementation/plans/eclipse-preset.md for the full
-// EM: investigation this is built on. Kept together, ahead of TOOL_PRESETS,
-// EM: since configBinds/prepareCommand/resolveArgs all need the exact same
-// EM: computed layout and must never disagree with each other about it.
+// EM: investigation, including a since-superseded approach (vendoring the
+// EM: import-projects plugin jar and registering it via a scoder-private
+// EM: bundles.info) that this was simplified away from once a proper p2
+// EM: update site existed: the plugin is now a prerequisite the user
+// EM: installs into their own Eclipse once, the same way any other
+// EM: Eclipse feature is installed — scoder no longer vendors, binds, or
+// EM: registers anything plugin-related at all. Kept together, ahead of
+// EM: TOOL_PRESETS, since configBinds/prepareCommand/resolveArgs all need
+// EM: the exact same computed layout and must never disagree with each
+// EM: other about it.
 
-const ECLIPSE_JAR_NAME = "com.seeq.eclipse.importprojects_1.4.0.jar";
-// EM: Pinned, not "whatever's newest" — the plugin's own master branch is
-// EM: ahead of this exact build in a way that silently breaks it (a
-// EM: renamed CLI flag). Re-verify by hand, the same way, before ever
-// EM: bumping this. See Design Decision 2 in eclipse-preset.md.
-const ECLIPSE_JAR_SHA256 =
-	"133c61b284c61b889836560c06619e1ff3619080b733537f4137d1accb28ab2d";
-const ECLIPSE_JAR_PATH = new URL(
-	`../../assets/eclipse/${ECLIPSE_JAR_NAME}`,
-	import.meta.url,
-).pathname;
-// EM: The bundle's own symbolic name and version, as recorded in its
-// EM: MANIFEST.MF — needed verbatim for the bundles.info entry below, not
-// EM: derivable from ECLIPSE_JAR_NAME by convention alone.
-const ECLIPSE_JAR_SYMBOLIC_NAME = "com.seeq.eclipse.importprojects";
-const ECLIPSE_JAR_BUNDLE_VERSION = "1.4.0";
+// EM: The sandbox path an optional, project-supplied .eclipse.epf
+// EM: (exported Eclipse preferences) is bound at — a fixed,
+// EM: always-creatable location directly under /home/scoder/.local/share
+// EM: (no extra --dir scaffolding needed: builder.ts's own fixed --dir
+// EM: list already includes that directory). prepareCommand doesn't
+// EM: receive sandboxHome as a parameter (unlike configBinds), so this is
+// EM: hardcoded the same way builder.ts/index.ts already hardcode
+// EM: SCODER_HOME, not derived per-call.
+const ECLIPSE_SANDBOX_EPF_PATH = "/home/scoder/.local/share/scoder-eclipse.epf";
 
 interface EclipseLayout {
 	sandboxEclipseBin: string;
 	hostInstallDir: string;
 	sandboxInstallDir: string;
+	// EM: Whether the install lives under $HOME — decides read-write vs.
+	// EM: read-only for the install-dir bind (see configBinds) and whether
+	// EM: it needs pushIntermediateDirs' --dir scaffolding at all.
+	installUnderHome: boolean;
 	workspaceHostDir: string;
 	workspaceSandboxDir: string;
-	configHostDir: string;
-	configSandboxDir: string;
-	// EM: True once a real, already-existing host configuration directory
-	// EM: is being reused directly — either <install>/configuration itself
-	// EM: (when the user's own account can already write to it) or the
-	// EM: per-user ~/.eclipse/<app>_<version>_<hash> fallback (see Decision
-	// EM: 5 in eclipse-preset.md, which mirrors Equinox's own two-step
-	// EM: default resolution in that order). When true, no -configuration
-	// EM: flag is passed at all: it's bound in at the identical mirrored
-	// EM: path, and Eclipse's own default resolution finds it exactly the
-	// EM: way it would outside the sandbox.
-	reuseHostConfig: boolean;
-	// EM: Whether configHostDir sits under $HOME — decides whether the
-	// EM: bind destination needs pushIntermediateDirs' --dir scaffolding
-	// EM: (a fresh tmpfs path does) or already exists as part of the
-	// EM: wholesale/defensive install-dir bind (an <install>/configuration
-	// EM: path does, so no --dir entries are needed or correct for it).
-	configUnderHome: boolean;
-}
-
-// ### javaStringHashCode
-// Reproduces java.lang.String#hashCode() exactly: s[0]*31^(n-1) + ... +
-// s[n-1], computed with 32-bit wraparound (Math.imul does the wraparound
-// multiply; `| 0` keeps the running total a 32-bit signed int, matching
-// Java's int arithmetic). Needed to compute the same
-// ~/.eclipse/<app>_<version>_<hash> directory name Equinox's own
-// getInstallDirHash() would — see eclipse-preset.md's "The ~/.eclipse/<hash>
-// fallback" section for the citation.
-function javaStringHashCode(s: string): number {
-	let h = 0;
-	for (let i = 0; i < s.length; i++) {
-		h = Math.imul(31, h) + s.charCodeAt(i);
-	}
-	return h | 0;
 }
 
 // ### pushIntermediateDirs
@@ -174,283 +123,21 @@ async function resolveEclipseLayout(
 		hostInstallDir = dirname(hostEclipseBin);
 	}
 	const sandboxInstallDir = toSandboxPath(hostInstallDir, homePrefixes);
+	const installUnderHome = isUnderAny(hostInstallDir, [realHome]);
 
 	const projDir = await getProjDir(hostProjectDir);
 	const workspaceHostDir = `${realHome}/.local/share/scoder-eclipse-workspaces/${projDir}`;
 	await ensureDir(workspaceHostDir);
 	const workspaceSandboxDir = toSandboxPath(workspaceHostDir, homePrefixes);
 
-	let configHostDir: string;
-	let reuseHostConfig: boolean;
-	let configUnderHome: boolean;
-
-	// EM: Mirrors Equinox's own default resolution algorithm exactly, in
-	// EM: the same order (see eclipse-preset.md's "~/.eclipse/<hash>
-	// EM: fallback" section): try <install>/configuration itself first —
-	// EM: this is the common case on a personal machine where the user's
-	// EM: own account can already write there (installed without sudo, or
-	// EM: chown'd to themselves), and it's what their own native Eclipse
-	// EM: actually uses, not a fallback. A previous version of this preset
-	// EM: skipped straight to the ~/.eclipse/<hash> check below, which is
-	// EM: only Equinox's *second* choice — real-world use surfaced this
-	// EM: gap directly: a user whose native Eclipse writes straight into
-	// EM: <install>/configuration has no ~/.eclipse/<hash> directory at
-	// EM: all to find.
-	const installOwnConfigDir = `${hostInstallDir}/configuration`;
-	if (
-		(await dirExists(installOwnConfigDir)) &&
-		(await isWritableDir(installOwnConfigDir))
-	) {
-		configHostDir = installOwnConfigDir;
-		reuseHostConfig = true;
-		configUnderHome = false;
-	} else {
-		// EM: Equinox's own getInstallDirHash() hashes the install dir's
-		// EM: *canonical* path, falling back to the absolute path only if
-		// EM: that can't be resolved — mirrored here for the same reason:
-		// EM: this hash has to land on the exact directory name a real,
-		// EM: native Eclipse run against this same install would use.
-		let canonicalInstallDir: string;
-		try {
-			canonicalInstallDir = await realpath(hostInstallDir);
-		} catch {
-			canonicalInstallDir = hostInstallDir;
-		}
-		const rawHash = javaStringHashCode(canonicalInstallDir);
-		// EM: Matched against both the raw (possibly negative) and the
-		// EM: absolute-value hash string — eclipse-preset.md's own source
-		// EM: citation says Equinox forces this non-negative, but matching
-		// EM: both is a cheap hedge against that citation being slightly
-		// EM: off, rather than silently missing a real directory over a
-		// EM: sign mismatch.
-		const hashCandidates = [Math.abs(rawHash).toString(), rawHash.toString()];
-
-		// EM: Matched by hash alone, not by reconstructing the full
-		// EM: directory name from .eclipseproduct — the hash is the only
-		// EM: part that's actually load-bearing for correctness (it's what
-		// EM: ties the directory to this specific install path); getting
-		// EM: an app id or version string wrong would otherwise risk
-		// EM: missing a real, existing directory for no good reason.
-		//
-		// The hash is matched as its own underscore-delimited *segment*,
-		// not merely a suffix — a real observed directory name,
-		// `org.eclipse.platform_4.39.0_1473617060_linux_gtk_x86_64`, has
-		// OS/WS/ARCH info appended *after* the hash, so `endsWith` (an
-		// earlier version of this check) never matched anything real.
-		const eclipseUserDir = `${realHome}/.eclipse`;
-		let reuseDirName: string | null = null;
-		if (await dirExists(eclipseUserDir)) {
-			const entries = await readdir(eclipseUserDir);
-			reuseDirName =
-				entries.find((name) => {
-					const segments = name.split("_");
-					return hashCandidates.some((hash) => segments.includes(hash));
-				}) ?? null;
-		}
-
-		if (reuseDirName) {
-			configHostDir = `${eclipseUserDir}/${reuseDirName}`;
-			reuseHostConfig = true;
-			configUnderHome = true;
-		} else {
-			// EM: Reaching this is worth a loud diagnostic, not a quiet
-			// EM: fallback: it means neither the install's own
-			// EM: configuration nor a matching ~/.eclipse/<hash> was
-			// EM: usable, so the sandboxed session is about to get a
-			// EM: totally fresh, empty configuration area instead of the
-			// EM: user's real one.
-			warning(
-				"eclipse: no writable <install>/configuration or matching ~/.eclipse/<hash> found — falling back to an empty, scoder-managed configuration",
-			);
-			// EM: Keyed by the install's own hash, not by project —
-			// EM: matching Eclipse's real granularity (this is per-install
-			// EM: runtime state, not per-project), and so shared correctly
-			// EM: across every scoder project that happens to use the
-			// EM: same Eclipse install.
-			configHostDir = `${realHome}/.local/share/scoder-eclipse-config/${hashCandidates[0]}`;
-			await ensureDir(configHostDir);
-			reuseHostConfig = false;
-			configUnderHome = true;
-		}
-	}
-	const configSandboxDir = toSandboxPath(configHostDir, homePrefixes);
-
 	return {
 		sandboxEclipseBin,
 		hostInstallDir,
 		sandboxInstallDir,
+		installUnderHome,
 		workspaceHostDir,
 		workspaceSandboxDir,
-		configHostDir,
-		configSandboxDir,
-		reuseHostConfig,
-		configUnderHome,
 	};
-}
-
-// EM: The -configuration flag is included only in the fallback case — when
-// EM: reusing the host's own directory, passing no flag at all is the
-// EM: point (see Decision 5): Eclipse's own default resolution finds it.
-function eclipseConfigArgs(layout: EclipseLayout): string[] {
-	return layout.reuseHostConfig
-		? []
-		: ["-configuration", layout.configSandboxDir];
-}
-
-// EM: The sandbox path both the vendored jar and its own, scoder-private
-// EM: bundles.info live under — a fixed, always-creatable location (under
-// EM: /home/scoder, fresh tmpfs), used identically by configBinds,
-// EM: prepareCommand and resolveArgs. prepareCommand/resolveArgs don't
-// EM: receive sandboxHome as a parameter (unlike configBinds), so this is
-// EM: the same literal value hardcoded the same way builder.ts/index.ts
-// EM: already do (SCODER_HOME), not something derived per-call.
-const ECLIPSE_SANDBOX_HOME = "/home/scoder";
-const ECLIPSE_SANDBOX_PLUGIN_DIR = `${ECLIPSE_SANDBOX_HOME}/.local/share/scoder-eclipse-plugin`;
-const ECLIPSE_SANDBOX_JAR_PATH = `${ECLIPSE_SANDBOX_PLUGIN_DIR}/${ECLIPSE_JAR_NAME}`;
-const ECLIPSE_SANDBOX_BUNDLES_INFO_PATH = `${ECLIPSE_SANDBOX_PLUGIN_DIR}/bundles.info`;
-// EM: Equinox reads its actual bundle list from whatever bundles.info this
-// EM: system property points at — confirmed directly, through the real
-// EM: `eclipse` binary (`-vmargs -D<this>=file:<path>`), that pointing it
-// EM: at a completely separate file works exactly like pointing it at the
-// EM: real one, and the *real* bundles.info (checked before and after)
-// EM: is untouched either way.
-const ECLIPSE_SIMPLECONFIGURATOR_CONFIG_URL_PROP =
-	"org.eclipse.equinox.simpleconfigurator.configUrl";
-
-// ### buildEclipseBundlesInfo
-// Registers the vendored plugin with Equinox's simpleconfigurator by
-// building a complete, scoder-private bundles.info — NOT by editing the
-// real one (whether the reused ~/.eclipse/<hash> or <install>/configuration
-// directory's own), and NOT by injecting the jar into the install's own
-// plugins/ dir (tried first, confirmed broken: bwrap's --ro-bind needs to
-// *create* a destination node for a file that doesn't already exist
-// there, which fails once the parent has already been mounted read-only
-// by builder.ts's own wholesale /opt bind — see eclipse-preset.md).
-//
-// Two real problems with editing the real bundles.info directly (an
-// earlier version of this code did exactly that) prompted this: (1) the
-// jar's own sandbox-only path, once written into the user's *real,
-// native* file, is meaningless outside a scoder session — benign
-// (Equinox silently skips an unresolvable bundle entry) but still a
-// stray, permanent artifact in the user's own config for no good reason;
-// (2) real-world use found the user's actual ~/.eclipse/<hash> directory
-// has bundles.info at *two* plausible locations at once
-// (.../configuration/org.eclipse.equinox.simpleconfigurator/bundles.info
-// *and* .../org.eclipse.equinox.simpleconfigurator/bundles.info directly).
-// The former turned out not to be a genuine native Eclipse artifact at
-// all: a since-reverted earlier version of this preset briefly used
-// configHostDir = ~/.eclipse/<hash>/configuration (see "The fourth bug"
-// in eclipse-preset.md) and, while that was live, its own
-// bundles.info-writing code created exactly this nested path for the
-// first time, seeding it from the *install's own bare shipped default*
-// (since nothing existed there yet to read as a base) — a real, if
-// accidental, side effect on a real machine. Reading that file back as a
-// "base template" silently dropped every plugin the user had actually
-// installed beyond the base Platform, which lived only in the real,
-// un-nested location. So the un-nested path is tried first here, not the
-// nested one — the opposite of what "The fourth bug" argued for, and the
-// nested one is now believed to be scoder's own leftover debris rather
-// than anything Equinox created natively (worth deleting by hand on a
-// machine that hit this).
-//
-// Confirmed directly, through the real `eclipse` binary, exactly as
-// scoder invokes it: passing `-vmargs
-// -Dorg.eclipse.equinox.simpleconfigurator.configUrl=file:<path>`
-// overrides which bundles.info Equinox reads for *this one launch*,
-// without touching the real one at all (checked before and after: byte
-// for byte identical). bundles.info still needs to be a *complete* list,
-// not just this one plugin's own line — confirmed separately that a
-// partial one fails with "Unresolved requirement: Require-Bundle:
-// org.eclipse.ui" — so this reads whichever real bundles.info is found
-// first (the un-nested location, then the nested one, then the install's
-// own shipped default) purely as a *template* to build our own complete
-// copy from.
-async function buildEclipseBundlesInfoContent(
-	hostInstallDir: string,
-	configHostDir: string,
-): Promise<string | null> {
-	const candidates = [
-		`${configHostDir}/org.eclipse.equinox.simpleconfigurator/bundles.info`,
-		`${configHostDir}/configuration/org.eclipse.equinox.simpleconfigurator/bundles.info`,
-		`${hostInstallDir}/configuration/org.eclipse.equinox.simpleconfigurator/bundles.info`,
-	];
-
-	let baseContent: string | null = null;
-	for (const candidate of candidates) {
-		if (await fileExists(candidate)) {
-			baseContent = await Bun.file(candidate).text();
-			break;
-		}
-	}
-
-	if (baseContent === null) {
-		warning(
-			"eclipse: no bundles.info found (install or reused config dir) — plugin auto-import will not be available",
-		);
-		return null;
-	}
-
-	const ourLine = `${ECLIPSE_JAR_SYMBOLIC_NAME},${ECLIPSE_JAR_BUNDLE_VERSION},file:${ECLIPSE_SANDBOX_JAR_PATH},4,true`;
-	const lines = baseContent
-		.split("\n")
-		.filter(
-			(line) =>
-				line.trim() !== "" && !line.startsWith(`${ECLIPSE_JAR_SYMBOLIC_NAME},`),
-		);
-	lines.push(ourLine);
-
-	return `${lines.join("\n")}\n`;
-}
-
-// ### writeTempFile
-// Same one-shot-temp-file convention as protection.ts's own createTempFile
-// (not exported from there, so mirrored locally rather than reached
-// across modules) — a fresh /tmp file per launch, bound in read-only, no
-// explicit cleanup afterward (relies on /tmp being ephemeral, same as
-// every other scoder-*.XXXXXX temp file).
-async function writeTempFile(prefix: string, content: string): Promise<string> {
-	const proc = Bun.spawn(["mktemp", `/tmp/${prefix}.XXXXXX`], {
-		stdout: "pipe",
-		stderr: "pipe",
-	});
-	await proc.exited;
-	if (proc.exitCode !== 0) {
-		throw new Error("Failed to create temp file");
-	}
-	const path = (await new Response(proc.stdout).text()).trim();
-	await Bun.write(path, content);
-	return path;
-}
-
-// ### eclipseVmArgs
-// -vmargs must be the trailing section of the whole command line —
-// confirmed directly against the real eclipse binary: everything after it
-// goes to the JVM, not Eclipse's own framework. Used by both
-// prepareCommand and the interactive launch (resolveArgs), so both agree
-// on which bundles.info Equinox actually reads.
-function eclipseVmArgs(): string[] {
-	return [
-		"-vmargs",
-		`-D${ECLIPSE_SIMPLECONFIGURATOR_CONFIG_URL_PROP}=file:${ECLIPSE_SANDBOX_BUNDLES_INFO_PATH}`,
-	];
-}
-
-// ### verifyEclipseJar
-// The vendored jar gets bound into every sandboxed Eclipse launch and
-// registered with Equinox (see buildEclipseBundlesInfoContent) — worth
-// confirming its bytes still match the pinned, hand-verified sha256
-// before trusting it, rather than assuming a file at a fixed repo path
-// was never modified or corrupted since vendoring.
-async function verifyEclipseJar(): Promise<boolean> {
-	try {
-		const bytes = await Bun.file(ECLIPSE_JAR_PATH).arrayBuffer();
-		const digest = createHash("sha256")
-			.update(Buffer.from(bytes))
-			.digest("hex");
-		return digest === ECLIPSE_JAR_SHA256;
-	} catch {
-		return false;
-	}
 }
 
 // ### TOOL_PRESETS
@@ -855,6 +542,13 @@ export const TOOL_PRESETS: Record<string, ToolPreset> = {
 	eclipse: {
 		description: "Eclipse IDE",
 
+		// EM: Requires the seeq12/eclipse-import-projects-plugin fork at
+		// EM: https://github.com/robchallen/eclipse-import-projects-plugin
+		// EM: (>= 2.0.0) to already be installed into the host Eclipse from
+		// EM: its own p2 update site — scoder does not vendor, inject, or
+		// EM: otherwise manage the plugin itself. See
+		// EM: design/implementation/plans/eclipse-preset.md for why an
+		// EM: earlier version tried to and what that cost.
 		configBinds: async (realHome, sandboxHome) => {
 			const binds: BindMount[] = [];
 			const dirs: string[] = [];
@@ -899,64 +593,55 @@ export const TOOL_PRESETS: Record<string, ToolPreset> = {
 
 			const layout = await resolveEclipseLayout(process.cwd());
 			if (!layout) {
-				warning("eclipse install not found — workspace/config binds skipped");
+				warning("eclipse install not found — workspace/install binds skipped");
 				return { binds, dirs, env };
 			}
 
-			// EM: Whole install dir, defensively, read-only — in case it
-			// EM: isn't already covered by builder.ts's own wholesale /opt
-			// EM: bind (e.g. an install extracted directly under $HOME).
-			// EM: Harmless overlap when it already is covered: a repeated
-			// EM: mount over the same path is a no-op to bwrap.
+			// EM: The install directory itself: read-write when it lives
+			// EM: under $HOME (a personal install the user's own account
+			// EM: already owns — Eclipse may need to write there, e.g. p2
+			// EM: profile updates), read-only otherwise. The read-only case
+			// EM: is defensive, not load-bearing in the common case: a
+			// EM: system install under /opt or /usr is already covered by
+			// EM: builder.ts's own wholesale binds, so this is a harmless
+			// EM: repeat mount — it only matters for an install somewhere
+			// EM: else read-only binds don't already reach.
 			binds.push({
-				type: "ro-bind",
+				type: layout.installUnderHome ? "bind" : "ro-bind",
 				source: layout.hostInstallDir,
 				dest: layout.sandboxInstallDir,
 			});
-
-			// EM: The vendored plugin jar, bound read-only at a fixed sandbox
-			// EM: path that's always freely creatable (under /home/scoder,
-			// EM: fresh tmpfs — never under any wholesale read-only system
-			// EM: bind) — NOT injected into the install's own plugins/ dir,
-			// EM: which genuinely cannot work: see
-			// EM: buildEclipseBundlesInfoContent's own comment for why, and
-			// EM: what registers it with Equinox instead. Its sha256 is
-			// EM: re-checked in validate() (verifyEclipseJar) — see
-			// EM: assets/eclipse/PROVENANCE.md.
-			pushIntermediateDirs(
-				dirs,
-				sandboxHome,
-				".local/share/scoder-eclipse-plugin",
-			);
-			binds.push({
-				type: "ro-bind",
-				source: ECLIPSE_JAR_PATH,
-				dest: ECLIPSE_SANDBOX_JAR_PATH,
-			});
-
-			// EM: A scoder-private bundles.info, never the real one (see
-			// EM: buildEclipseBundlesInfoContent) — bound in the same way as
-			// EM: the jar itself, at a fixed, always-creatable sandbox path.
-			// EM: Regenerated fresh every launch (a plain temp file, same
-			// EM: convention as protection.ts's own one-shot temp binds), so
-			// EM: it always reflects the current base bundle list plus this
-			// EM: plugin, never gets stale.
-			const bundlesInfoContent = await buildEclipseBundlesInfoContent(
-				layout.hostInstallDir,
-				layout.configHostDir,
-			);
-			if (bundlesInfoContent) {
-				const bundlesInfoHostPath = await writeTempFile(
-					"scoder-eclipse-bundles",
-					bundlesInfoContent,
+			if (layout.installUnderHome) {
+				pushIntermediateDirs(
+					dirs,
+					sandboxHome,
+					layout.hostInstallDir.slice(realHome.length + 1),
 				);
+			}
+
+			// EM: $HOME/.eclipse: Equinox's own per-user state, including
+			// EM: instance preferences and (per-install, hash-named
+			// EM: subdirectories under it) its own runtime configuration
+			// EM: area when the install itself isn't directly writable —
+			// EM: see "The ~/.eclipse/<hash> fallback" in
+			// EM: eclipse-preset.md. Bound whole, read-write, if it exists,
+			// EM: rather than computing which specific hash-named
+			// EM: subdirectory matters or reconstructing Equinox's own
+			// EM: resolution ourselves: at its own identically-mapped path,
+			// EM: Eclipse's own default resolution finds whatever it would
+			// EM: natively, with no explicit -configuration flag needed.
+			const eclipseUserDir = `${realHome}/.eclipse`;
+			if (await dirExists(eclipseUserDir)) {
+				pushIntermediateDirs(dirs, sandboxHome, ".eclipse");
 				binds.push({
-					type: "ro-bind",
-					source: bundlesInfoHostPath,
-					dest: ECLIPSE_SANDBOX_BUNDLES_INFO_PATH,
+					type: "bind",
+					source: eclipseUserDir,
+					dest: `${sandboxHome}/.eclipse`,
 				});
 			}
 
+			// EM: A persisted, project-scoped workspace — see Design
+			// EM: point 3 in eclipse-preset.md.
 			const projDir = await getProjDir(process.cwd());
 			pushIntermediateDirs(
 				dirs,
@@ -969,24 +654,20 @@ export const TOOL_PRESETS: Record<string, ToolPreset> = {
 				dest: layout.workspaceSandboxDir,
 			});
 
-			// EM: Only a $HOME-relative configHostDir needs --dir scaffolding
-			// EM: (a fresh tmpfs path, nothing exists there yet). When
-			// EM: reusing <install>/configuration itself, that path already
-			// EM: exists as part of the wholesale/defensive install-dir
-			// EM: bind above — no --dir entries needed, and none would even
-			// EM: be correct (it isn't under sandboxHome at all).
-			if (layout.configUnderHome) {
-				pushIntermediateDirs(
-					dirs,
-					sandboxHome,
-					layout.configHostDir.slice(realHome.length + 1),
-				);
+			// EM: An optional, project-supplied Eclipse preferences export
+			// EM: (exported via File > Export > Preferences natively),
+			// EM: imported via -importPreferences (see prepareCommand).
+			// EM: Bound read-only at its own fixed sandbox path — not left
+			// EM: at its in-project path, which would inherit the rest of
+			// EM: the project tree's read-write bind.
+			const epfHostPath = `${process.cwd()}/.eclipse.epf`;
+			if (await fileExists(epfHostPath)) {
+				binds.push({
+					type: "ro-bind",
+					source: epfHostPath,
+					dest: ECLIPSE_SANDBOX_EPF_PATH,
+				});
 			}
-			binds.push({
-				type: "bind",
-				source: layout.configHostDir,
-				dest: layout.configSandboxDir,
-			});
 
 			return { binds, dirs, env };
 		},
@@ -1007,68 +688,42 @@ export const TOOL_PRESETS: Record<string, ToolPreset> = {
 				return null;
 			}
 
-			// EM: bundles.info is only actually bound in configBinds when a
-			// EM: base list was found to build it from (see
-			// EM: buildEclipseBundlesInfoContent) — recomputed here too
-			// EM: (cheap: a handful of file existence/read checks) so this
-			// EM: never points -vmargs at a file that was never bound,
-			// EM: mirroring how resolveEclipseLayout itself is
-			// EM: independently recomputed by every hook rather than
-			// EM: threaded through as shared state.
-			const bundlesInfoContent = await buildEclipseBundlesInfoContent(
-				layout.hostInstallDir,
-				layout.configHostDir,
-			);
+			// EM: Recomputed independently here (same fileExists check
+			// EM: configBinds already made) so this never passes
+			// EM: -importPreferences a path that was never bound — mirrors
+			// EM: how resolveEclipseLayout itself is independently
+			// EM: recomputed by every hook rather than threaded through as
+			// EM: shared state.
+			const hasEpf = await fileExists(`${hostProjectDir}/.eclipse.epf`);
 
 			const args = [
 				"-nosplash",
 				"-clean",
-				...eclipseConfigArgs(layout),
 				"-application",
 				"com.seeq.eclipse.importprojects.headlessimport",
 				"-data",
 				layout.workspaceSandboxDir,
-				"-import",
+				"-importProject",
 				sandboxProjectDir,
-				...dependencyDirs.flatMap((dir) => ["-import", dir]),
-				...(bundlesInfoContent ? eclipseVmArgs() : []),
+				...dependencyDirs.flatMap((dir) => ["-importProject", dir]),
+				...(hasEpf ? ["-importPreferences", ECLIPSE_SANDBOX_EPF_PATH] : []),
 			];
 
 			return { bin: layout.sandboxEclipseBin, args };
 		},
 
-		// EM: Unlike rstudio's own resolveArgs, these flags are always
-		// EM: prepended, whatever the user passed — the workspace/config
-		// EM: paths are intrinsically tied to project identity, not
-		// EM: something a user would reasonably want to override. See
-		// EM: Design point 6 in eclipse-preset.md. -vmargs is the one
-		// EM: exception to "prepended": it must stay the trailing section
-		// EM: of the whole command line (everything after it is passed to
-		// EM: the JVM, not to Eclipse's own framework — confirmed directly
-		// EM: against the real eclipse binary), so it comes after
-		// EM: existingArgs, not before.
+		// EM: Unlike rstudio's own resolveArgs, -data is always prepended,
+		// EM: whatever the user passed — the workspace path is intrinsically
+		// EM: tied to project identity, not something a user would
+		// EM: reasonably want to override. See Design point 6 in
+		// EM: eclipse-preset.md.
 		resolveArgs: async (hostProjectDir, _sandboxProjectDir, existingArgs) => {
 			const layout = await resolveEclipseLayout(hostProjectDir);
 			if (!layout) {
 				return existingArgs;
 			}
 
-			// EM: See the identical check in prepareCommand — only add
-			// EM: -vmargs when configBinds actually had a base bundles.info
-			// EM: to build the scoder-private one from, and so actually
-			// EM: bound it in.
-			const bundlesInfoContent = await buildEclipseBundlesInfoContent(
-				layout.hostInstallDir,
-				layout.configHostDir,
-			);
-
-			return [
-				...eclipseConfigArgs(layout),
-				"-data",
-				layout.workspaceSandboxDir,
-				...existingArgs,
-				...(bundlesInfoContent ? eclipseVmArgs() : []),
-			];
+			return ["-data", layout.workspaceSandboxDir, ...existingArgs];
 		},
 
 		validate: async () => {
@@ -1078,18 +733,6 @@ export const TOOL_PRESETS: Record<string, ToolPreset> = {
 				error("Install: https://www.eclipse.org/downloads/");
 				return false;
 			}
-
-			// EM: The vendored jar gets injected into the (otherwise
-			// EM: untouched) install's own plugins/ dir — worth checking its
-			// EM: integrity against the pinned sha256 on every run, not just
-			// EM: trusting whatever happens to be on disk at that path. See
-			// EM: assets/eclipse/PROVENANCE.md.
-			if (!(await verifyEclipseJar())) {
-				error(`vendored ${ECLIPSE_JAR_NAME} is missing or does not match`);
-				error(`its expected sha256 (${ECLIPSE_JAR_SHA256})`);
-				return false;
-			}
-
 			return true;
 		},
 	},

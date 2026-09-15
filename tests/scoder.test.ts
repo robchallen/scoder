@@ -440,6 +440,50 @@ test("sandbox-uid-maps-to-host-user: files created in the sandbox are owned by t
 });
 
 // ### Test: system-read-only
+// ### Test: dev-minimal-real-nodes
+// Regression test for /dev exposure: an earlier --dev-bind /dev /dev
+// gave the sandbox the host's entire real /dev — every raw disk, TPM,
+// USB, and other device node on the machine — opened for early testing
+// and never narrowed down. A later attempt to replace it with bwrap's
+// own synthetic --dev construction was reverted: confirmed directly that
+// --dev alone fails to initialize the sandbox on at least one real host
+// (bwrap itself failing, surfaced only as a generic, uninformative pasta
+// attach error with no indication /dev was the cause). Settled instead
+// on individual --dev-bind of specific real host device nodes — narrows
+// exposure without bwrap's own synthetic construction, confirmed working
+// directly for both a plain tool (`scoder pi`) and a GUI companion
+// (`scoder --ide eclipse pi`).
+test("dev-minimal-real-nodes: /dev exposes only specific real host device nodes, not the whole host /dev", async () => {
+	const repoDir = await createTempRepo();
+	tempRepos.push(repoDir);
+
+	try {
+		const output = await runScoder(repoDir, [
+			"--dry-run",
+			"--no-worktree",
+			"/bin/bash",
+		]);
+
+		for (const node of [
+			"/dev/null",
+			"/dev/zero",
+			"/dev/urandom",
+			"/dev/random",
+			"/dev/tty",
+			"/dev/pts",
+			"/dev/fd",
+		]) {
+			expect(output).toContain(`--dev-bind ${node} ${node}`);
+		}
+		expect(output).toContain("--tmpfs /dev/shm");
+		expect(output).not.toContain("--dev-bind /dev /dev");
+		expect(output).not.toContain("--dev /dev");
+	} finally {
+		await cleanupRepo(repoDir);
+	}
+});
+
+// ### Test: system-read-only
 test("system-read-only: Cannot create file under /usr/bin", async () => {
 	const repoDir = await createTempRepo();
 	tempRepos.push(repoDir);

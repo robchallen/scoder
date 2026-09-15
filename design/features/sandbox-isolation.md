@@ -43,7 +43,26 @@ The sandbox shape:
   choices, priorities, auto/manual mode) under `/var/lib`, which nothing
   else mounts. See
   [design/implementation/issues/update-alternatives-state-not-mounted.md](/design/implementation/issues/update-alternatives-state-not-mounted.md).
-- `/dev` — devtmpfs
+- `/dev` — individual `--dev-bind` of specific real host device nodes
+  (`null`, `zero`, `urandom`, `random`, `tty`, `pts`, `fd`), plus a fresh
+  `--tmpfs` for `/dev/shm` — not a wholesale `--dev-bind /dev /dev`
+  (every raw disk, TPM, USB, and other device node on the host), and not
+  bwrap's own synthetic `--dev` construction either: confirmed directly
+  that `--dev` fails to initialize the sandbox on at least one real host
+  (bwrap itself failing silently, surfaced only as a generic, uninformative
+  pasta attach error, "Couldn't switch to pasta namespaces" with no
+  further detail — pasta's own error text, not a description of what
+  actually went wrong). Individually-named real `--dev-bind`s side-steps
+  whatever that incompatibility is, while still narrowing exposure far
+  below the original wholesale bind. Confirmed working directly for both
+  a plain tool (`scoder pi`) and a GUI companion (`scoder --ide eclipse
+  pi`) on the reporting host. `/dev/ptmx` and `/dev/full` are not in this
+  list — not confirmed to be needed by anything tested so far, but a
+  tool that allocates its own fresh pty (opening `/dev/ptmx` directly,
+  as some PTY-backed subprocess libraries do) would need `/dev/ptmx`
+  added if that's ever hit. `/dev/dri` (GPU direct rendering) is likewise
+  not included — `eclipse`'s GUI rendered without it in the confirmed
+  test, so it hasn't been added preemptively.
 - `/proc` — procfs
 - `/tmp` — ephemeral tmpfs
 - `$HOME` (the real host `$HOME`) — fresh per-session tmpfs with `.config/`, `.local/`, `.cache/` subdirs, populated by the binds below; nothing in it persists across sessions except what's explicitly bound in

@@ -27,7 +27,7 @@ tags: [test-script, validation]
 
 `tests/scoder.test.ts` is a self-contained integration test suite that creates
 temporary git repositories under `/tmp`, runs `scoder` against them using
-`/bin/bash` as the sandboxed command, and asserts expected behaviour. 94
+`/bin/bash` as the sandboxed command, and asserts expected behaviour. 95
 tests cover all sandbox mechanics.
 
 Cleanup runs in an `afterAll` hook. It removes the temp repos, their worktrees
@@ -797,6 +797,24 @@ expected `--bind <dir> <dir>` entry appears in the built command. `--dry-run`
 itself stays side-effect free (matching `getAgentPortsBind`'s auto-detect
 step and `describeSshAccess`): it skips the real `mkdir`, so only the
 preview is checked there.
+
+### 95. dev-minimal-real-nodes
+[TESTED_BY](/tests/scoder.test.ts#testDevMinimalRealNodes)
+
+Regression test for `/dev` exposure: an earlier `--dev-bind /dev /dev`
+gave the sandbox the host's entire real `/dev` — every raw disk, TPM,
+USB, and other device node on the machine — opened for early testing
+and never narrowed down until now. A later attempt to replace it with
+bwrap's own synthetic `--dev` construction was reverted: confirmed
+directly that `--dev` alone fails to initialize the sandbox on at least
+one real host (bwrap itself failing, surfaced only as a generic,
+uninformative pasta attach error with no indication `/dev` was the
+cause — see `design/features/network-isolation.md`). Settled on
+individual `--dev-bind` of specific real host device nodes (`null`,
+`zero`, `urandom`, `random`, `tty`, `pts`, `fd`) plus a `--tmpfs` for
+`/dev/shm` — narrows exposure without bwrap's own synthetic
+construction, confirmed working directly for both a plain tool
+(`scoder pi`) and a GUI companion (`scoder --ide eclipse pi`).
 
 ## Current Network Coverage
 

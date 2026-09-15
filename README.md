@@ -112,8 +112,10 @@ investigation.
   - **Java/Maven**: `~/.m2` bound read-only
   - **Rust**: `~/.rustup` and `~/.cargo/bin` bound read-only
   - **mise**: `~/.local/share/mise` and `~/.config/mise` bound read-only
-- **Full device access** — `/dev` is passed through from the host (full device
-  passthrough via `--dev-bind /dev /dev`; `/dev/shm` is a fresh tmpfs).
+- **Minimal `/dev`** — individual real host device nodes only (`null`,
+  `zero`, `urandom`, `random`, `tty`, `pts`, `fd`), not the host's whole
+  `/dev` (which would also expose every raw disk, TPM, USB, and other
+  device node on the machine). `/dev/shm` is a fresh tmpfs.
 - **Host localhost blocked** — tools run behind `pasta` with host localhost
   forwarding disabled, so host-local TCP services are not reachable
   from the sandbox while outbound networking stays available.

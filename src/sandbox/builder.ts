@@ -158,11 +158,41 @@ export async function buildBwrapCommand(
 		cmd.push("--ro-bind", "/var/lib/alternatives", "/var/lib/alternatives");
 	}
 
-	// EM: Add device, proc, tmpfs mounts for sandbox filesystem
+	// EM: Individual real host device nodes, not a wholesale --dev-bind
+	// EM: /dev /dev (every raw disk, TPM, USB, and other device node on
+	// EM: the host — opened for early testing, never narrowed down until
+	// EM: now) and not bwrap's own synthetic --dev construction either:
+	// EM: confirmed directly that --dev alone fails to initialize the
+	// EM: sandbox on at least one real host (bwrap itself failing,
+	// EM: surfaced only as a generic, uninformative pasta attach error
+	// EM: with no indication /dev was the cause). Confirmed working
+	// EM: directly for both a plain tool (`scoder pi`) and a GUI
+	// EM: companion (`scoder --ide eclipse pi`). /dev/ptmx and /dev/full
+	// EM: are deliberately not included — not confirmed to be needed by
+	// EM: anything tested so far; add /dev/ptmx if something needs to
+	// EM: allocate its own fresh pty. See design/features/sandbox-isolation.md.
 	cmd.push(
 		"--dev-bind",
-		"/dev",
-		"/dev",
+		"/dev/null",
+		"/dev/null",
+		"--dev-bind",
+		"/dev/zero",
+		"/dev/zero",
+		"--dev-bind",
+		"/dev/urandom",
+		"/dev/urandom",
+		"--dev-bind",
+		"/dev/random",
+		"/dev/random",
+		"--dev-bind",
+		"/dev/tty",
+		"/dev/tty",
+		"--dev-bind",
+		"/dev/pts",
+		"/dev/pts",
+		"--dev-bind",
+		"/dev/fd",
+		"/dev/fd",
 		"--tmpfs",
 		"/dev/shm",
 		"--proc",

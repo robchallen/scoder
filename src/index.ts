@@ -26,6 +26,7 @@ import {
 	getCommitCount,
 	getDiffStat,
 	hasUncommittedChanges,
+	isInGitRepo,
 	setupGitWorktree,
 } from "./git/worktree.ts";
 import { buildBwrapCommand, collectBindDests } from "./sandbox/builder.ts";
@@ -259,21 +260,27 @@ async function main(): Promise<void> {
 	const gid = getSandboxGid();
 
 	if (options.worktree) {
+		// EM: The worktree is checked out from a commit, so uncommitted work in
+		// EM: the user's checkout would be invisible to the agent — refuse
+		// EM: rather than silently starting a session that can't see it.
+		// EM: Checked before setupGitWorktree runs (not after), so a doomed
+		// EM: launch doesn't still leave a branch/worktree behind. Not-a-git-repo
+		// EM: is still caught by setupGitWorktree's own check below:
+		// EM: hasUncommittedChanges returns false (not true) for a non-repo cwd.
+		if (await hasUncommittedChanges(process.cwd())) {
+			error(
+				"--worktree requires a clean checkout — you have uncommitted changes",
+			);
+			error(
+				"Commit or stash them first, or drop --worktree to run in direct mode",
+			);
+			process.exit(1);
+		}
+
 		worktreeInfo = await setupGitWorktree(true);
 		if (!worktreeInfo) {
 			error("failed to set up git worktree");
 			process.exit(1);
-		}
-
-		// EM: The worktree is checked out from a commit, so uncommitted work in
-		// EM: the user's checkout is invisible to the agent. Warn rather than
-		// EM: refuse — the user may not need those changes in the session.
-		if (await hasUncommittedChanges(worktreeInfo.sourceRepoRoot)) {
-			warning("Your checkout has uncommitted changes the agent will not see");
-			warning(
-				`The session starts from ${worktreeInfo.sourceRefLabel} in ${worktreeInfo.worktreeDir}`,
-			);
-			warning("Commit or stash them first if the agent needs them");
 		}
 
 		// EM: worktreeInfo.worktreeDir is already the worktree's own real,
@@ -322,6 +329,21 @@ async function main(): Promise<void> {
 			}
 		}
 	} else {
+		// EM: Direct mode used to tolerate a non-git directory, silently: git
+		// EM: commands elsewhere (addGitExclude/removeGitExclude for the
+		// EM: AGENTS.md overlay mask, getProjDir's repo-root resolution) just
+		// EM: no-op or fall back to cwd without checking exit codes, so nothing
+		// EM: crashed — but there is no undo/audit trail for whatever the agent
+		// EM: does, which cuts against the project's own "you can always
+		// EM: review with git diff/status" safety story. Refuse up front
+		// EM: instead, with the same wording setupGitWorktree already uses for
+		// EM: the same requirement in worktree mode.
+		if (!(await isInGitRepo())) {
+			error("not inside a git repository");
+			error("scoder must be run from within a git repo");
+			process.exit(1);
+		}
+
 		const cwd = process.cwd();
 		// EM: Mirrored at its own real path, same as toolBin above — a plain
 		// EM: home-prefix concatenation would mis-map a project living

@@ -2428,10 +2428,14 @@ test("worktree-mode-refused-in-linked-worktree: -w inside a linked worktree stil
 	}
 });
 
-// ### Test: uncommitted-host-changes-warned
-// Regression test for hasUncommittedChanges being dead code: the agent cannot
-// see uncommitted work in the launching checkout, so the user must be told.
-test("uncommitted-host-changes-warned: worktree mode warns about uncommitted host changes", async () => {
+// ### Test: worktree-mode-refuses-dirty-checkout
+// Renamed from uncommitted-host-changes-warned: the agent cannot see
+// uncommitted work in the launching checkout, so worktree mode now refuses
+// outright rather than merely warning and starting a session that can't see
+// it. Checked before setupGitWorktree runs, so no branch/worktree is
+// created on a refused launch — no real sandbox is ever attempted, so this
+// doesn't depend on pasta/bwrap actually working in the test environment.
+test("worktree-mode-refuses-dirty-checkout: worktree mode refuses when the checkout has uncommitted changes", async () => {
 	const repoDir = await createTempRepo();
 	tempRepos.push(repoDir);
 
@@ -2445,10 +2449,68 @@ test("uncommitted-host-changes-warned: worktree mode warns about uncommitted hos
 		await proc.exited;
 
 		const stderr = await new Response(proc.stderr).text();
-		expect(proc.exitCode).toBe(0);
-		expect(stderr).toContain("uncommitted changes the agent will not see");
+		expect(proc.exitCode).not.toBe(0);
+		expect(stderr).toContain("--worktree requires a clean checkout");
+
+		const branchListProc = await Bun.spawn(
+			["git", "worktree", "list", "--porcelain"],
+			{ cwd: repoDir, stdout: "pipe", stderr: "pipe" },
+		);
+		await branchListProc.exited;
+		const worktreeList = await new Response(branchListProc.stdout).text();
+		expect(worktreeList).not.toContain("scoder/");
 	} finally {
 		await cleanupRepo(repoDir);
+	}
+});
+
+// ### Test: direct-mode-requires-git-repo
+// Direct mode used to silently tolerate a non-git directory (git commands
+// elsewhere just no-op or fall back without checking exit codes) — now
+// refuses up front, the same way worktree mode always has, since there is
+// otherwise no undo/audit trail for whatever the agent does there.
+test("direct-mode-requires-git-repo: direct mode refuses outside a git repository", async () => {
+	const plainDir = `${TEST_BASE}/non-git-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
+	await Bun.spawn(["mkdir", "-p", plainDir]).exited;
+
+	try {
+		const proc = await Bun.spawn(
+			[SCODER_PATH, "--no-worktree", "/bin/bash", "-c", "true"],
+			{ cwd: plainDir, stdout: "pipe", stderr: "pipe" },
+		);
+		await proc.exited;
+
+		const stderr = await new Response(proc.stderr).text();
+		expect(proc.exitCode).not.toBe(0);
+		expect(stderr).toContain("not inside a git repository");
+	} finally {
+		await Bun.spawn(["rm", "-rf", plainDir]).exited;
+	}
+});
+
+// ### Test: worktree-mode-requires-git-repo
+// Same requirement, worktree mode — already enforced by setupGitWorktree,
+// covered here for parity with the direct-mode test above.
+test("worktree-mode-requires-git-repo: worktree mode refuses outside a git repository", async () => {
+	const plainDir = `${TEST_BASE}/non-git-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
+	await Bun.spawn(["mkdir", "-p", plainDir]).exited;
+
+	try {
+		const proc = await Bun.spawn(
+			[SCODER_PATH, "-w", "/bin/bash", "-c", "true"],
+			{
+				cwd: plainDir,
+				stdout: "pipe",
+				stderr: "pipe",
+			},
+		);
+		await proc.exited;
+
+		const stderr = await new Response(proc.stderr).text();
+		expect(proc.exitCode).not.toBe(0);
+		expect(stderr).toContain("not inside a git repository");
+	} finally {
+		await Bun.spawn(["rm", "-rf", plainDir]).exited;
 	}
 });
 

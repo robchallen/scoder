@@ -27,7 +27,7 @@ tags: [test-script, validation]
 
 `tests/scoder.test.ts` is a self-contained integration test suite that creates
 temporary git repositories under `/tmp`, runs `scoder` against them using
-`/bin/bash` as the sandboxed command, and asserts expected behaviour. 95
+`/bin/bash` as the sandboxed command, and asserts expected behaviour. 97
 tests cover all sandbox mechanics.
 
 Cleanup runs in an `afterAll` hook. It removes the temp repos, their worktrees
@@ -320,12 +320,15 @@ mode while advising the flag the user had already passed.
 The other half of the same check: `scoder -w` from inside a linked worktree still
 exits 1, since that nesting genuinely cannot work.
 
-### 39. uncommitted-host-changes-warned
-[TESTED_BY](/tests/scoder.test.ts#testUncommittedHostChangesWarned)
+### 39. worktree-mode-refuses-dirty-checkout
+[TESTED_BY](/tests/scoder.test.ts#testWorktreeModeRefusesDirtyCheckout)
 
-Worktree mode warns when the launching checkout has uncommitted changes, which
-the agent cannot see. Regression test for `hasUncommittedChanges` being dead
-code.
+Renamed from `uncommitted-host-changes-warned`. Worktree mode used to only
+warn when the launching checkout had uncommitted changes the agent cannot
+see; it now refuses outright (exit 1, `--worktree requires a clean
+checkout`), checked before `setupGitWorktree` runs so no branch/worktree is
+created on the refused launch. Asserts both the exit code/message and that
+`git worktree list` shows no new `scoder/*` entry afterward.
 
 ### 40. claude-preset-home-config-writable
 [TESTED_BY](/tests/scoder.test.ts#testClaudePresetHomeConfigWritable)
@@ -815,6 +818,25 @@ individual `--dev-bind` of specific real host device nodes (`null`,
 `/dev/shm` — narrows exposure without bwrap's own synthetic
 construction, confirmed working directly for both a plain tool
 (`scoder pi`) and a GUI companion (`scoder --ide eclipse pi`).
+
+### 96. direct-mode-requires-git-repo
+[TESTED_BY](/tests/scoder.test.ts#testDirectModeRequiresGitRepo)
+
+Direct mode used to silently tolerate a non-git directory — git commands
+elsewhere (`addGitExclude`/`removeGitExclude` for the AGENTS.md overlay
+mask, `getProjDir`'s repo-root resolution) just no-op or fall back to `cwd`
+without checking exit codes, so nothing crashed, but there was no
+undo/audit trail for whatever the agent did there. It now refuses (exit 1,
+`not inside a git repository`) the same way worktree mode always has,
+checked before any sandbox setup. Runs `scoder --no-worktree` against a
+plain `mkdir`'d directory (no `git init`) and asserts the refusal.
+
+### 97. worktree-mode-requires-git-repo
+[TESTED_BY](/tests/scoder.test.ts#testWorktreeModeRequiresGitRepo)
+
+Parity coverage for the same requirement in worktree mode — already
+enforced by `setupGitWorktree`'s own check, but until now untested
+directly. Same shape as case 96, with `-w` instead of `--no-worktree`.
 
 ## Current Network Coverage
 

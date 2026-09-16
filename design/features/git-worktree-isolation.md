@@ -20,8 +20,12 @@ AI tool from modifying the user's working tree directly. All changes can be
 reviewed, merged, or discarded after the session.
 
 The worktree is checked out from a commit, so **uncommitted work in the user's
-checkout is invisible to the agent**. Worktree mode warns about this at startup
-rather than refusing, since the user may not need those changes in the session.
+checkout is invisible to the agent**. Worktree mode used to only warn about
+this at startup rather than refuse, since the user might not need those
+changes in the session — changed to a hard refusal (exit 1) once that gap
+between "invisible to the agent" and "just a warning" was judged too easy to
+miss, matching the requirement already used for a non-git directory (see
+`direct-mode` for the equivalent requirement there).
 
 ## Implementation
 
@@ -29,8 +33,15 @@ rather than refusing, since the user may not need those changes in the session.
 [IMPLEMENTED_BY](/src/git/worktree.ts#commitAllChanges)
 
 Flow:
-1. Create branch `scoder/<proj>` off HEAD
-2. Create worktree at `$HOME/<dirname(projDir)>/worktrees/<projDir>/scoder`
+1. Refuse (exit 1, `--worktree requires a clean checkout`) if the launching
+   checkout has uncommitted changes the agent would not be able to see —
+   checked in `main` (`src/index.ts`) before `setupGitWorktree` runs at
+   all, so a refused launch never creates a branch or worktree to begin
+   with. Not-a-git-repo is still caught by `setupGitWorktree`'s own check
+   below: `hasUncommittedChanges` returns `false`, not `true`, for a
+   non-repo `cwd`, so the flow falls through to it correctly.
+2. Create branch `scoder/<proj>` off HEAD
+3. Create worktree at `$HOME/<dirname(projDir)>/worktrees/<projDir>/scoder`
    (`getWorktreesParentDir` in `src/git/worktree.ts`) — a sibling of the
    project's own real location, not nested under it: since the sandbox's
    `$HOME` is the real host `$HOME` (see `path-mirroring`), mapping the
@@ -38,7 +49,6 @@ Flow:
    own real checkout at that exact path. The `/worktrees/<projDir>` detour
    avoids the collision and puts "worktree" in the path itself, so it's
    obvious to the user what they're looking at.
-3. Warn if the launching checkout has uncommitted changes the agent will not see
 4. Bind worktree into sandbox at its real absolute path
 5. On exit: commit all changes **in the worktree**, print summary (commit count, diffstat)
 6. Reboot recovery: if worktree directory is missing but branch exists, run `git worktree prune` and recreate with `git worktree add <dir> <branch>`

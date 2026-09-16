@@ -15,40 +15,29 @@ on a separate git branch via a worktree.
 | `claude` | Claude Code config bind-mount |
 | `copilot` | GitHub Copilot CLI config + data |
 | `pi` | Pi Coding Agent config + data |
-| `rstudio` | RStudio Desktop config + data, X11 access, and pi's own binds (see below) |
-| `eclipse` | Eclipse IDE, X11 access, and a dynamically (re)generated workspace (see below) |
 | *(any)* | Generic sandbox |
 
-**`rstudio` is different from every other preset here**, deliberately: it
-binds the host's real X11 socket into the sandbox so RStudio Desktop's
-window can render at all, which gives anything running inside the same
-access to that X display any of your own desktop apps have — including
-the ability to inject synthetic keyboard/mouse input into *other* windows
-on it. Every other preset confines its tool to filesystem and network
-access scoder mediates directly; this one hands over a live channel scoder
-has no further control over once it's open. Accepted because the goal
-here is preventing accidents, not holding up against a dedicated
-adversary — see
-[0002-rstudio-x11-access](/architecture/decision-records/0002-rstudio-x11-access.md)
-for what was verified and why the alternatives (RStudio Server over HTTP,
-a nested VNC server, a VM) were rejected as heavier than this project's
-own weight class.
+| Tool | IDE |
+|------|--------|
+| `rstudio` | RStudio Desktop config + data, X11 access, and pi's own binds (see below) |
+| `eclipse` | Eclipse IDE, X11 access, and a dynamically (re)generated workspace (see below) |
 
-If a `*.Rproj` file exists at the project root, `rstudio` opens it
+
+IDEs bind the host's real X11 socket into the sandbox so the IDEs
+window can render at all, which gives anything running inside the same
+access to that X display any of your own desktop apps have. This comes with some
+X11 security issues so should be used with caution.
+
+**`rstudio`**: If a `*.Rproj` file exists at the project root, `rstudio` opens it
 automatically (RStudio Desktop doesn't otherwise pick up the sandbox's
 working directory on its own); with none found, it opens the project
 directory itself. Passing your own argument (e.g. a specific file)
 always overrides this.
 
-**`eclipse` shares `rstudio`'s X11 trade-off** (see above) — not
-independently re-verified for Eclipse specifically, see
-`design/features/tool-presets.md`. It also solves a problem `rstudio`
-doesn't have: an Eclipse workspace records absolute host paths back to
-each project, so a workspace built outside the sandbox has stale
-references inside it. Every launch, scoder points Eclipse's own
-`-importProject` at a persisted, dedicated workspace and the sandbox's
-own project path, plus every `.agentreadonly` `$HOME/...` entry as its
-own project — so cross-project references resolve correctly, with no
+**`eclipse`** For scoder to work eclipse must have the import-projects plugin
+installed. Scoder creates a persisted, dedicated workspace using the sandbox's
+own project path, plus every included project in `.agentreadonly` —
+so cross-project references resolve correctly, with no
 separate step before the IDE opens. `$HOME/.eclipse` is bound in whole,
 read-write, so your real preferences and configuration carry over rather
 than diverging.
@@ -68,29 +57,39 @@ investigation.
 
 ### Default mode (direct)
 
-1. Runs the tool in a sandbox **directly in your current working directory**.
+1. **Must be in a git repo.** `scoder` refuses to run outside one — there is
+   otherwise no undo/audit trail (`git diff`/`git status`) for whatever the
+   tool does.
+2. Runs the tool in a sandbox **directly in your current working directory**.
    Paths inside the sandbox mirror real absolute paths.
-2. No git branch creation, no worktree isolation.
-3. `.agentreadonly` protection still applies.
-4. Starts the tool through `pasta`, which keeps outbound networking available
+3. No git branch creation, no worktree isolation.
+4. `.agentreadonly` protection still applies.
+5. Starts the tool through `pasta`, which keeps outbound networking available
    while blocking host localhost services such as `127.0.0.1`.
-5. No commit on exit — changes are immediate.
+6. No commit on exit — changes are immediate.
 
 ### Worktree mode (`-w` / `--worktree`)
 
-1. **Must be in a git repo.** `scoder -w` refuses to run outside one.
-2. Creates a new branch (`scoder/<git-repo-name>`) and a git worktree
-   in `/tmp/scoder/<git-repo-path>`. If you launch `scoder` from that
-   existing scoder worktree, it reuses it instead of trying to create a new
-   one. Your original checkout is untouched.
+1. **Must be in a git repo, with a clean checkout.** `scoder -w` refuses to
+   run outside a git repo, and refuses if you have uncommitted changes —
+   the worktree is checked out from a commit, so anything not committed
+   would be invisible to the agent.
+2. Creates a new branch (`scoder/<git-repo-name>`) and a git worktree at
+   `$HOME/<parent-of-repo>/worktrees/<repo-path>/scoder` — a visible sibling
+   of your project's own location, not a hidden temp path. If you launch
+   `scoder` from that existing scoder worktree, it reuses it instead of
+   trying to create a new one. Your original checkout is untouched.
 3. Launches the tool inside a bubblewrap sandbox operating on the worktree,
    with the same path mirroring and `pasta` networking as direct mode.
 4. On exit, commits changes, prints a summary and how to merge or discard.
 
 ### Sandbox properties
 
-- **Ephemeral HOME** — `/home/scoder` on tmpfs, fully isolated from your
-  real home.
+- **Ephemeral HOME** — a fresh, empty tmpfs each session, populated only by
+  explicit binds (the project itself, a curated set of tool configs, and
+  anything `.agentreadonly` adds). `$HOME` itself is your real home path,
+  not a separate one — nothing here is a synthetic identity, but nothing
+  persists in it either except what's actually bound in.
 - **System read-only** — `/usr`, `/bin`, `/lib`, `/etc` are read-only.
 - **Protected infrastructure** — `.github/`, `.claude/`, `opencode.json`,
    `.gitignore`, `package-lock.json`, `poetry.lock`, `Cargo.lock`, `pnpm-lock.yaml`, `yarn.lock`, `mise.toml`
@@ -105,13 +104,13 @@ investigation.
   marked as `--skip-worktree` in git so the agent can use git freely
   (worktree operations, stash, etc.) without seeing a dirty working tree.
 - **Tools** - executable directories and libraries are available read-only
-  for R, Java (maven), Rust, and mise-en-place. Specifically:
+  for R, Rust, and mise-en-place. Specifically:
   - **R**: `~/R` (user library) and `~/.Rprofile` are bound read-only, so
     R processes started inside the sandbox — including R MCP servers configured
     in the tool's config file — can access user-installed packages.
-  - **Java/Maven**: `~/.m2` bound read-only
   - **Rust**: `~/.rustup` and `~/.cargo/bin` bound read-only
   - **mise**: `~/.local/share/mise` and `~/.config/mise` bound read-only
+- **Java/Maven**: `~/.m2` bound read-write, otherwise not much works.
 - **Minimal `/dev`** — individual real host device nodes only (`null`,
   `zero`, `urandom`, `random`, `tty`, `pts`, `fd`), not the host's whole
   `/dev` (which would also expose every raw disk, TPM, USB, and other
@@ -181,9 +180,10 @@ An empty file will make all workspace files writeable.
 
 Lines beginning with literal `$HOME/` are treated differently: they must point
 to an existing directory under the real host home directory, and scoder will
-bind that directory read-only into the sandbox at the matching mirrored path
-under `/home/scoder/`. For example, `$HOME/Git/other-project` becomes
-`/home/scoder/Git/other-project`.
+bind that directory read-only into the sandbox at the same path — the
+sandbox's own `$HOME` is your real home directory, not a separate one, so no
+path rewriting happens. For example, `$HOME/Git/other-project` stays
+`$HOME/Git/other-project` inside the sandbox too.
 
 ## ssh access (`--allow-ssh`)
 
@@ -347,7 +347,7 @@ the session.
 ### Worktree mode (`-w` / `--worktree`)
 
 Changes are committed to the `scoder/<repo-name>` branch. The worktree is at
-`/tmp/scoder/<git-repo-path>`.
+`$HOME/<parent-of-repo>/worktrees/<repo-path>/scoder`.
 
 From inside the sandbox, if you need to pick up the latest changes from `main`,
 fetch and rebase or merge explicitly:
@@ -363,19 +363,19 @@ not have an upstream configured for that purpose.
 
 From outside the sandbox, other sessions only see changes on the `scoder/*`
 branch after they have been committed. Uncommitted edits exist only in the
-worktree at `/tmp/scoder/<git-repo-path>`.
+worktree at `$HOME/<parent-of-repo>/worktrees/<repo-path>/scoder`.
 
 When scoder exits it prints:
 
 ```
 scoder: ====== Session Summary ======
 scoder: Branch: scoder/<git-repo-name>
-scoder: Worktree: /tmp/scoder/<git-repo-path>
+scoder: Worktree: <HOME>/<parent-of-repo>/worktrees/<repo-path>/scoder
 scoder: To review:  git log scoder/<git-repo-name>
 scoder: To merge:   git merge scoder/<git-repo-name>
 scoder: To rebase:  git rebase scoder/<git-repo-name>
 scoder: View diff:  git diff scoder/<git-repo-name>
-scoder: To discard: git worktree remove /tmp/scoder/<git-repo-path> && git branch -D scoder/<git-repo-name>
+scoder: To discard: git worktree remove <worktree-path> && git branch -D scoder/<git-repo-name>
 ```
 
 ## Requirements

@@ -110,6 +110,10 @@ investigation.
     in the tool's config file — can access user-installed packages.
   - **Rust**: `~/.rustup` and `~/.cargo/bin` bound read-only
   - **mise**: `~/.local/share/mise` and `~/.config/mise` bound read-only
+  - **Desktop integration**: `~/.local/share/fonts` and
+    `~/.config/mimeapps.list` bound read-only, so GUI presets (`rstudio`,
+    `eclipse`) render text with the host's real fonts and see the host's
+    file-type "open with" associations
 - **Java/Maven**: `~/.m2` bound read-write, otherwise not much works.
 - **Minimal `/dev`** — individual real host device nodes only (`null`,
   `zero`, `full`, `urandom`, `random`, `tty`, `pts`, `ptmx`, `fd`), not

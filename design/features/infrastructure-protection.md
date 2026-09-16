@@ -37,8 +37,9 @@ rules, or alter lockfiles. Read-only overlays prevent this.
   `builder.ts`'s own `--dir` list. Reported directly:
   `$HOME/.local/share/fonts` was rejected outright under an earlier,
   broader version of this check that blocked the bare `.local` umbrella
-  wholesale, even though nothing is ever bound at that bare path — fixed
-  by narrowing the check to the exact fixed destinations. The check is
+  wholesale, even though nothing was bound at that bare path at the
+  time — fixed by narrowing the check to the exact fixed destinations
+  (fonts has since become one of them itself; see below). The check is
   still bidirectional, so an entry that is an *ancestor* of a fixed
   destination (e.g. bare `$HOME/.config`, containing `.config/mise` and
   `.config/gh`) is still correctly rejected.

@@ -47,12 +47,14 @@ const DEFAULT_PROTECTED = [
 // those are never themselves bound, just scaffolded empty by builder.ts's
 // own --dir list; only specific sub-paths under them are (`.cache/pi`,
 // `.config/mise`, `.local/bin`, and similar, varying by which preset is
-// active). Reported directly: `$HOME/.local/share/fonts` — a real,
-// legitimate use case — was rejected outright because it nested under the
-// bare `.local` entry this list used to carry, even though nothing is
-// ever bound at that bare path. Blocking a bare umbrella protects nothing
-// real, since a bind landing under it doesn't collide with anything
-// scoder itself put there; only the exact fixed destinations below do.
+// active). Reported directly: `$HOME/.local/share/fonts` was rejected
+// outright because it nested under the bare `.local` entry this list
+// used to carry, even though nothing was bound at that bare path at the
+// time. Blocking a bare umbrella protects nothing real, since a bind
+// landing under it doesn't collide with anything scoder itself put
+// there; only the exact fixed destinations below do — fonts has since
+// become one of them (buildExtraBinds now binds it by default, read-only,
+// the actual fix the user wanted), so it now correctly *is* in this list.
 // Must be kept in sync with buildExtraBinds, same caveat
 // sandboxMountPrefixes above already carries for a different check.
 function fixedBindDestinations(realHome: string): string[] {
@@ -62,10 +64,12 @@ function fixedBindDestinations(realHome: string): string[] {
 		`${realHome}/.claude`,
 		`${realHome}/.claude.json`,
 		`${realHome}/.config/gh`,
+		`${realHome}/.config/mimeapps.list`,
 		`${realHome}/.config/mise`,
 		`${realHome}/.copilot`,
 		`${realHome}/.gitconfig`,
 		`${realHome}/.local/bin`,
+		`${realHome}/.local/share/fonts`,
 		`${realHome}/.local/share/mise`,
 		`${realHome}/.m2`,
 		`${realHome}/.npmrc`,

@@ -666,6 +666,29 @@ async function buildExtraBinds(
 		});
 	}
 
+	// EM: GUI presets (rstudio, eclipse) need real fonts to render text at
+	// EM: all, not just cleanly — and desktop apps commonly consult
+	// EM: mimeapps.list for "open with" file-type associations. Read-only,
+	// EM: like every other entry here: neither is something a sandboxed
+	// EM: session should be able to change on the host.
+	const fontsDir = `${realHome}/.local/share/fonts`;
+	if (await dirExists(fontsDir)) {
+		binds.push({
+			type: "ro-bind",
+			source: fontsDir,
+			dest: `${sandboxHome}/.local/share/fonts`,
+		});
+	}
+
+	const mimeappsPath = `${realHome}/.config/mimeapps.list`;
+	if (await fileExists(mimeappsPath)) {
+		binds.push({
+			type: "ro-bind",
+			source: mimeappsPath,
+			dest: `${sandboxHome}/.config/mimeapps.list`,
+		});
+	}
+
 	return binds;
 }
 

@@ -920,15 +920,48 @@ test("agentreadonly-home-directory-must-exist: Non-existent HOME bind path fails
 	}
 });
 
-// ### Test: agentreadonly-home-fonts-directory-allowed
+// ### Test: agentreadonly-home-nested-namespace-path-allowed
 // Regression test: reported directly, $HOME/.local/share/fonts was
 // rejected outright with "overlaps reserved sandbox path" even though
-// nothing is ever bound at the bare $HOME/.local umbrella it nested
-// under — only specific sub-paths under it are (.local/bin,
-// .local/share/mise), neither of which fonts collides with.
+// nothing was bound at the bare $HOME/.local umbrella it nested under at
+// the time — only specific sub-paths under it were (.local/bin,
+// .local/share/mise), neither of which fonts collided with.
 // fixedBindDestinations (src/git/protection.ts) now lists only the exact
 // fixed destinations, not the bare umbrellas they happen to live under.
-test("agentreadonly-home-fonts-directory-allowed: $HOME/.local/share/fonts is no longer rejected as a reserved path", async () => {
+// Uses $HOME/.local/share/icons rather than the originally reported
+// .../fonts, since fonts has since become a fixed destination itself
+// (buildExtraBinds now binds it by default — see
+// agentreadonly-home-fonts-directory-now-redundant below) and so no
+// longer illustrates "safely nested, not itself fixed."
+test("agentreadonly-home-nested-namespace-path-allowed: $HOME/.local/share/icons is not rejected as a reserved path", async () => {
+	const repoDir = await createTempRepo();
+	tempRepos.push(repoDir);
+	const iconsDir = `${process.env.HOME}/.local/share/icons`;
+	const iconsDirPreexisted = await dirExists(iconsDir);
+
+	try {
+		if (!iconsDirPreexisted) {
+			await Bun.spawn(["mkdir", "-p", iconsDir]).exited;
+		}
+		await Bun.write(`${repoDir}/.agentreadonly`, "$HOME/.local/share/icons\n");
+
+		const output = await runScoder(repoDir, ["--dry-run", "/bin/bash"]);
+		expect(output).toContain(`--ro-bind ${iconsDir} ${iconsDir}`);
+		expect(output).not.toContain("reserved sandbox path");
+	} finally {
+		if (!iconsDirPreexisted) {
+			await Bun.spawn(["rm", "-rf", iconsDir]).exited;
+		}
+		await cleanupRepo(repoDir);
+	}
+});
+
+// ### Test: agentreadonly-home-fonts-directory-now-redundant
+// Fonts is now a fixed default bind (buildExtraBinds) — an .agentreadonly
+// entry for the exact same path is therefore a redundant re-declaration
+// of something scoder already handles, correctly rejected the same way
+// $HOME/.claude or $HOME/.config already are.
+test("agentreadonly-home-fonts-directory-now-redundant: $HOME/.local/share/fonts is rejected as a fixed destination", async () => {
 	const repoDir = await createTempRepo();
 	tempRepos.push(repoDir);
 	const fontsDir = `${process.env.HOME}/.local/share/fonts`;
@@ -940,9 +973,16 @@ test("agentreadonly-home-fonts-directory-allowed: $HOME/.local/share/fonts is no
 		}
 		await Bun.write(`${repoDir}/.agentreadonly`, "$HOME/.local/share/fonts\n");
 
-		const output = await runScoder(repoDir, ["--dry-run", "/bin/bash"]);
-		expect(output).toContain(`--ro-bind ${fontsDir} ${fontsDir}`);
-		expect(output).not.toContain("reserved sandbox path");
+		const proc = Bun.spawn([SCODER_PATH, "--dry-run", "/bin/bash"], {
+			cwd: repoDir,
+			stdout: "pipe",
+			stderr: "pipe",
+		});
+		await proc.exited;
+
+		expect(proc.exitCode).not.toBe(0);
+		const stderr = await new Response(proc.stderr).text();
+		expect(stderr).toContain("overlaps reserved sandbox path");
 	} finally {
 		if (!fontsDirPreexisted) {
 			await Bun.spawn(["rm", "-rf", fontsDir]).exited;
@@ -986,6 +1026,60 @@ test("agentreadonly-home-ancestor-of-fixed-bind-still-rejected: $HOME/.config is
 	} finally {
 		if (!configDirPreexisted) {
 			await Bun.spawn(["rm", "-rf", configDir]).exited;
+		}
+		await cleanupRepo(repoDir);
+	}
+});
+
+// ### Test: fonts-directory-bound-readonly-by-default
+// Added directly at the user's request, alongside .config/mimeapps.list
+// below: GUI presets (rstudio, eclipse) need real host fonts to render
+// text at all, not just cleanly. buildExtraBinds (src/sandbox/builder.ts)
+// binds it unconditionally, like every other host-tool-binding entry, not
+// gated behind a preset or an .agentreadonly entry — no config needed.
+test("fonts-directory-bound-readonly-by-default: ~/.local/share/fonts is bound read-only when present", async () => {
+	const repoDir = await createTempRepo();
+	tempRepos.push(repoDir);
+	const fontsDir = `${process.env.HOME}/.local/share/fonts`;
+	const fontsDirPreexisted = await dirExists(fontsDir);
+
+	try {
+		if (!fontsDirPreexisted) {
+			await Bun.spawn(["mkdir", "-p", fontsDir]).exited;
+		}
+
+		const output = await runScoder(repoDir, ["--dry-run", "/bin/bash"]);
+		expect(output).toContain(`--ro-bind ${fontsDir} ${fontsDir}`);
+		expect(output).not.toContain(`--bind ${fontsDir} ${fontsDir}`);
+	} finally {
+		if (!fontsDirPreexisted) {
+			await Bun.spawn(["rm", "-rf", fontsDir]).exited;
+		}
+		await cleanupRepo(repoDir);
+	}
+});
+
+// ### Test: mimeapps-list-bound-readonly-by-default
+// Same reasoning as fonts-directory-bound-readonly-by-default: desktop
+// apps commonly consult mimeapps.list for file-type "open with"
+// associations.
+test("mimeapps-list-bound-readonly-by-default: ~/.config/mimeapps.list is bound read-only when present", async () => {
+	const repoDir = await createTempRepo();
+	tempRepos.push(repoDir);
+	const mimeappsPath = `${process.env.HOME}/.config/mimeapps.list`;
+	const mimeappsPreexisted = await Bun.file(mimeappsPath).exists();
+
+	try {
+		if (!mimeappsPreexisted) {
+			await Bun.write(mimeappsPath, "[Default Applications]\n");
+		}
+
+		const output = await runScoder(repoDir, ["--dry-run", "/bin/bash"]);
+		expect(output).toContain(`--ro-bind ${mimeappsPath} ${mimeappsPath}`);
+		expect(output).not.toContain(`--bind ${mimeappsPath} ${mimeappsPath}`);
+	} finally {
+		if (!mimeappsPreexisted) {
+			await Bun.spawn(["rm", "-f", mimeappsPath]).exited;
 		}
 		await cleanupRepo(repoDir);
 	}

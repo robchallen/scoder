@@ -37,7 +37,7 @@ localhost services by default.
 
 [HAS_FEATURE](./features/dry-run-mode.md) - Dry-run mode that prints the bwrap command without executing it.
 
-[HAS_FEATURE](./features/host-tool-binding.md) - Selective read-only binding of host tools and configs (.gitconfig, .local/bin, .cargo, .rustup, mise, R, .m2, .npmrc, .pypirc).
+[HAS_FEATURE](./features/host-tool-binding.md) - Selective read-only binding of host tools and configs (.gitconfig, .local/bin, .cargo, .rustup, mise, R, .m2, .npmrc, .pypirc, .config/gh, .local/share/fonts, .config/mimeapps.list).
 
 [HAS_FEATURE](./features/direct-mode.md) - Direct mode (`--no-worktree`) runs the tool in the current directory without git worktree isolation.
 

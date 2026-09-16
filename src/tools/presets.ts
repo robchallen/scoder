@@ -34,6 +34,86 @@ async function ensureDir(path: string): Promise<void> {
 	await Bun.spawn(["mkdir", "-p", path]);
 }
 
+// ### guiX11Binds
+// Shared between `rstudio` and `eclipse` — both are GUI apps needing a live
+// connection to the host's X server (see
+// architecture/decision-records/0002-rstudio-x11-access.md for the
+// verified X11-socket/XAUTHORITY mechanics this covers; Design Decision 3
+// in eclipse-preset.md applies the same access to Eclipse by direct
+// analogy, not independently re-verified there). A deliberate, accepted
+// relaxation of the sandbox's isolation, not an oversight — see that ADR
+// for the full trade-off.
+async function guiX11Binds(
+	realHome: string,
+	sandboxHome: string,
+): Promise<ToolBindSpec> {
+	const binds: BindMount[] = [];
+	const dirs: string[] = [];
+	const env: Record<string, string> = {};
+
+	if (await dirExists("/tmp/.X11-unix")) {
+		binds.push({
+			type: "ro-bind",
+			source: "/tmp/.X11-unix",
+			dest: "/tmp/.X11-unix",
+		});
+	}
+
+	if (process.env.DISPLAY) {
+		env.DISPLAY = process.env.DISPLAY;
+	}
+	if (process.env.XDG_RUNTIME_DIR) {
+		env.XDG_RUNTIME_DIR = process.env.XDG_RUNTIME_DIR;
+	}
+	if (process.env.DBUS_SESSION_BUS_ADDRESS) {
+		env.DBUS_SESSION_BUS_ADDRESS = process.env.DBUS_SESSION_BUS_ADDRESS;
+	}
+
+	const xauthPath = process.env.XAUTHORITY || `${realHome}/.Xauthority`;
+	if (await fileExists(xauthPath)) {
+		const sandboxXauthPath = `${sandboxHome}/.Xauthority`;
+		binds.push({
+			type: "ro-bind",
+			source: xauthPath,
+			dest: sandboxXauthPath,
+		});
+		env.XAUTHORITY = sandboxXauthPath;
+	}
+
+	// EM: GPU render nodes. Reported directly: RStudio Desktop (Electron/
+	// EM: Chromium) showed a white window then crashed with SIGILL
+	// EM: ("Illegal instruction (core dumped)") after /dev was narrowed
+	// EM: from a wholesale --dev-bind /dev /dev (which included /dev/dri
+	// EM: incidentally, along with everything else) down to a short,
+	// EM: explicit list of real device nodes that never included it —
+	// EM: see design/features/sandbox-isolation.md's "History" for that
+	// EM: change. Chromium's GPU process, unable to open a DRM render
+	// EM: node, hits an internal CHECK()/NOTREACHED() failure rather than
+	// EM: falling back to software rendering cleanly — release Chromium
+	// EM: compiles a failed CHECK to a hardware trap instruction, which
+	// EM: the OS reports as exactly this signal, not a graceful error
+	// EM: message. `dev-bind`, not `ro-bind`: bwrap only grants actual
+	// EM: device-node access through `--dev-bind` ("allowing device
+	// EM: access", per its own --help text) — a plain bind mount does
+	// EM: not. Gated on the node existing on the host, same as the X11
+	// EM: socket above: a host with no GPU at all (or only a proprietary
+	// EM: NVIDIA driver, whose separate /dev/nvidia* nodes this does not
+	// EM: cover) has no /dev/dri to bind, and this preset cannot help
+	// EM: that — Chromium is expected to fall back to software rendering
+	// EM: in that case instead, not crash, since the difference between
+	// EM: "no GPU at all" and "GPU present but access denied" is exactly
+	// EM: what this fix targets.
+	if (await dirExists("/dev/dri")) {
+		binds.push({
+			type: "dev-bind",
+			source: "/dev/dri",
+			dest: "/dev/dri",
+		});
+	}
+
+	return { binds, dirs, env };
+}
+
 // EM: ### Eclipse preset support
 // EM: See design/implementation/plans/eclipse-preset.md for the full
 // EM: investigation, including a since-superseded approach (vendoring the
@@ -509,10 +589,6 @@ export const TOOL_PRESETS: Record<string, ToolPreset> = {
 		description: "RStudio Desktop",
 
 		configBinds: async (realHome, sandboxHome) => {
-			const binds: BindMount[] = [];
-			const dirs: string[] = [];
-			const env: Record<string, string> = {};
-
 			// EM: RStudio Desktop is a GUI app — it needs a live connection to
 			// EM: the host's X server. Verified directly (see
 			// EM: architecture/decision-records/0002-rstudio-x11-access.md): an empty
@@ -534,18 +610,12 @@ export const TOOL_PRESETS: Record<string, ToolPreset> = {
 			// EM: relies on), so it is not a mitigation to lean on. Accepted
 			// EM: because the threat model here is accidents, not a dedicated
 			// EM: adversary — a VM or container is the right answer for the
-			// EM: latter, and is deliberately not what this is.
-			if (await dirExists("/tmp/.X11-unix")) {
-				binds.push({
-					type: "ro-bind",
-					source: "/tmp/.X11-unix",
-					dest: "/tmp/.X11-unix",
-				});
-			}
-
-			if (process.env.DISPLAY) {
-				env.DISPLAY = process.env.DISPLAY;
-			}
+			// EM: latter, and is deliberately not what this is. See
+			// EM: guiX11Binds for the shared X11/XAUTHORITY/DRI mechanics.
+			const x11 = await guiX11Binds(realHome, sandboxHome);
+			const binds: BindMount[] = [...x11.binds];
+			const dirs: string[] = [...x11.dirs];
+			const env: Record<string, string> = { ...x11.env };
 
 			// EM: Reported: most menu items greyed out except cut/copy/paste,
 			// EM: and only the window manager's own close button quits RStudio.
@@ -564,14 +634,9 @@ export const TOOL_PRESETS: Record<string, ToolPreset> = {
 			// EM: so /run/user/<uid> — a separate tmpfs on a real systemd-managed
 			// EM: desktop — is already reachable through the existing wholesale
 			// EM: --ro-bind /run /run once these env vars tell RStudio where to
-			// EM: look.
-			if (process.env.XDG_RUNTIME_DIR) {
-				env.XDG_RUNTIME_DIR = process.env.XDG_RUNTIME_DIR;
-			}
-			if (process.env.DBUS_SESSION_BUS_ADDRESS) {
-				env.DBUS_SESSION_BUS_ADDRESS = process.env.DBUS_SESSION_BUS_ADDRESS;
-			}
-
+			// EM: look. (XDG_RUNTIME_DIR/DBUS_SESSION_BUS_ADDRESS themselves
+			// EM: already come from guiX11Binds above.)
+			//
 			// EM: Reported: mcptools::mcp_session() (bridging RStudio's R console
 			// EM: to pi, e.g. via --ide) fails with "Socket directory
 			// EM: /run/user/<uid>/mcptools is a symlink; refusing to use it."
@@ -592,17 +657,6 @@ export const TOOL_PRESETS: Record<string, ToolPreset> = {
 			// EM: the directory itself (dir.create(..., recursive = TRUE)) the
 			// EM: first time either side needs it.
 			env.MCPTOOLS_SOCKET_DIR = "/tmp/mcptools";
-
-			const xauthPath = process.env.XAUTHORITY || `${realHome}/.Xauthority`;
-			if (await fileExists(xauthPath)) {
-				const sandboxXauthPath = `${sandboxHome}/.Xauthority`;
-				binds.push({
-					type: "ro-bind",
-					source: xauthPath,
-					dest: sandboxXauthPath,
-				});
-				env.XAUTHORITY = sandboxXauthPath;
-			}
 
 			// RStudio writes here throughout a session (preferences, recent
 			// files, environment/history state) — same reasoning as Claude
@@ -705,10 +759,6 @@ export const TOOL_PRESETS: Record<string, ToolPreset> = {
 		// EM: design/implementation/plans/eclipse-preset.md for why an
 		// EM: earlier version tried to and what that cost.
 		configBinds: async (realHome, sandboxHome) => {
-			const binds: BindMount[] = [];
-			const dirs: string[] = [];
-			const env: Record<string, string> = {};
-
 			// EM: Eclipse's UI is SWT/GTK, not Electron — the same class of
 			// EM: X11-needing desktop app as rstudio (see
 			// EM: architecture/decision-records/0002-rstudio-x11-access.md for
@@ -716,35 +766,12 @@ export const TOOL_PRESETS: Record<string, ToolPreset> = {
 			// EM: but NOT independently re-verified for Eclipse specifically:
 			// EM: this project has no host with GTK installed and a real X
 			// EM: session to confirm it against. See Design Decision 3 in
-			// EM: eclipse-preset.md.
-			if (await dirExists("/tmp/.X11-unix")) {
-				binds.push({
-					type: "ro-bind",
-					source: "/tmp/.X11-unix",
-					dest: "/tmp/.X11-unix",
-				});
-			}
-
-			if (process.env.DISPLAY) {
-				env.DISPLAY = process.env.DISPLAY;
-			}
-			if (process.env.XDG_RUNTIME_DIR) {
-				env.XDG_RUNTIME_DIR = process.env.XDG_RUNTIME_DIR;
-			}
-			if (process.env.DBUS_SESSION_BUS_ADDRESS) {
-				env.DBUS_SESSION_BUS_ADDRESS = process.env.DBUS_SESSION_BUS_ADDRESS;
-			}
-
-			const xauthPath = process.env.XAUTHORITY || `${realHome}/.Xauthority`;
-			if (await fileExists(xauthPath)) {
-				const sandboxXauthPath = `${sandboxHome}/.Xauthority`;
-				binds.push({
-					type: "ro-bind",
-					source: xauthPath,
-					dest: sandboxXauthPath,
-				});
-				env.XAUTHORITY = sandboxXauthPath;
-			}
+			// EM: eclipse-preset.md, and guiX11Binds for the shared
+			// EM: X11/XAUTHORITY/DRI mechanics.
+			const x11 = await guiX11Binds(realHome, sandboxHome);
+			const binds: BindMount[] = [...x11.binds];
+			const dirs: string[] = [...x11.dirs];
+			const env: Record<string, string> = { ...x11.env };
 
 			const layout = await resolveEclipseLayout(process.cwd());
 			if (!layout) {

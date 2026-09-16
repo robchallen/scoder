@@ -27,7 +27,7 @@ tags: [test-script, validation]
 
 `tests/scoder.test.ts` is a self-contained integration test suite that creates
 temporary git repositories under `/tmp`, runs `scoder` against them using
-`/bin/bash` as the sandboxed command, and asserts expected behaviour. 101
+`/bin/bash` as the sandboxed command, and asserts expected behaviour. 102
 tests cover all sandbox mechanics.
 
 Cleanup runs in an `afterAll` hook. It removes the temp repos, their worktrees
@@ -708,27 +708,42 @@ passes `DISPLAY` through, and binds `~/.config/rstudio` and
 `~/.local/share/rstudio` read-write. See
 [0002-rstudio-x11-access](/architecture/decision-records/0002-rstudio-x11-access.md).
 
-### 84. rstudio-preset-includes-pi-config
+### 84. rstudio-preset-binds-dev-dri-when-present
+[TESTED_BY](/tests/scoder.test.ts#testRstudioPresetBindsDevDriWhenPresent)
+
+Regression test: reported directly, RStudio Desktop (Electron/Chromium)
+showed a white window then crashed with `SIGILL` ("Illegal instruction
+(core dumped)") once `/dev` was narrowed to a fixed list of real device
+nodes that never included `/dev/dri` — Chromium's GPU process, unable to
+open a DRM render node, hits an internal `CHECK()` failure (compiled to
+a hardware trap in release builds) rather than falling back to software
+rendering cleanly. `guiX11Binds` (`src/tools/presets.ts`, shared with
+`eclipse`) now binds it via `--dev-bind` — not `--ro-bind`, which grants
+no real device-node access — when it exists on the host, absent
+otherwise (asserted either way, so the test is meaningful whether or not
+the machine running the suite has a GPU).
+
+### 85. rstudio-preset-includes-pi-config
 [TESTED_BY](/tests/scoder.test.ts#testRstudioPresetIncludesPiConfig)
 
 `pi` runs inside RStudio's own embedded terminal, so the `rstudio` preset
 also includes pi's data/cache binds — via a shared `piConfigBinds` helper
 both presets call, not a second, separately-maintained copy of the list.
 
-### 85. rstudio-preset-binds-xauthority-when-present
+### 86. rstudio-preset-binds-xauthority-when-present
 [TESTED_BY](/tests/scoder.test.ts#testRstudioPresetBindsXauthorityWhenPresent)
 
 When the host X session uses cookie-based auth, the `Xauthority` file is
 bound read-only and `XAUTHORITY` is set to the sandbox-side path — not the
 host's own path, which would not resolve inside the sandbox.
 
-### 86. rstudio-preset-skips-xauthority-when-absent
+### 87. rstudio-preset-skips-xauthority-when-absent
 [TESTED_BY](/tests/scoder.test.ts#testRstudioPresetSkipsXauthorityWhenAbsent)
 
 No `Xauthority` bind or `XAUTHORITY` env var appears when the file doesn't
 exist (e.g. a no-auth X server, or none of the host's config resolved).
 
-### 87. rstudio-x11-connectivity-end-to-end
+### 88. rstudio-x11-connectivity-end-to-end
 [TESTED_BY](/tests/scoder.test.ts#testRstudioX11ConnectivityEndToEnd)
 
 A real X11 client, launched as the `rstudio` tool through the real scoder
@@ -740,7 +755,7 @@ installed, or if a real `rstudio` is already installed on the
 test-running machine (so this test never shadows a genuine local
 installation, even temporarily).
 
-### 88. rstudio-preset-passes-through-xdg-runtime-and-dbus
+### 89. rstudio-preset-passes-through-xdg-runtime-and-dbus
 [TESTED_BY](/tests/scoder.test.ts#testRstudioPresetPassesThroughXdgRuntimeAndDbus)
 
 `XDG_RUNTIME_DIR` and `DBUS_SESSION_BUS_ADDRESS` are set inside the
@@ -748,26 +763,26 @@ sandbox when present on the host — the (unverified, well-motivated) fix
 for RStudio's reported greyed-out menus. See
 [0002-rstudio-x11-access](/architecture/decision-records/0002-rstudio-x11-access.md).
 
-### 89. rstudio-resolveargs-picks-rproj-file
+### 90. rstudio-resolveargs-picks-rproj-file
 [TESTED_BY](/tests/scoder.test.ts#testRstudioResolveargsPicksRprojFile)
 
 With a `.Rproj` file at the project root and no explicit argument,
 `rstudio` is launched with that file's sandbox-side path — fixes RStudio
 starting with `getwd()` at `$HOME` rather than the project.
 
-### 90. rstudio-resolveargs-falls-back-to-project-dir
+### 91. rstudio-resolveargs-falls-back-to-project-dir
 [TESTED_BY](/tests/scoder.test.ts#testRstudioResolveargsFallsBackToProjectDir)
 
 With no `.Rproj` file, `rstudio` is launched with the project directory
 itself.
 
-### 91. rstudio-resolveargs-does-not-override-explicit-args
+### 92. rstudio-resolveargs-does-not-override-explicit-args
 [TESTED_BY](/tests/scoder.test.ts#testRstudioResolveargsDoesNotOverrideExplicitArgs)
 
 An explicit argument (e.g. a specific file to open) is left untouched,
 even when a `.Rproj` file is present.
 
-### 92. ide-flag-merges-companion-binds
+### 93. ide-flag-merges-companion-binds
 [TESTED_BY](/tests/scoder.test.ts#testIdeFlagMergesCompanionBinds)
 
 `--ide` merges the companion's own binds (`rstudio`'s X11 access) into
@@ -777,7 +792,7 @@ includes them so `pi` also works from its embedded terminal) appears
 once, not twice. See
 [ide-companion](/design/features/ide-companion.md).
 
-### 93. ide-flag-works-before-or-after-tool-name
+### 94. ide-flag-works-before-or-after-tool-name
 [TESTED_BY](/tests/scoder.test.ts#testIdeFlagWorksBeforeOrAfterToolName)
 
 `--ide rstudio` is recognised whether it appears before or after the
@@ -785,19 +800,19 @@ primary tool's own name (`scoder --ide rstudio pi` and
 `scoder pi --ide rstudio` are equivalent) — every other scoder flag only
 parses before the tool name.
 
-### 94. ide-must-differ-from-primary-tool
+### 95. ide-must-differ-from-primary-tool
 [TESTED_BY](/tests/scoder.test.ts#testIdeMustDifferFromPrimaryTool)
 
 `--ide` naming the same tool as the primary fails with a clear error.
 
-### 95. ide-requires-registered-preset
+### 96. ide-requires-registered-preset
 [TESTED_BY](/tests/scoder.test.ts#testIdeRequiresRegisteredPreset)
 
 `--ide` naming a tool with no registered preset fails with a clear error,
 rather than silently launching it with no binds (and so, for a GUI IDE,
 failing silently in its own background job).
 
-### 96. ide-companion-background-then-primary-foreground-both-must-exit
+### 97. ide-companion-background-then-primary-foreground-both-must-exit
 [TESTED_BY](/tests/scoder.test.ts#testIdeCompanionBackgroundThenPrimaryForegroundBothMustExit)
 
 The one real end-to-end case: the primary tool exits immediately, but
@@ -810,7 +825,7 @@ companion's. Reuses the fake pasta shim established earlier in this
 suite. Self-skips if a real `pi` or `rstudio` is already installed on the
 test-running machine, so it never shadows either.
 
-### 97. rstudio-preset-sets-mcptools-socket-dir
+### 98. rstudio-preset-sets-mcptools-socket-dir
 [TESTED_BY](/tests/scoder.test.ts#testRstudioPresetSetsMcptoolsSocketDir)
 
 `MCPTOOLS_SOCKET_DIR` is set to a fixed, always-writable sandbox path
@@ -822,7 +837,7 @@ read-only inside the sandbox, so `mcptools`' own default location can
 never be created there regardless of what's already at that path on the
 host.
 
-### 98. worktrees-parent-dir-bound-regardless-of-mode
+### 99. worktrees-parent-dir-bound-regardless-of-mode
 [TESTED_BY](/tests/scoder.test.ts#testWorktreesParentDirBoundRegardlessOfMode)
 
 The directory that will hold a project's scoder worktree(s)
@@ -841,7 +856,7 @@ itself stays side-effect free (matching `getAgentPortsBind`'s auto-detect
 step and `describeSshAccess`): it skips the real `mkdir`, so only the
 preview is checked there.
 
-### 99. dev-minimal-real-nodes
+### 100. dev-minimal-real-nodes
 [TESTED_BY](/tests/scoder.test.ts#testDevMinimalRealNodes)
 
 Regression test for `/dev` exposure: an earlier `--dev-bind /dev /dev`
@@ -859,7 +874,7 @@ individual `--dev-bind` of specific real host device nodes (`null`,
 construction, confirmed working directly for both a plain tool
 (`scoder pi`) and a GUI companion (`scoder --ide eclipse pi`).
 
-### 100. direct-mode-requires-git-repo
+### 101. direct-mode-requires-git-repo
 [TESTED_BY](/tests/scoder.test.ts#testDirectModeRequiresGitRepo)
 
 Direct mode used to silently tolerate a non-git directory — git commands
@@ -871,7 +886,7 @@ undo/audit trail for whatever the agent did there. It now refuses (exit 1,
 checked before any sandbox setup. Runs `scoder --no-worktree` against a
 plain `mkdir`'d directory (no `git init`) and asserts the refusal.
 
-### 101. worktree-mode-requires-git-repo
+### 102. worktree-mode-requires-git-repo
 [TESTED_BY](/tests/scoder.test.ts#testWorktreeModeRequiresGitRepo)
 
 Parity coverage for the same requirement in worktree mode — already

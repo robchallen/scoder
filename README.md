@@ -112,9 +112,13 @@ investigation.
   - **mise**: `~/.local/share/mise` and `~/.config/mise` bound read-only
 - **Java/Maven**: `~/.m2` bound read-write, otherwise not much works.
 - **Minimal `/dev`** — individual real host device nodes only (`null`,
-  `zero`, `urandom`, `random`, `tty`, `pts`, `fd`), not the host's whole
-  `/dev` (which would also expose every raw disk, TPM, USB, and other
-  device node on the machine). `/dev/shm` is a fresh tmpfs.
+  `zero`, `full`, `urandom`, `random`, `tty`, `pts`, `ptmx`, `fd`), not
+  the host's whole `/dev` (which would also expose every raw disk, TPM,
+  USB, and other device node on the machine). `/dev/shm` is a fresh
+  tmpfs. GUI presets (`rstudio`, `eclipse`) additionally bind `/dev/dri`
+  for GPU rendering when it exists on the host — needed, not optional,
+  for RStudio Desktop specifically (Chromium's GPU process crashes
+  outright without it, rather than falling back to software rendering).
 - **Host localhost blocked** — tools run behind `pasta` with host localhost
   forwarding disabled, so host-local TCP services are not reachable
   from the sandbox while outbound networking stays available.

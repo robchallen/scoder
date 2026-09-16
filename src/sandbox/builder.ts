@@ -166,7 +166,9 @@ export async function buildBwrapCommand(
 	// EM: sandbox on at least one real host (bwrap itself failing,
 	// EM: surfaced only as a generic, uninformative pasta attach error
 	// EM: with no indication /dev was the cause). Confirmed working
-	// EM: directly for both a plain tool (`scoder pi`) See design/features/sandbox-isolation.md.
+	// EM: directly for a plain tool (`scoder pi`). /dev/full and
+	// EM: /dev/ptmx were added afterward — see
+	// EM: design/features/sandbox-isolation.md.
 	cmd.push(
 		"--dev-bind",
 		"/dev/null",
@@ -174,7 +176,6 @@ export async function buildBwrapCommand(
 		"--dev-bind",
 		"/dev/zero",
 		"/dev/zero",
-		//TODO: added /dev/full and /dev/ptmx but have not updated documentation and tests
 		"--dev-bind",
 		"/dev/full",
 		"/dev/full",

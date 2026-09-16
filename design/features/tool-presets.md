@@ -89,15 +89,31 @@ RStudio Desktop is a GUI app, so this preset also binds `/tmp/.X11-unix`
 auth (bound to a sandbox-side path, not the host's own — `XAUTHORITY` is a
 filesystem path, unlike the plain passthrough env vars below, so it cannot
 come from the generic `passThrough` list in `builder.ts`; see
-`ToolBindSpec.env` in `src/types.ts`).
+`ToolBindSpec.env` in `src/types.ts`), plus `/dev/dri` (GPU direct
+rendering) when it exists on the host, via `--dev-bind` rather than
+`--ro-bind` since only `--dev-bind` grants actual device-node access.
+**Load-bearing, not optional**, for RStudio specifically: reported
+directly, RStudio showed a white window then crashed with `SIGILL`
+("Illegal instruction (core dumped)") once `/dev` was narrowed from a
+wholesale `--dev-bind /dev /dev` down to a fixed list of real device
+nodes that never included it — Chromium's GPU process, unable to open a
+DRM render node, hits an internal `CHECK()` failure (compiled to a
+hardware trap in release builds) rather than falling back to software
+rendering cleanly. All of this — X11 socket, `DISPLAY`, `XDG_RUNTIME_DIR`,
+`DBUS_SESSION_BUS_ADDRESS`, `XAUTHORITY`, `/dev/dri` — lives in a shared
+`guiX11Binds` helper, not a second, separately-maintained copy: `eclipse`
+is a GUI app needing the exact same access, by direct analogy (see below).
 
 This is a deliberate, accepted relaxation of the sandbox's isolation, not
 an oversight — see
 [0002-rstudio-x11-access](/architecture/decision-records/0002-rstudio-x11-access.md)
-for the full trade-off and what was verified before accepting it. `pi` runs
-inside RStudio's own embedded terminal, so this preset also includes pi's
-own config/data/cache binds — via a shared `piConfigBinds` helper, not a
-second, separately-maintained copy of the same list.
+for the full trade-off and what was verified before accepting it (the ADR
+predates the `/dev/dri` addition, which extends the same trade-off to GPU
+access — not independently re-verified against a real GPU-backed host,
+since this project has none). `pi` runs inside RStudio's own embedded
+terminal, so this preset also includes pi's own config/data/cache binds —
+via a shared `piConfigBinds` helper, not a second, separately-maintained
+copy of the same list.
 
 Also passes `XDG_RUNTIME_DIR` and `DBUS_SESSION_BUS_ADDRESS` through when
 set on the host — reported: most menu items greyed out except cut/copy/

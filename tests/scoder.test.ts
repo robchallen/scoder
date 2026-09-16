@@ -1753,6 +1753,36 @@ test("rstudio-preset-binds-x11-and-config-dirs: binds the X11 socket, DISPLAY, a
 	}
 });
 
+// ### Test: rstudio-preset-binds-dev-dri-when-present
+// Regression test: reported directly, RStudio Desktop (Electron/Chromium)
+// showed a white window then crashed with SIGILL ("Illegal instruction
+// (core dumped)") once /dev was narrowed to a fixed list of real device
+// nodes that never included /dev/dri — Chromium's GPU process, unable to
+// open a DRM render node, hits an internal CHECK() failure rather than
+// falling back to software rendering. guiX11Binds (src/tools/presets.ts,
+// shared with eclipse) now binds it via --dev-bind (not --ro-bind — only
+// --dev-bind grants real device-node access) when it exists on the host.
+test("rstudio-preset-binds-dev-dri-when-present: /dev/dri is dev-bound when it exists on the host, absent otherwise", async () => {
+	const repoDir = await createTempRepo();
+	tempRepos.push(repoDir);
+	const fakeBinDir = await createFakeToolDir("rstudio");
+
+	try {
+		const output = await runScoder(repoDir, ["--dry-run", "rstudio"], {
+			PATH: `${fakeBinDir}:${process.env.PATH}`,
+		});
+
+		if (await dirExists("/dev/dri")) {
+			expect(output).toContain("--dev-bind /dev/dri /dev/dri");
+		} else {
+			expect(output).not.toContain("/dev/dri");
+		}
+	} finally {
+		await Bun.spawn(["rm", "-rf", fakeBinDir]).exited;
+		await cleanupRepo(repoDir);
+	}
+});
+
 // ### Test: rstudio-preset-includes-pi-config
 test("rstudio-preset-includes-pi-config: pi's data/cache dirs are bound, same as pi's own top-level preset", async () => {
 	const repoDir = await createTempRepo();

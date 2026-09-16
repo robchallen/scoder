@@ -44,25 +44,40 @@ The sandbox shape:
   else mounts. See
   [design/implementation/issues/update-alternatives-state-not-mounted.md](/design/implementation/issues/update-alternatives-state-not-mounted.md).
 - `/dev` — individual `--dev-bind` of specific real host device nodes
-  (`null`, `zero`, `urandom`, `random`, `tty`, `pts`, `fd`), plus a fresh
-  `--tmpfs` for `/dev/shm` — not a wholesale `--dev-bind /dev /dev`
-  (every raw disk, TPM, USB, and other device node on the host), and not
-  bwrap's own synthetic `--dev` construction either: confirmed directly
-  that `--dev` fails to initialize the sandbox on at least one real host
-  (bwrap itself failing silently, surfaced only as a generic, uninformative
-  pasta attach error, "Couldn't switch to pasta namespaces" with no
-  further detail — pasta's own error text, not a description of what
-  actually went wrong). Individually-named real `--dev-bind`s side-steps
-  whatever that incompatibility is, while still narrowing exposure far
-  below the original wholesale bind. Confirmed working directly for both
-  a plain tool (`scoder pi`) and a GUI companion (`scoder --ide eclipse
-  pi`) on the reporting host. `/dev/ptmx` and `/dev/full` are not in this
-  list — not confirmed to be needed by anything tested so far, but a
-  tool that allocates its own fresh pty (opening `/dev/ptmx` directly,
-  as some PTY-backed subprocess libraries do) would need `/dev/ptmx`
-  added if that's ever hit. `/dev/dri` (GPU direct rendering) is likewise
-  not included — `eclipse`'s GUI rendered without it in the confirmed
-  test, so it hasn't been added preemptively.
+  (`null`, `zero`, `full`, `urandom`, `random`, `tty`, `pts`, `ptmx`,
+  `fd`), plus a fresh `--tmpfs` for `/dev/shm` — not a wholesale
+  `--dev-bind /dev /dev` (every raw disk, TPM, USB, and other device
+  node on the host), and not bwrap's own synthetic `--dev` construction
+  either: confirmed directly that `--dev` fails to initialize the
+  sandbox on at least one real host (bwrap itself failing silently,
+  surfaced only as a generic, uninformative pasta attach error, "Couldn't
+  switch to pasta namespaces" with no further detail — pasta's own error
+  text, not a description of what actually went wrong). Individually-named
+  real `--dev-bind`s side-steps whatever that incompatibility is, while
+  still narrowing exposure far below the original wholesale bind.
+  Confirmed working directly for a plain tool (`scoder pi`); `full` and
+  `ptmx` were added to the list afterward.
+- `/dev/dri` (GPU render nodes) — bound separately, only for GUI presets
+  that need it (`rstudio`, `eclipse` — see `guiX11Binds` in
+  `src/tools/presets.ts`), not part of the fixed list above. **Load-bearing,
+  not optional**, for at least RStudio Desktop: reported directly, RStudio
+  showed a white window then crashed with `SIGILL` ("Illegal instruction
+  (core dumped)") once `/dev` was narrowed to the fixed list above, which
+  never included it. RStudio Desktop is Electron/Chromium-based, and
+  Chromium's GPU process, unable to open a DRM render node, hits an
+  internal `CHECK()`/`NOTREACHED()` failure rather than falling back to
+  software rendering cleanly — release Chromium compiles a failed `CHECK`
+  to a hardware trap instruction, which the OS reports as exactly this
+  signal, not a graceful error message. `--dev-bind`, not `--ro-bind`:
+  bwrap only grants actual device-node access through `--dev-bind`. Gated
+  on the node existing on the host, same as the X11 socket: a host with no
+  GPU at all has no `/dev/dri` to bind, and Chromium is expected to fall
+  back to software rendering in that case instead of crashing, since the
+  difference between "no GPU at all" and "GPU present but access denied"
+  is exactly what this fix targets. Covers only the generic DRM/nouveau
+  path — a host using the proprietary NVIDIA driver needs its own separate
+  `/dev/nvidia*` nodes, not covered here; no GPU-backed host available in
+  this project to verify that gap against directly.
 - `/proc` — procfs
 - `/tmp` — ephemeral tmpfs
 - `$HOME` (the real host `$HOME`) — fresh per-session tmpfs with `.config/`, `.local/`, `.cache/` subdirs, populated by the binds below; nothing in it persists across sessions except what's explicitly bound in

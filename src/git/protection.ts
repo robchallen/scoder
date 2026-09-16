@@ -30,21 +30,42 @@ const DEFAULT_PROTECTED = [
 	"mise.toml",
 ];
 
-// Sandbox destinations a .agentreadonly $HOME/... entry must not collide
-// with — every fixed infra bind scoder itself already places under the
-// sandbox home. Parameterized by realHome, not a fixed literal: the
-// sandbox's own $HOME is the real host $HOME (see path-mirroring), which
-// varies by user and by test.
-function reservedSandboxPaths(realHome: string): string[] {
+// Sandbox destinations that scoder itself unconditionally binds — every
+// fixed infra bind under $HOME, whether host-tool-wide (buildExtraBinds'
+// own list in src/sandbox/builder.ts) or a preset's own top-level dir
+// (`.claude`/`.claude.json`, `.copilot`) — plus the agent-skills snapshot.
+// Shared by both `.agentreadonly`'s and `.agentreadwrite`'s HOME-bind
+// overlap checks: a `.agentreadonly` entry landing here would fight a
+// bind a tool actually needs read-write access to (`.claude`, `.copilot`);
+// a `.agentreadwrite` entry here would silently upgrade a bind scoder
+// placed there for an unrelated reason. Parameterized by realHome, not a
+// fixed literal: the sandbox's own $HOME is the real host $HOME (see
+// path-mirroring), which varies by user and by test.
+//
+// Deliberately NOT the bare namespace umbrellas a dynamic, per-preset
+// sub-path lives under (`.cache`, `.config`, `.local` as bare entries) —
+// those are never themselves bound, just scaffolded empty by builder.ts's
+// own --dir list; only specific sub-paths under them are (`.cache/pi`,
+// `.config/mise`, `.local/bin`, and similar, varying by which preset is
+// active). Reported directly: `$HOME/.local/share/fonts` — a real,
+// legitimate use case — was rejected outright because it nested under the
+// bare `.local` entry this list used to carry, even though nothing is
+// ever bound at that bare path. Blocking a bare umbrella protects nothing
+// real, since a bind landing under it doesn't collide with anything
+// scoder itself put there; only the exact fixed destinations below do.
+// Must be kept in sync with buildExtraBinds, same caveat
+// sandboxMountPrefixes above already carries for a different check.
+function fixedBindDestinations(realHome: string): string[] {
 	return [
 		`${realHome}/.agents`,
-		`${realHome}/.cache`,
-		`${realHome}/.cargo`,
+		`${realHome}/.cargo/bin`,
 		`${realHome}/.claude`,
-		`${realHome}/.config`,
+		`${realHome}/.claude.json`,
+		`${realHome}/.config/gh`,
+		`${realHome}/.config/mise`,
 		`${realHome}/.copilot`,
 		`${realHome}/.gitconfig`,
-		`${realHome}/.local`,
+		`${realHome}/.local/bin`,
 		`${realHome}/.local/share/mise`,
 		`${realHome}/.m2`,
 		`${realHome}/.npmrc`,
@@ -225,8 +246,8 @@ async function registerAgentreadonlyHomeBind(
 
 	const sandboxDest = `${realHome}/${relativePath}`;
 
-	for (const reservedPath of reservedSandboxPaths(realHome)) {
-		if (pathsOverlap(sandboxDest, reservedPath)) {
+	for (const fixedDest of fixedBindDestinations(realHome)) {
+		if (pathsOverlap(sandboxDest, fixedDest)) {
 			error(
 				`.agentreadonly HOME bind overlaps reserved sandbox path: ${homePathExpr}`,
 			);
@@ -266,41 +287,6 @@ function pathsOverlap(left: string, right: string): boolean {
 const AGENT_READWRITE_FILE = ".agentreadwrite";
 const AGENT_READWRITE_HEADER =
 	"# .agentreadwrite — $HOME/... directories bound read-write into the sandbox, one per line\n";
-
-// The specific real host paths scoder itself unconditionally binds every
-// session, regardless of preset — buildExtraBinds' own fixed host-tool
-// list (src/sandbox/builder.ts) plus the agent-skills snapshot. A
-// .agentreadwrite entry landing exactly on one of these would silently
-// upgrade a bind scoder itself placed there for an unrelated reason to
-// read-write, without the user necessarily intending that specific
-// consequence — worth blocking outright. Deliberately narrower than
-// .agentreadonly's own reservedSandboxPaths: that list also blocks
-// nesting under whole namespace umbrellas (.cache, .config, .local as
-// bare entries) that are never actually populated by a real bind, just
-// scaffolded empty by builder.ts's own --dir list — a real use case
-// (`$HOME/.cache/<tool>`, a fresh, tool-specific cache subdirectory) is
-// nested under one of those umbrellas without colliding with anything
-// scoder itself actually put there, so blocking it would reject a
-// perfectly safe entry for no real protection. Must be kept in sync with
-// buildExtraBinds, same caveat sandboxMountPrefixes above already
-// carries for a different check.
-function fixedBindDestinations(realHome: string): string[] {
-	return [
-		`${realHome}/.local/bin`,
-		`${realHome}/.gitconfig`,
-		`${realHome}/R`,
-		`${realHome}/.Rprofile`,
-		`${realHome}/.m2`,
-		`${realHome}/.local/share/mise`,
-		`${realHome}/.config/mise`,
-		`${realHome}/.rustup`,
-		`${realHome}/.cargo/bin`,
-		`${realHome}/.npmrc`,
-		`${realHome}/.pypirc`,
-		`${realHome}/.config/gh`,
-		`${realHome}/.agents`,
-	];
-}
 
 // ### setupReadWriteAccess
 // [IMPLEMENTS](/design/features/agent-readwrite.md)

@@ -26,6 +26,22 @@ rules, or alter lockfiles. Read-only overlays prevent this.
 - `.agentreadonly` (gitignore-style, one path per line, `#` comments) overrides defaults
 - An empty `.agentreadonly` removes all default protections
 - `$HOME/...` entries bind host home directories read-only into the sandbox's own `$HOME` (the real host `$HOME` — see `path-mirroring`), at the same path they already live at
+- A `$HOME/...` entry must not overlap `fixedBindDestinations`
+  (`src/git/protection.ts`, shared with `.agentreadwrite`'s own overlap
+  check) — the exact, specific real host paths scoder itself
+  unconditionally binds (`buildExtraBinds`' host-tool list, a preset's own
+  top-level dir like `.claude`/`.copilot`, the agent-skills snapshot).
+  Deliberately **not** the bare namespace umbrellas a dynamic, per-preset
+  sub-path happens to live under (`.cache`, `.config`, `.local` as bare
+  entries) — those are never themselves bound, just scaffolded empty by
+  `builder.ts`'s own `--dir` list. Reported directly:
+  `$HOME/.local/share/fonts` was rejected outright under an earlier,
+  broader version of this check that blocked the bare `.local` umbrella
+  wholesale, even though nothing is ever bound at that bare path — fixed
+  by narrowing the check to the exact fixed destinations. The check is
+  still bidirectional, so an entry that is an *ancestor* of a fixed
+  destination (e.g. bare `$HOME/.config`, containing `.config/mise` and
+  `.config/gh`) is still correctly rejected.
 - The `.agentreadonly` file itself is always read-only — including in the
   very first session that finds it missing and writes the default: a
   missing source path gets no bind mount at all, which previously left the

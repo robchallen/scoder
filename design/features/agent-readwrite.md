@@ -48,19 +48,23 @@ the same path.
   resolves outside `$HOME` even though the line itself named a path under
   it) is a hard error, the same check `.agentreadonly`'s own HOME binds
   already apply.
-- **Must not overlap a *fixed* scoder bind** — the same real host paths
-  `buildExtraBinds` (`src/sandbox/builder.ts`) and the agent-skills
-  snapshot unconditionally bind every session, regardless of preset
-  (`~/.gitconfig`, `~/.m2`, `~/.rustup`, `~/.agents`, and similar).
-  Deliberately **narrower** than `.agentreadonly`'s own overlap check
-  (`reservedSandboxPaths`), which also blocks nesting under whole
-  namespace umbrellas (`.cache`, `.config`, `.local` as bare entries) that
-  are never actually populated by a real bind, just scaffolded empty by
-  `builder.ts`'s own `--dir` list. `$HOME/.cache/<tool>` — one of this
-  feature's own motivating use cases — is nested under `.cache` without
-  colliding with anything scoder itself put there, so blocking it the way
-  `.agentreadonly` blocks its own entries would reject a perfectly safe
-  case for no real protection.
+- **Must not overlap a *fixed* scoder bind** — `fixedBindDestinations`
+  (`src/git/protection.ts`), the exact real host paths scoder itself
+  unconditionally binds every session (`buildExtraBinds`' host-tool list,
+  a preset's own top-level dir like `.claude`/`.copilot`, the agent-skills
+  snapshot). Shared with `.agentreadonly`'s own `$HOME/...` overlap
+  check, not a separately-maintained list — both mechanisms need the same
+  answer to "does this path collide with something scoder itself already
+  places here." Deliberately **not** the bare namespace umbrellas a
+  dynamic, per-preset sub-path happens to live under (`.cache`, `.config`,
+  `.local` as bare entries) — those are never themselves bound, just
+  scaffolded empty by `builder.ts`'s own `--dir` list.
+  `$HOME/.cache/<tool>` — one of this feature's own motivating use cases —
+  is nested under `.cache` without colliding with anything scoder itself
+  put there, so blocking it would reject a perfectly safe case for no
+  real protection. The check is still bidirectional, so an entry that is
+  an *ancestor* of a fixed destination (e.g. bare `$HOME/.config`) is
+  still correctly rejected.
 - **Must not overlap an `.agentreadonly` `$HOME/...` entry.** The same
   path listed in both files, with directly opposite intents (protect vs.
   open for writing), is a hard error naming the conflicting path — reuses

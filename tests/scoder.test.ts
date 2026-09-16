@@ -875,6 +875,77 @@ test("agentreadonly-home-directory-must-exist: Non-existent HOME bind path fails
 	}
 });
 
+// ### Test: agentreadonly-home-fonts-directory-allowed
+// Regression test: reported directly, $HOME/.local/share/fonts was
+// rejected outright with "overlaps reserved sandbox path" even though
+// nothing is ever bound at the bare $HOME/.local umbrella it nested
+// under — only specific sub-paths under it are (.local/bin,
+// .local/share/mise), neither of which fonts collides with.
+// fixedBindDestinations (src/git/protection.ts) now lists only the exact
+// fixed destinations, not the bare umbrellas they happen to live under.
+test("agentreadonly-home-fonts-directory-allowed: $HOME/.local/share/fonts is no longer rejected as a reserved path", async () => {
+	const repoDir = await createTempRepo();
+	tempRepos.push(repoDir);
+	const fontsDir = `${process.env.HOME}/.local/share/fonts`;
+	const fontsDirPreexisted = await dirExists(fontsDir);
+
+	try {
+		if (!fontsDirPreexisted) {
+			await Bun.spawn(["mkdir", "-p", fontsDir]).exited;
+		}
+		await Bun.write(`${repoDir}/.agentreadonly`, "$HOME/.local/share/fonts\n");
+
+		const output = await runScoder(repoDir, ["--dry-run", "/bin/bash"]);
+		expect(output).toContain(`--ro-bind ${fontsDir} ${fontsDir}`);
+		expect(output).not.toContain("reserved sandbox path");
+	} finally {
+		if (!fontsDirPreexisted) {
+			await Bun.spawn(["rm", "-rf", fontsDir]).exited;
+		}
+		await cleanupRepo(repoDir);
+	}
+});
+
+// ### Test: agentreadonly-home-ancestor-of-fixed-bind-still-rejected
+// The other half of the same fix: a bare umbrella is only safe to allow
+// when nothing fixed lives under it. $HOME/.config is an ancestor of
+// real fixed sub-binds (.config/mise, .config/gh — see buildExtraBinds
+// in src/sandbox/builder.ts), so it must still be rejected — the overlap
+// check is bidirectional (an .agentreadonly entry that is an ancestor OF
+// a fixed destination collides just as much as one that is a descendant
+// of it).
+test("agentreadonly-home-ancestor-of-fixed-bind-still-rejected: $HOME/.config is still rejected", async () => {
+	const repoDir = await createTempRepo();
+	tempRepos.push(repoDir);
+	const configDir = `${process.env.HOME}/.config`;
+	const configDirPreexisted = await dirExists(configDir);
+
+	try {
+		// Must actually exist first, or the "must reference an existing
+		// directory" check fires before the overlap check this test targets.
+		if (!configDirPreexisted) {
+			await Bun.spawn(["mkdir", "-p", configDir]).exited;
+		}
+		await Bun.write(`${repoDir}/.agentreadonly`, "$HOME/.config\n");
+
+		const proc = Bun.spawn([SCODER_PATH, "--dry-run", "/bin/bash"], {
+			cwd: repoDir,
+			stdout: "pipe",
+			stderr: "pipe",
+		});
+		await proc.exited;
+
+		expect(proc.exitCode).not.toBe(0);
+		const stderr = await new Response(proc.stderr).text();
+		expect(stderr).toContain("overlaps reserved sandbox path");
+	} finally {
+		if (!configDirPreexisted) {
+			await Bun.spawn(["rm", "-rf", configDir]).exited;
+		}
+		await cleanupRepo(repoDir);
+	}
+});
+
 // ### Test: worktree-branch-created
 test("worktree-branch-created: Running scoder creates scoder/<repo-name> branch", async () => {
 	const repoDir = await createTempRepo();

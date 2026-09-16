@@ -3728,31 +3728,33 @@ test("agentports-live-reload-bad-edit-keeps-old-config: a failed reattach falls 
 	}
 });
 
-// EM: ### Tests for the `scratch` symlink
-// EM: See design/implementation/plans/persistent-rw-scratch.md
-// EM: Targets live under a throwaway directory in the real $HOME (the
-// EM: feature requires targets to resolve inside $HOME), cleaned up per test.
+// EM: ### Tests for `.agentreadwrite`
+// EM: See design/features/agent-readwrite.md. Replaces the earlier
+// EM: `scratch` symlink tests. Targets live under a throwaway directory in
+// EM: the real $HOME (the feature requires targets to resolve inside
+// EM: $HOME), cleaned up per test.
 
-function scratchTargetPath(): string {
-	return `${process.env.HOME}/.scoder-test-scratch-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
+function readwriteTargetPath(): string {
+	return `${process.env.HOME}/.scoder-test-readwrite-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
 }
 
-// ### Test: scratch-symlink-resolves-rw
-test("scratch-symlink-resolves-rw: reads and writes through a scratch symlink reach the real target", async () => {
+// ### Test: agentreadwrite-resolves-rw
+test("agentreadwrite-resolves-rw: reads and writes through an .agentreadwrite entry reach the real target", async () => {
 	const repoDir = await createTempRepo();
 	tempRepos.push(repoDir);
-	const target = scratchTargetPath();
+	const target = readwriteTargetPath();
+	const relative = target.slice(`${process.env.HOME}/`.length);
 
 	try {
 		await Bun.spawn(["mkdir", "-p", target]).exited;
 		await Bun.write(`${target}/existing.txt`, "pre-existing\n");
-		await Bun.spawn(["ln", "-s", target, `${repoDir}/scratch`]).exited;
+		await Bun.write(`${repoDir}/.agentreadwrite`, `$HOME/${relative}\n`);
 
 		const output = await runScoder(repoDir, [
 			"-q",
 			"/bin/bash",
 			"-c",
-			"cat scratch/existing.txt && echo written > scratch/new.txt",
+			`cat ${target}/existing.txt && echo written > ${target}/new.txt`,
 		]);
 
 		expect(output.trim()).toBe("pre-existing");
@@ -3763,26 +3765,117 @@ test("scratch-symlink-resolves-rw: reads and writes through a scratch symlink re
 	}
 });
 
-// ### Test: scratch-absent-no-behaviour-change
-test("scratch-absent-no-behaviour-change: no scratch symlink means no scratch-related output", async () => {
+// ### Test: agentreadwrite-created-if-missing
+// Same bug class already fixed twice, for .agentreadonly and .agentports —
+// a missing source path gets no bind mount at all, which would leave a
+// freshly created default writable from inside the very session that
+// finds it missing.
+test("agentreadwrite-created-if-missing: a missing .agentreadwrite is created and protected in the same session", async () => {
 	const repoDir = await createTempRepo();
 	tempRepos.push(repoDir);
 
 	try {
-		const output = await runScoder(repoDir, ["--dry-run", "/bin/bash"]);
-		expect(output).not.toContain("scratch ->");
+		const proc = Bun.spawn(
+			[
+				SCODER_PATH,
+				"-q",
+				"/bin/bash",
+				"-c",
+				"echo modified >> .agentreadwrite",
+			],
+			{ cwd: repoDir, stdout: "pipe", stderr: "pipe" },
+		);
+		await proc.exited;
+
+		const stderr = await new Response(proc.stderr).text();
+
+		// A pasta-attach failure means the sandboxed command never ran at
+		// all — the file would be untouched regardless of whether the fix
+		// under test works, so this would otherwise pass trivially whenever
+		// the sandbox can't launch (as in this suite's own dev environment,
+		// which lacks /dev/net/tun). Requiring the absence of that specific
+		// failure keeps the case honest: it fails here for that reason, not
+		// a false pass, and proves the real thing on a working machine.
+		expect(stderr).not.toContain("pasta failed to attach");
+		expect(proc.exitCode).not.toBe(0);
+
+		const content = await Bun.file(`${repoDir}/.agentreadwrite`).text();
+		expect(content).not.toContain("modified");
 	} finally {
 		await cleanupRepo(repoDir);
 	}
 });
 
-// ### Test: scratch-outside-home-fails
-test("scratch-outside-home-fails: a target outside $HOME exits non-zero with a clear error", async () => {
+// ### Test: agentreadwrite-self-protected-readonly
+test("agentreadwrite-self-protected-readonly: .agentreadwrite itself is always read-only inside the sandbox", async () => {
 	const repoDir = await createTempRepo();
 	tempRepos.push(repoDir);
 
 	try {
-		await Bun.spawn(["ln", "-s", "/tmp", `${repoDir}/scratch`]).exited;
+		await Bun.write(`${repoDir}/.agentreadwrite`, "");
+
+		const output = await runScoder(repoDir, ["--dry-run", "/bin/bash"]);
+		expect(output).toContain(
+			`--ro-bind ${repoDir}/.agentreadwrite ${repoDir}/.agentreadwrite`,
+		);
+	} finally {
+		await cleanupRepo(repoDir);
+	}
+});
+
+// ### Test: agentreadwrite-missing-target-created
+test("agentreadwrite-missing-target-created: a not-yet-existing target is created rather than left dangling", async () => {
+	const repoDir = await createTempRepo();
+	tempRepos.push(repoDir);
+	const target = readwriteTargetPath(); // deliberately never created
+	const relative = target.slice(`${process.env.HOME}/`.length);
+
+	try {
+		await Bun.write(`${repoDir}/.agentreadwrite`, `$HOME/${relative}\n`);
+
+		const proc = Bun.spawn(
+			["scoder", "-q", "--no-worktree", "/bin/bash", "-c", "true"],
+			{ cwd: repoDir, stdout: "pipe", stderr: "pipe" },
+		);
+		await proc.exited;
+
+		// The session itself may still fail later (pasta attaching), but the
+		// target directory is created while building the bwrap command,
+		// before that point is ever reached — same reasoning as
+		// agentreadonly-created-default.
+		expect(await dirExists(target)).toBe(true);
+	} finally {
+		await Bun.spawn(["rm", "-rf", target]).exited;
+		await cleanupRepo(repoDir);
+	}
+});
+
+// ### Test: agentreadwrite-missing-target-not-created-under-dry-run
+test("agentreadwrite-missing-target-not-created-under-dry-run: --dry-run stays side-effect free", async () => {
+	const repoDir = await createTempRepo();
+	tempRepos.push(repoDir);
+	const target = readwriteTargetPath();
+	const relative = target.slice(`${process.env.HOME}/`.length);
+
+	try {
+		await Bun.write(`${repoDir}/.agentreadwrite`, `$HOME/${relative}\n`);
+
+		const output = await runScoder(repoDir, ["--dry-run", "/bin/bash"]);
+		expect(output).toContain(`--bind ${target} ${target}`);
+		expect(await dirExists(target)).toBe(false);
+	} finally {
+		await Bun.spawn(["rm", "-rf", target]).exited;
+		await cleanupRepo(repoDir);
+	}
+});
+
+// ### Test: agentreadwrite-outside-home-rejected
+test("agentreadwrite-outside-home-rejected: a line not starting with $HOME/ exits non-zero with a clear error", async () => {
+	const repoDir = await createTempRepo();
+	tempRepos.push(repoDir);
+
+	try {
+		await Bun.write(`${repoDir}/.agentreadwrite`, "/tmp\n");
 
 		const proc = Bun.spawn([SCODER_PATH, "--dry-run", "/bin/bash"], {
 			cwd: repoDir,
@@ -3793,20 +3886,22 @@ test("scratch-outside-home-fails: a target outside $HOME exits non-zero with a c
 
 		expect(proc.exitCode).not.toBe(0);
 		const stderr = await new Response(proc.stderr).text();
-		expect(stderr).toContain("scratch must resolve inside your home directory");
+		expect(stderr).toContain("must start with $HOME/");
 	} finally {
 		await cleanupRepo(repoDir);
 	}
 });
 
-// ### Test: scratch-dangling-warns-and-continues
-test("scratch-dangling-warns-and-continues: a not-yet-existing target warns but the session still runs", async () => {
+// ### Test: agentreadwrite-escape-via-symlink-rejected
+test("agentreadwrite-escape-via-symlink-rejected: a $HOME entry that resolves outside $HOME via a symlink is rejected", async () => {
 	const repoDir = await createTempRepo();
 	tempRepos.push(repoDir);
-	const target = scratchTargetPath(); // deliberately never created
+	const linkName = `.scoder-test-readwrite-escape-${Date.now()}`;
+	const linkPath = `${process.env.HOME}/${linkName}`;
 
 	try {
-		await Bun.spawn(["ln", "-s", target, `${repoDir}/scratch`]).exited;
+		await Bun.spawn(["ln", "-s", "/tmp", linkPath]).exited;
+		await Bun.write(`${repoDir}/.agentreadwrite`, `$HOME/${linkName}\n`);
 
 		const proc = Bun.spawn([SCODER_PATH, "--dry-run", "/bin/bash"], {
 			cwd: repoDir,
@@ -3815,76 +3910,105 @@ test("scratch-dangling-warns-and-continues: a not-yet-existing target warns but 
 		});
 		await proc.exited;
 
-		expect(proc.exitCode).toBe(0);
+		expect(proc.exitCode).not.toBe(0);
 		const stderr = await new Response(proc.stderr).text();
-		expect(stderr).toContain("does not exist yet");
+		expect(stderr).toContain("entry escapes HOME");
 	} finally {
+		await Bun.spawn(["rm", "-f", linkPath]).exited;
 		await cleanupRepo(repoDir);
 	}
 });
 
-// ### Test: scratch-overlapping-furniture-is-readonly
+// ### Test: agentreadwrite-overlapping-fixed-bind-rejected
 const localBinExists = await dirExists(`${process.env.HOME}/.local/bin`);
 test.skipIf(!localBinExists)(
-	"scratch-overlapping-furniture-is-readonly: a target under an existing host-tool bind is read-only",
+	"agentreadwrite-overlapping-fixed-bind-rejected: an entry matching a fixed scoder bind is a hard error",
 	async () => {
 		const repoDir = await createTempRepo();
 		tempRepos.push(repoDir);
 
 		try {
-			await Bun.spawn([
-				"ln",
-				"-s",
-				`${process.env.HOME}/.local/bin`,
-				`${repoDir}/scratch`,
-			]).exited;
+			await Bun.write(`${repoDir}/.agentreadwrite`, "$HOME/.local/bin\n");
 
-			const output = await runScoder(repoDir, ["--dry-run", "/bin/bash"]);
-			// info()'s "scratch -> ... (read-only)" message goes to stderr, not
-			// the stdout runScoder captures — the bwrap args themselves are the
-			// authoritative check, same as claude-preset-home-config-writable.
-			expect(output).toContain(
-				`--ro-bind ${process.env.HOME}/.local/bin ${process.env.HOME}/.local/bin`,
-			);
-			expect(output).not.toContain(
-				`--bind ${process.env.HOME}/.local/bin ${process.env.HOME}/.local/bin`,
-			);
+			const proc = Bun.spawn([SCODER_PATH, "--dry-run", "/bin/bash"], {
+				cwd: repoDir,
+				stdout: "pipe",
+				stderr: "pipe",
+			});
+			await proc.exited;
+
+			expect(proc.exitCode).not.toBe(0);
+			const stderr = await new Response(proc.stderr).text();
+			expect(stderr).toContain("overlaps a fixed scoder bind");
 		} finally {
 			await cleanupRepo(repoDir);
 		}
 	},
 );
 
-// ### Test: scratch-overlapping-agentreadonly-home-is-readonly
-test("scratch-overlapping-agentreadonly-home-is-readonly: a target already protected via .agentreadonly is read-only", async () => {
+// ### Test: agentreadwrite-nested-under-namespace-umbrella-allowed
+// The one deliberate difference from .agentreadonly's own overlap check:
+// nesting under a bare namespace umbrella (.cache, here) that is never
+// actually populated by a real bind, just scaffolded empty by builder.ts's
+// own --dir list, is allowed — this is the feature's own motivating use
+// case ($HOME/.cache/<tool>).
+test("agentreadwrite-nested-under-namespace-umbrella-allowed: $HOME/.cache/<tool> is not rejected", async () => {
 	const repoDir = await createTempRepo();
 	tempRepos.push(repoDir);
-	const target = scratchTargetPath();
+	const target = `${process.env.HOME}/.cache/.scoder-test-readwrite-${Date.now()}`;
 
 	try {
-		await Bun.spawn(["mkdir", "-p", target]).exited;
 		const relative = target.slice(`${process.env.HOME}/`.length);
-		await Bun.write(`${repoDir}/.agentreadonly`, `$HOME/${relative}\n`);
-		await Bun.spawn(["ln", "-s", target, `${repoDir}/scratch`]).exited;
+		await Bun.write(`${repoDir}/.agentreadwrite`, `$HOME/${relative}\n`);
 
 		const output = await runScoder(repoDir, ["--dry-run", "/bin/bash"]);
-		expect(output).toContain(`--ro-bind ${target} ${target}`);
-		expect(output).not.toContain(`--bind ${target} ${target}`);
+		expect(output).toContain(`--bind ${target} ${target}`);
 	} finally {
 		await Bun.spawn(["rm", "-rf", target]).exited;
 		await cleanupRepo(repoDir);
 	}
 });
 
-// ### Test: scratch-real-passthrough-unaffected
-test("scratch-real-passthrough-unaffected: an ordinary tracked file still writes straight through with scratch present", async () => {
+// ### Test: agentreadwrite-overlapping-agentreadonly-rejected
+test("agentreadwrite-overlapping-agentreadonly-rejected: the same $HOME path in both files is a hard error", async () => {
 	const repoDir = await createTempRepo();
 	tempRepos.push(repoDir);
-	const target = scratchTargetPath();
+	const target = readwriteTargetPath();
 
 	try {
 		await Bun.spawn(["mkdir", "-p", target]).exited;
-		await Bun.spawn(["ln", "-s", target, `${repoDir}/scratch`]).exited;
+		const relative = target.slice(`${process.env.HOME}/`.length);
+		await Bun.write(`${repoDir}/.agentreadonly`, `$HOME/${relative}\n`);
+		await Bun.write(`${repoDir}/.agentreadwrite`, `$HOME/${relative}\n`);
+
+		const proc = Bun.spawn([SCODER_PATH, "--dry-run", "/bin/bash"], {
+			cwd: repoDir,
+			stdout: "pipe",
+			stderr: "pipe",
+		});
+		await proc.exited;
+
+		expect(proc.exitCode).not.toBe(0);
+		const stderr = await new Response(proc.stderr).text();
+		expect(stderr).toContain(
+			"is listed in both .agentreadonly and .agentreadwrite",
+		);
+	} finally {
+		await Bun.spawn(["rm", "-rf", target]).exited;
+		await cleanupRepo(repoDir);
+	}
+});
+
+// ### Test: agentreadwrite-real-passthrough-unaffected
+test("agentreadwrite-real-passthrough-unaffected: an ordinary tracked file still writes straight through with .agentreadwrite present", async () => {
+	const repoDir = await createTempRepo();
+	tempRepos.push(repoDir);
+	const target = readwriteTargetPath();
+
+	try {
+		await Bun.spawn(["mkdir", "-p", target]).exited;
+		const relative = target.slice(`${process.env.HOME}/`.length);
+		await Bun.write(`${repoDir}/.agentreadwrite`, `$HOME/${relative}\n`);
 
 		await runScoder(repoDir, [
 			"-q",
@@ -3901,16 +4025,17 @@ test("scratch-real-passthrough-unaffected: an ordinary tracked file still writes
 	}
 });
 
-// ### Test: scratch-tracked-symlink-present-in-fresh-worktree
-test("scratch-tracked-symlink-present-in-fresh-worktree: a committed scratch symlink survives worktree creation", async () => {
+// ### Test: agentreadwrite-survives-fresh-worktree
+test("agentreadwrite-survives-fresh-worktree: a tracked .agentreadwrite still resolves rw after worktree creation", async () => {
 	const repoDir = await createTempRepo();
 	tempRepos.push(repoDir);
-	const target = scratchTargetPath();
+	const target = readwriteTargetPath();
 
 	try {
 		await Bun.spawn(["mkdir", "-p", target]).exited;
-		await Bun.spawn(["ln", "-s", target, `${repoDir}/scratch`]).exited;
-		await Bun.spawn(["git", "add", "scratch"], { cwd: repoDir }).exited;
+		const relative = target.slice(`${process.env.HOME}/`.length);
+		await Bun.write(`${repoDir}/.agentreadwrite`, `$HOME/${relative}\n`);
+		await Bun.spawn(["git", "add", ".agentreadwrite"], { cwd: repoDir }).exited;
 		await Bun.spawn(
 			[
 				"git",
@@ -3920,38 +4045,13 @@ test("scratch-tracked-symlink-present-in-fresh-worktree: a committed scratch sym
 				"user.name=t",
 				"commit",
 				"-m",
-				"add scratch",
+				"add .agentreadwrite",
 			],
 			{ cwd: repoDir, stdout: "pipe", stderr: "pipe" },
 		).exited;
 
-		await runScoder(repoDir, ["-w", "-q", "/bin/bash", "-c", "true"]);
-
-		const worktreeListProc = await Bun.spawn(
-			["git", "worktree", "list", "--porcelain"],
-			{ cwd: repoDir, stdout: "pipe", stderr: "pipe" },
-		);
-		await worktreeListProc.exited;
-		const listing = await new Response(worktreeListProc.stdout).text();
-		const worktreePath = listing
-			.split("\n")
-			.find((line) => line.startsWith("worktree ") && line.includes("scoder"))
-			?.slice("worktree ".length)
-			.trim();
-
-		expect(worktreePath).toBeDefined();
-		if (worktreePath) {
-			const linkStat = await Bun.spawn(
-				["readlink", `${worktreePath}/scratch`],
-				{
-					stdout: "pipe",
-					stderr: "pipe",
-				},
-			);
-			await linkStat.exited;
-			const linkTarget = (await new Response(linkStat.stdout).text()).trim();
-			expect(linkTarget).toBe(target);
-		}
+		const output = await runScoder(repoDir, ["-w", "--dry-run", "/bin/bash"]);
+		expect(output).toContain(`--bind ${target} ${target}`);
 	} finally {
 		await Bun.spawn(["rm", "-rf", target]).exited;
 		await cleanupRepo(repoDir);

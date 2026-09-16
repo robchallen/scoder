@@ -1,14 +1,12 @@
 import {
 	realpath as fsRealpath,
-	lstat,
 	mkdir,
 	readdir,
 	readlink,
 	stat,
 } from "node:fs/promises";
-import { dirname, resolve as resolvePath } from "node:path";
 import type { BindMount } from "../types.ts";
-import { error, info, warning } from "../utils/logger.ts";
+import { error, info } from "../utils/logger.ts";
 import {
 	getRealHome,
 	isUnderAny,
@@ -265,13 +263,28 @@ function pathsOverlap(left: string, right: string): boolean {
 	return l === r || l.startsWith(`${r}/`) || r.startsWith(`${l}/`);
 }
 
-const SCRATCH_LINK_NAME = "scratch";
+const AGENT_READWRITE_FILE = ".agentreadwrite";
+const AGENT_READWRITE_HEADER =
+	"# .agentreadwrite — $HOME/... directories bound read-write into the sandbox, one per line\n";
 
-// Real host paths mirroring buildExtraBinds in src/sandbox/builder.ts —
-// what setupScratchLink treats as "already read-only furniture". Must be
-// kept in sync with that function, same caveat sandboxMountPrefixes above
-// already carries for a different check.
-function furniturePaths(realHome: string): string[] {
+// The specific real host paths scoder itself unconditionally binds every
+// session, regardless of preset — buildExtraBinds' own fixed host-tool
+// list (src/sandbox/builder.ts) plus the agent-skills snapshot. A
+// .agentreadwrite entry landing exactly on one of these would silently
+// upgrade a bind scoder itself placed there for an unrelated reason to
+// read-write, without the user necessarily intending that specific
+// consequence — worth blocking outright. Deliberately narrower than
+// .agentreadonly's own reservedSandboxPaths: that list also blocks
+// nesting under whole namespace umbrellas (.cache, .config, .local as
+// bare entries) that are never actually populated by a real bind, just
+// scaffolded empty by builder.ts's own --dir list — a real use case
+// (`$HOME/.cache/<tool>`, a fresh, tool-specific cache subdirectory) is
+// nested under one of those umbrellas without colliding with anything
+// scoder itself actually put there, so blocking it would reject a
+// perfectly safe entry for no real protection. Must be kept in sync with
+// buildExtraBinds, same caveat sandboxMountPrefixes above already
+// carries for a different check.
+function fixedBindDestinations(realHome: string): string[] {
 	return [
 		`${realHome}/.local/bin`,
 		`${realHome}/.gitconfig`,
@@ -285,132 +298,151 @@ function furniturePaths(realHome: string): string[] {
 		`${realHome}/.npmrc`,
 		`${realHome}/.pypirc`,
 		`${realHome}/.config/gh`,
+		`${realHome}/.agents`,
 	];
 }
 
-// ### setupScratchLink
-// [IMPLEMENTS](/design/features/persistent-scratch.md)
-// A `scratch` symlink at the project root is the entire opt-in mechanism —
-// no flag, no config. The symlink is never touched: its resolved target is
-// mirrored at that target's own real absolute path (the same path-mirroring
-// principle the project bind itself already relies on), so the symlink,
-// completely unmodified, resolves inside the sandbox exactly the way it
-// already does outside it.
-export async function setupScratchLink(
-	projectRoot: string,
+// ### setupReadWriteAccess
+// [IMPLEMENTS](/design/features/agent-readwrite.md)
+// .agentreadwrite lists $HOME/... directories to bind read-write into the
+// sandbox — a persistent cache, analysis output, or any other directory
+// outside the project tree that needs to survive session restarts.
+// Replaces the earlier `scratch` symlink convention (see
+// design/features/agent-readwrite.md's History section): one file can
+// list any number of directories, each validated the same way
+// .agentreadonly's own $HOME/... lines already are (must resolve inside
+// $HOME, cannot escape it via a symlink), rather than one symlink per
+// area and no format validation on where it's allowed to point.
+export async function setupReadWriteAccess(
+	sourceDir: string,
+	sandboxProjDir: string,
 	protectionConfig: ProtectionConfig,
+	dryRun: boolean,
 ): Promise<void> {
-	const linkPath = `${projectRoot}/${SCRATCH_LINK_NAME}`;
+	const path = `${sourceDir}/${AGENT_READWRITE_FILE}`;
 
-	let linkStat: import("node:fs").Stats;
-	try {
-		linkStat = await lstat(linkPath);
-	} catch {
-		return; // No scratch symlink — nothing to do.
+	if (!(await fileExists(path))) {
+		// EM: Skipped under --dry-run, same as getAgentPortsBind's own
+		// EM: equivalent file-creation — a preview must not create real
+		// EM: files. Nothing to read yet either way, so there is nothing
+		// EM: further to do this call: no bind at all shows up in the
+		// EM: preview, matching getAgentPortsBind's own shape for the
+		// EM: same missing-file-under-dry-run case.
+		if (dryRun) {
+			return;
+		}
+		// EM: Same bug class already fixed twice, for .agentreadonly and
+		// EM: .agentports: a missing source path gets no bind mount at
+		// EM: all, which would leave a freshly created default writable
+		// EM: from inside the very session that finds it missing.
+		await Bun.write(path, AGENT_READWRITE_HEADER);
 	}
 
-	if (!linkStat.isSymbolicLink()) {
-		return; // An unrelated file/dir named "scratch" — leave it alone.
-	}
+	protectionConfig.safeBinds.push({
+		type: "ro-bind",
+		source: path,
+		dest: `${sandboxProjDir}/${AGENT_READWRITE_FILE}`,
+	});
 
+	const content = await Bun.file(path).text();
 	const realHome = getRealHome();
-	const target = await resolveScratchTarget(linkPath);
 
-	if (target !== realHome && !target.startsWith(`${realHome}/`)) {
-		error(`scratch must resolve inside your home directory, got: ${target}`);
+	for (const rawLine of content.split("\n")) {
+		const line = rawLine.trim();
+		if (line === "" || line.startsWith("#")) {
+			continue;
+		}
+
+		if (!line.startsWith("$HOME/")) {
+			error(
+				`${AGENT_READWRITE_FILE} entries must start with $HOME/ (nothing outside $HOME is allowed): "${line}"`,
+			);
+			process.exit(1);
+		}
+
+		await registerReadWriteHomeBind(line, realHome, protectionConfig, dryRun);
+	}
+}
+
+async function registerReadWriteHomeBind(
+	homePathExpr: string,
+	realHome: string,
+	protectionConfig: ProtectionConfig,
+	dryRun: boolean,
+): Promise<void> {
+	const relativePath = homePathExpr.slice("$HOME/".length);
+	const sourcePath = `${realHome}/${relativePath}`;
+
+	// EM: Unlike .agentreadonly's HOME binds, a missing target is created
+	// EM: rather than treated as an error — the stated use cases
+	// EM: ($HOME/.cache/<tool>, a fresh analysis-output directory) are
+	// EM: commonly directories that don't exist yet on a machine's first
+	// EM: run, and there is no "protect existing infrastructure"
+	// EM: reasoning here working against that, unlike the read-only case.
+	// EM: Skipped under --dry-run, which must stay side-effect free — the
+	// EM: entry still shows up in the preview, best-effort resolved.
+	if (!dryRun && !(await fileOrDirExists(sourcePath))) {
+		try {
+			await mkdir(sourcePath, { recursive: true });
+		} catch (err) {
+			error(`Failed to create ${homePathExpr}: ${err}`);
+			process.exit(1);
+		}
+		info(`Created ${homePathExpr} (did not exist yet)`);
+	}
+
+	const sourceReal = await realpath(sourcePath);
+
+	if (sourceReal !== realHome && !sourceReal.startsWith(`${realHome}/`)) {
+		error(`${AGENT_READWRITE_FILE} entry escapes HOME: ${homePathExpr}`);
 		process.exit(1);
 	}
 
-	let targetStat: import("node:fs").Stats;
-	try {
-		targetStat = await stat(target);
-	} catch {
-		// Expected, valid state: the target hasn't been set up on this
-		// machine yet (a fresh clone, a new colleague, CI). The dangling
-		// symlink is left exactly as-is, inside and outside the sandbox
-		// alike — that visible gap is the signal, not a bug to hide.
-		warning(`scratch points at ${target}, which does not exist yet — skipping`);
-		return;
+	for (const fixedDest of fixedBindDestinations(realHome)) {
+		if (pathsOverlap(sourceReal, fixedDest)) {
+			error(
+				`${AGENT_READWRITE_FILE} entry overlaps a fixed scoder bind: ${homePathExpr}`,
+			);
+			process.exit(1);
+		}
 	}
 
-	if (!targetStat.isDirectory()) {
-		error(`scratch must resolve to a directory, got a file: ${target}`);
+	// EM: dependencyDirs is exactly the set of .agentreadonly $HOME/...
+	// EM: entries' own sandbox destinations (see
+	// EM: registerAgentreadonlyHomeBind above) — reused here, not
+	// EM: duplicated, to catch the same path listed in both files with
+	// EM: directly opposite intents (protect vs. open for writing).
+	if (
+		protectionConfig.dependencyDirs.some((dest) =>
+			pathsOverlap(sourceReal, dest),
+		)
+	) {
+		error(
+			`${homePathExpr} is listed in both .agentreadonly and .agentreadwrite — pick one`,
+		);
 		process.exit(1);
 	}
-
-	const readOnly = overlapsExistingReadOnlyBind(
-		target,
-		realHome,
-		protectionConfig,
-	);
 
 	protectionConfig.dirs = protectionConfig.dirs || [];
-	for (const dir of ancestorDirs(target)) {
-		if (!protectionConfig.dirs.includes(dir)) {
-			protectionConfig.dirs.push(dir);
+	if (sourceReal !== realHome) {
+		const rel = sourceReal.slice(`${realHome}/`.length);
+		const parts = rel.split("/");
+		let currentPath = realHome;
+		for (const part of parts) {
+			currentPath = `${currentPath}/${part}`;
+			if (!protectionConfig.dirs.includes(currentPath)) {
+				protectionConfig.dirs.push(currentPath);
+			}
 		}
 	}
 
 	protectionConfig.safeBinds.push({
-		type: readOnly ? "ro-bind" : "bind",
-		source: target,
-		dest: target,
+		type: "bind",
+		source: sourceReal,
+		dest: sourceReal,
 	});
 
-	info(`scratch -> ${target} (${readOnly ? "read-only" : "read-write"})`);
-}
-
-// ### resolveScratchTarget
-// Computes the symlink's absolute target directly from its stored string,
-// rather than requiring the target (or its ancestors) to already exist —
-// realpath(1) fails outright when the target's own parent directories are
-// also missing, which is exactly the "not set up on this machine yet" case
-// this feature needs to handle gracefully rather than mis-resolve.
-async function resolveScratchTarget(linkPath: string): Promise<string> {
-	const rawTarget = await readlink(linkPath);
-
-	return rawTarget.startsWith("/")
-		? rawTarget
-		: resolvePath(dirname(linkPath), rawTarget);
-}
-
-// ### overlapsExistingReadOnlyBind
-// True if target is already covered by a read-only bind: an .agentreadonly
-// $HOME/... entry (already in protectionConfig.safeBinds by the time this
-// runs), or one of buildExtraBinds' fixed host-tool paths. Deliberately not
-// exhaustive — it checks known sources, not every mechanism that might touch
-// $HOME (e.g. the ~/.agents and ~/.local/bin snapshots bind from a temp copy,
-// not the real path, so they can never appear here at all).
-function overlapsExistingReadOnlyBind(
-	target: string,
-	realHome: string,
-	protectionConfig: ProtectionConfig,
-): boolean {
-	for (const bind of protectionConfig.safeBinds) {
-		if (bind.type === "ro-bind" && pathsOverlap(target, bind.source)) {
-			return true;
-		}
-	}
-
-	return furniturePaths(realHome).some((furniture) =>
-		pathsOverlap(target, furniture),
-	);
-}
-
-// Every ancestor directory of an absolute path, root-to-leaf's-parent.
-// Excludes the path itself — the --bind at that final destination is what
-// establishes it as a directory.
-function ancestorDirs(absPath: string): string[] {
-	const parts = absPath.split("/").filter(Boolean);
-	const dirs: string[] = [];
-	let current = "";
-
-	for (let i = 0; i < parts.length - 1; i++) {
-		current += `/${parts[i]}`;
-		dirs.push(current);
-	}
-
-	return dirs;
+	info(`Binding ${homePathExpr} to ${sourceReal} (read-write)`);
 }
 
 const AGENT_PORTS_FILE = ".agentports";

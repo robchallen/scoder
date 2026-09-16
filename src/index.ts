@@ -18,8 +18,8 @@ import {
 	setupAgentsSnapshot,
 	setupLocalBinSnapshot,
 	setupProtection,
+	setupReadWriteAccess,
 	setupResolvConf,
-	setupScratchLink,
 } from "./git/protection.ts";
 import {
 	commitAllChanges,
@@ -498,7 +498,12 @@ async function main(): Promise<void> {
 			protectionConfig.safeBinds.push(agentPortsBind);
 		}
 
-		await setupScratchLink(projectRoot, protectionConfig);
+		await setupReadWriteAccess(
+			projectRoot,
+			sandboxProjDir,
+			protectionConfig,
+			options.dryRun,
+		);
 	}
 
 	const config = {

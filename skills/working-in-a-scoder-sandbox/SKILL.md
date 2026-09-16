@@ -45,7 +45,10 @@ missing, and how visibility/commits work — not a full description of scoder
   project itself, a curated set of tool configs (git, cargo/rustup, mise, R,
   Maven `.m2`, npm/pypi rc files), and whatever `.agentreadonly` explicitly
   adds. Everything else under `$HOME` that exists on the real host may
-  simply not be there.
+  simply not be there. An `.agentreadwrite` file, if the project has one,
+  additionally opens specific `$HOME/...` directories read-write (a
+  persistent cache or output location) — you can't add entries to it
+  yourself, same as `.agentreadonly`.
 
 ## If a tool or dependency is missing
 

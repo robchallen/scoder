@@ -130,10 +130,12 @@ investigation.
   single pre-authenticated ssh connection to that one destination outside the
   sandbox and multiplexes only that connection in. See
   [ssh access](#ssh-access---allow-ssh) below.
-- **No persistent scratch by default** — a symlink named `scratch` at the
-  project root opts in to a read-write area outside the project tree that
+- **No persistent read-write access outside the project by default** — an
+  `.agentreadwrite` file at the project root lists `$HOME/...` directories
+  to bind read-write, for a persistent cache or analysis output that
   survives session restarts. See
-  [persistent scratch](#persistent-scratch-a-scratch-symlink) below.
+  [persistent read-write access](#persistent-read-write-access-an-agentreadwrite-file)
+  below.
 
 ## Usage
 
@@ -264,7 +266,7 @@ A file named `.agentports` at the project root lists host-loopback ports
 forwarded into the sandbox — an MCP server running outside it, a locally
 hosted research-tool API (Zotero's, say), an LLM endpoint. No flag: the
 file's presence and content is the entire mechanism, same as
-`.agentreadonly` and `scratch`.
+`.agentreadonly` and `.agentreadwrite`.
 
 ```
 # .agentports — one port per line, # comments allowed
@@ -289,52 +291,48 @@ file's presence and content is the entire mechanism, same as
   reattaches networking with the new port list, without restarting the
   session. A malformed or failing edit falls back to whatever was working
   before, rather than leaving the sandbox with no networking.
-- **Tracked or gitignored, either works** — same trade-off as `scratch`:
-  tracked means a `-w`/`--worktree` session's fresh checkout carries it
-  automatically, which is the recommended default for anything a whole
-  project needs, not just one person's session.
+- **Tracked or gitignored, either works** — same trade-off as
+  `.agentreadwrite`: tracked means a `-w`/`--worktree` session's fresh
+  checkout carries it automatically, which is the recommended default for
+  anything a whole project needs, not just one person's session.
 
-## Persistent scratch (a `scratch` symlink)
+## Persistent read-write access (an `.agentreadwrite` file)
 
-A symlink named exactly `scratch` at the project root opts a session into a
-persistent, read-write area outside the project tree — for cloning and
-patching a third-party dependency, pulling down a dataset, writing analysis
-output, anything that shouldn't live in the project's own git history but
-needs to survive session restarts. No flag, no config: the symlink's
-presence is the entire mechanism.
+A file named `.agentreadwrite` at the project root lists `$HOME/...`
+directories to bind read-write into the sandbox — a persistent cache,
+analysis output, or any other directory outside the project tree that
+needs to survive session restarts. One line per directory, the same
+`$HOME/...` line format `.agentreadonly` already uses for its own home
+binds, just opening write access instead of read-only.
 
-```bash
-mkdir -p ~/scratch/myproject
-ln -s ~/scratch/myproject scratch   # inside the project root
-git add scratch && git commit -m "add scratch link"   # recommended, see below
+```
+# .agentreadwrite — $HOME/... directories bound read-write into the sandbox, one per line
+$HOME/.cache/my-cache
+$HOME/analysis-output/figures
 ```
 
-Inside the sandbox, `scratch` resolves exactly the way it does outside it —
-the symlink itself is never touched. Only its target is made available, and
-only that:
+- **A missing target directory is created** (`mkdir -p`), not left as an
+  error — unlike `.agentreadonly`'s own `$HOME/...` binds, which require
+  the target to already exist. A fresh cache or output directory that
+  doesn't exist yet on a machine's first run is the common case here, not
+  an exception.
+- **Must resolve inside your home directory.** A target outside `$HOME` —
+  including via a symlink that escapes it — fails the session outright,
+  with a clear error. Any line not starting with `$HOME/` is rejected the
+  same way: nothing outside `$HOME` is supported at all.
+- **Must not overlap a fixed scoder bind** (`~/.gitconfig`, `~/.m2`,
+  `~/.rustup`, and similar) or an `.agentreadonly` `$HOME/...` entry —
+  both are hard errors naming the conflicting path, rather than a silent
+  downgrade to read-only.
+- **Always read-only itself inside the sandbox**, like `.agentreadonly`
+  and `.agentports` — only the host side can change which directories are
+  listed.
 
-- **Must resolve inside your home directory.** A target outside `$HOME`
-  fails the session outright, with a clear error.
-- **A target that doesn't exist yet just warns and continues** — the session
-  still runs. That's a deliberate, useful state for something like a
-  data-analysis project: a `scratch` symlink committed to the repo, dangling
-  on a fresh clone, tells the next person exactly what local setup step they
-  still need to do.
-- **Read-only if it overlaps something scoder already protects** — an
-  `.agentreadonly` `$HOME/...` entry, or one of the host-tool paths already
-  bound elsewhere (`~/.local/bin`, `~/.cargo`, `~/.rustup`, `~/.m2`, and
-  similar). `scratch` never upgrades access to something deliberately
-  read-only; point it at a directory dedicated to scratch use for read-write
-  access.
-
-**Tracked or gitignored, either works** — scoder only ever inspects the
-symlink on disk, never the git index. Tracked is recommended: git stores a
-symlink as a small blob holding the target path, never dereferencing it, so
-committing it costs nothing and touches no secrets — and a `-w`/`--worktree`
-session's fresh checkout then carries the symlink automatically. Gitignored
-works too, but only in direct mode: a new worktree checkout contains only
-tracked files, so an untracked `scratch` symlink from your main checkout
-won't appear there on its own.
+**Tracked or gitignored, either works** — tracked is recommended: a
+`-w`/`--worktree` session's fresh checkout then carries the file
+automatically. Gitignored works too, but only in direct mode: a new
+worktree checkout contains only tracked files, so an untracked
+`.agentreadwrite` from your main checkout won't appear there on its own.
 
 ## After a session
 

@@ -47,7 +47,7 @@ localhost services by default.
 
 [HAS_FEATURE](./features/ssh-tunnel-access.md) - Opt-in `--allow-ssh user@host` opens a single pre-authenticated ssh connection outside the sandbox and multiplexes only that one connection in, with no key material or agent socket exposed.
 
-[HAS_FEATURE](./features/persistent-scratch.md) - A `scratch` symlink at the project root mirrors its target at that target's own real absolute path — a persistent, read-write area outside the project tree, with no flag and no config.
+[HAS_FEATURE](./features/agent-readwrite.md) - A `.agentreadwrite` file at the project root lists `$HOME/...` directories bound read-write into the sandbox — a persistent cache, analysis output, or other area outside the project tree, validated the same way `.agentreadonly`'s own `$HOME/...` binds are.
 
 [HAS_FEATURE](./features/ide-companion.md) - `--ide NAME` launches NAME (must have a registered preset) as a companion in the same sandbox: NAME in the background, the primary tool in the foreground, both must exit before scoder shuts down.
 

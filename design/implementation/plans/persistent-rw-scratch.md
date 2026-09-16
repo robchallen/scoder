@@ -1,10 +1,22 @@
 ---
 target-version: 2.4.0
-status: complete
+status: retired
 tags: [plan, sandbox, scratch, filesystem]
 ---
 
 # Persistent Read-Write Scratch via a `scratch` Symlink
+
+> **Retired**, superseded by `.agentreadwrite` — see
+> `design/features/agent-readwrite.md`. One symlink, one target, no format
+> validation on where it could point, and a collision with something
+> already protected silently downgraded to read-only rather than erroring.
+> `.agentreadwrite` generalizes this to any number of `$HOME/...`
+> directories in one file, reusing `.agentreadonly`'s own existing
+> `$HOME/...` validation machinery, with a genuine conflict against
+> `.agentreadonly` now a hard error instead of a silent downgrade. Kept
+> here as the historical record of what was actually built and why; the
+> rest of this document describes that superseded design, not current
+> behaviour.
 
 > **Implemented.** `setupScratchLink` in `src/git/protection.ts`, wired into
 > `src/index.ts` once after the worktree/direct branches merge, same as

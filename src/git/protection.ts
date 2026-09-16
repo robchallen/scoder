@@ -955,11 +955,17 @@ async function createTempDir(prefix: string): Promise<string> {
 	return new TextDecoder().decode(stdoutBytes).trim();
 }
 
-export async function setupResolvConf(): Promise<BindMount | null> {
-	let resolvSrc = "/etc/resolv.conf";
-
+// ### resolveResolvConfSource
+// Picks which real host file the DNS snapshot should track: plain
+// /etc/resolv.conf, unless it's just a systemd-resolved stub (a loopback
+// nameserver), in which case the *real* upstream config systemd-resolved
+// itself maintains is used instead. Re-run on every refresh tick as well
+// as at initial snapshot time — which one is authoritative can only be
+// determined by reading /etc/resolv.conf's own current content, not
+// assumed once and cached.
+async function resolveResolvConfSource(): Promise<string | null> {
 	try {
-		const content = await Bun.file(resolvSrc).text();
+		const content = await Bun.file("/etc/resolv.conf").text();
 
 		if (
 			content.includes("nameserver 127.") ||
@@ -967,10 +973,19 @@ export async function setupResolvConf(): Promise<BindMount | null> {
 		) {
 			const systemdResolv = "/run/systemd/resolve/resolv.conf";
 			if (await fileExists(systemdResolv)) {
-				resolvSrc = systemdResolv;
+				return systemdResolv;
 			}
 		}
+
+		return "/etc/resolv.conf";
 	} catch {
+		return null;
+	}
+}
+
+export async function setupResolvConf(): Promise<BindMount | null> {
+	const resolvSrc = await resolveResolvConfSource();
+	if (!resolvSrc) {
 		return null;
 	}
 
@@ -988,6 +1003,48 @@ export async function setupResolvConf(): Promise<BindMount | null> {
 		source: snapshotFile,
 		dest: "/etc/resolv.conf",
 	};
+}
+
+// ### refreshResolvConfSnapshot
+// [IMPLEMENTS](/design/features/network-isolation.md)
+// Re-reads the real host DNS config and rewrites it into the
+// already-bound snapshot file if it changed — no remount, no pasta
+// involvement, unlike .agentports' own live-reload: /etc/resolv.conf
+// inside the sandbox is a --ro-bind of this exact host file (not a copy
+// captured once and detached from it), so overwriting its content on
+// the host is visible inside the sandbox immediately. Fixes a real,
+// reported gap: a power-state event (suspend/resume) that changes the
+// host's own DNS server left the sandbox's one-time snapshot pointing
+// at a now-unreachable server for the rest of the session, with no way
+// to recover short of a full restart — confirmed directly that pasta's
+// own routing stayed healthy throughout (a raw-IP curl worked
+// throughout), isolating the problem to this snapshot specifically, not
+// pasta's own reattach-on-.agentports-change mechanism.
+//
+// Returns true if the file's content actually changed, so the caller
+// can log it — same shape as the .agentports watcher's own "only log on
+// an actual change" behaviour.
+export async function refreshResolvConfSnapshot(
+	snapshotFile: string,
+): Promise<boolean> {
+	const resolvSrc = await resolveResolvConfSource();
+	if (!resolvSrc) {
+		return false;
+	}
+
+	try {
+		const newContent = await Bun.file(resolvSrc).text();
+		const oldContent = await Bun.file(snapshotFile).text();
+
+		if (newContent === oldContent) {
+			return false;
+		}
+
+		await Bun.write(snapshotFile, newContent);
+		return true;
+	} catch {
+		return false;
+	}
 }
 
 async function fileExists(path: string): Promise<boolean> {

@@ -1,7 +1,10 @@
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { readAgentPorts } from "../git/protection.ts";
+import {
+	readAgentPorts,
+	refreshResolvConfSnapshot,
+} from "../git/protection.ts";
 import type { ScoderOptions } from "../types.ts";
 import { error, info, warning } from "../utils/logger.ts";
 import { terminateProcess } from "../utils/process.ts";
@@ -48,6 +51,17 @@ const DOUBLE_SIGINT_WINDOW_MS =
 const AGENT_PORTS_POLL_MS =
 	Number.parseInt(process.env.SCODER_AGENTPORTS_POLL_MS || "", 10) || 2000;
 
+/**
+ * How often to re-check the host's real DNS config during a live session.
+ * Overridable so tests don't have to wait out a multi-second interval to
+ * observe a refresh. A separate knob from AGENT_PORTS_POLL_MS, even though
+ * both default to the same cadence — the two watchers poll unrelated
+ * things (an intentional user edit vs. a host network change) and have no
+ * reason to share a single tuning point.
+ */
+const RESOLVCONF_POLL_MS =
+	Number.parseInt(process.env.SCODER_RESOLVCONF_POLL_MS || "", 10) || 2000;
+
 export interface LaunchResult {
 	exitCode: number;
 }
@@ -62,6 +76,7 @@ export async function launchSandbox(
 	options: ScoderOptions,
 	toolDescription: string,
 	projectRoot: string,
+	resolvConfSnapshotPath: string | null,
 ): Promise<LaunchResult> {
 	const rendezvous = await mkdtemp(join(tmpdir(), "scoder-launch-"));
 	const infoPath = join(rendezvous, "info");
@@ -71,6 +86,7 @@ export async function launchSandbox(
 	let sidecar: PastaSidecar | null = null;
 	let signalForwarder: SignalForwarder | null = null;
 	let portsWatcher: AgentPortsWatcher | null = null;
+	let resolvConfWatcher: ResolvConfWatcher | null = null;
 
 	try {
 		// bwrap blocks reading this fifo until we release it
@@ -121,6 +137,15 @@ export async function launchSandbox(
 			sidecar,
 		);
 
+		// Independent of the ports watcher — touches only the DNS snapshot
+		// file, never pasta or the sidecar, so it has nothing to hand off
+		// or coordinate with. Skipped entirely if setupResolvConf found
+		// nothing to snapshot at launch (resolvConfSnapshotPath is null);
+		// there's no file to refresh in that case either.
+		if (resolvConfSnapshotPath) {
+			resolvConfWatcher = startResolvConfWatcher(resolvConfSnapshotPath);
+		}
+
 		const exitCode = await proc.exited;
 		return { exitCode };
 	} finally {
@@ -128,6 +153,7 @@ export async function launchSandbox(
 		// there is nothing left to forward signals to, and a stray one
 		// arriving mid-cleanup would just hit an already-gone process group.
 		signalForwarder?.stop();
+		resolvConfWatcher?.stop();
 
 		// pasta lives outside the sandbox, so bwrap's --die-with-parent does not
 		// reap it. Every exit path has to come through here.
@@ -393,6 +419,58 @@ function startAgentPortsWatcher(
 			stopped = true;
 			await loop;
 			await stopPasta(current);
+		},
+	};
+}
+
+interface ResolvConfWatcher {
+	/** Stops polling. Nothing to tear down beyond that — the snapshot file
+	 * itself is cleaned up by launchSandbox's own rendezvous dir removal. */
+	stop(): void;
+}
+
+// ### startResolvConfWatcher
+// [IMPLEMENTS](/design/features/network-isolation.md)
+// Polls the host's real DNS config for the rest of the session and
+// rewrites the sandbox's already-bound snapshot file if it changed.
+// Deliberately much simpler than startAgentPortsWatcher: this never
+// touches pasta, the sidecar, or the sandbox's network namespace at
+// all — only the plain host file /etc/resolv.conf is bind-mounted from
+// inside the sandbox, so overwriting its content is visible immediately,
+// with nothing to swap, restart, or fail over to.
+//
+// Deliberately polling, not inotify/fs.watch, same reasoning as
+// startAgentPortsWatcher: sidesteps the write-to-temp-then-rename inode
+// change atomic-save tooling can cause for a single-file watch (relevant
+// here too — systemd-resolved and NetworkManager both rewrite
+// /etc/resolv.conf via exactly that pattern on every network change,
+// which is the actual event this watcher exists to catch).
+function startResolvConfWatcher(snapshotFile: string): ResolvConfWatcher {
+	let stopped = false;
+
+	const loop = (async () => {
+		while (!stopped) {
+			await Bun.sleep(RESOLVCONF_POLL_MS);
+			if (stopped) {
+				return;
+			}
+
+			const changed = await refreshResolvConfSnapshot(snapshotFile);
+			if (changed) {
+				info("Host DNS configuration changed — refreshed inside the sandbox");
+			}
+		}
+	})();
+
+	return {
+		stop(): void {
+			stopped = true;
+			// Deliberately not awaited: the loop's own next wake-up checks
+			// `stopped` and returns immediately, and nothing here needs to
+			// coordinate with anything else the way stopping the ports
+			// watcher needs to wait for a pasta swap in flight — there is no
+			// process or sidecar this watcher owns to tear down.
+			void loop;
 		},
 	};
 }

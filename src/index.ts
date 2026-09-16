@@ -255,6 +255,7 @@ async function main(): Promise<void> {
 	let sandboxProjDir = "";
 	let identity: SandboxIdentity | undefined;
 	let sshTunnel: SshTunnel | null = null;
+	let resolvConfSnapshotPath: string | null = null;
 
 	const uid = getSandboxUid();
 	const gid = getSandboxGid();
@@ -310,6 +311,7 @@ async function main(): Promise<void> {
 		const resolvConfBind = await setupResolvConf();
 		if (resolvConfBind && protectionConfig) {
 			protectionConfig.safeBinds.push(resolvConfBind);
+			resolvConfSnapshotPath = resolvConfBind.source;
 		}
 
 		// EM: passwd/group describing only the sandbox user. Pushed here so the
@@ -367,6 +369,7 @@ async function main(): Promise<void> {
 		const resolvConfBind = await setupResolvConf();
 		if (resolvConfBind && protectionConfig) {
 			protectionConfig.safeBinds.push(resolvConfBind);
+			resolvConfSnapshotPath = resolvConfBind.source;
 		}
 
 		// EM: passwd/group describing only the sandbox user. Pushed here so the
@@ -598,6 +601,7 @@ async function main(): Promise<void> {
 			options,
 			toolDescription,
 			repoRoot,
+			resolvConfSnapshotPath,
 		);
 		exitCode = result.exitCode;
 

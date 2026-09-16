@@ -6,7 +6,12 @@
 
 // Import test utilities from bun:test
 import { afterAll, expect, test } from "bun:test";
-import { addGitExclude, removeGitExclude } from "../src/git/protection.ts";
+import {
+	addGitExclude,
+	refreshResolvConfSnapshot,
+	removeGitExclude,
+	setupResolvConf,
+} from "../src/git/protection.ts";
 import { getSandboxUsername } from "../src/sandbox/identity.ts";
 import { getRealHome } from "../src/utils/paths.ts";
 
@@ -280,6 +285,46 @@ function setupSignalCleanup(): void {
 }
 
 setupSignalCleanup();
+
+// ### Test: resolvconf-refresh-detects-and-corrects-a-stale-snapshot
+// Regression test: reported directly, a host power-state event
+// (suspend/resume) that changed the host's own DNS server left the
+// sandbox's one-time /etc/resolv.conf snapshot pointing at a
+// now-unreachable server for the rest of the session, confirmed to be
+// unrecoverable by an .agentports edit (which only reattaches pasta,
+// never touching this separately-bound snapshot). refreshResolvConfSnapshot
+// (src/git/protection.ts) now re-reads the real host DNS config and
+// rewrites the snapshot in place if it changed — no pasta/bwrap
+// involvement, since /etc/resolv.conf inside the sandbox is a --ro-bind
+// of this exact file, not a detached copy.
+//
+// Corrupts the snapshot itself, rather than the real host
+// /etc/resolv.conf (never safe to touch in a test — it's the actual
+// system file), to prove the diff-and-rewrite logic: any mismatch
+// between the snapshot and the real source gets corrected, which is the
+// same code path a genuine host DNS change would take.
+test("resolvconf-refresh-detects-and-corrects-a-stale-snapshot: a diverged snapshot is rewritten back to the real host config", async () => {
+	const bind = await setupResolvConf();
+	if (!bind) {
+		// No /etc/resolv.conf readable at all on this host — nothing to test.
+		return;
+	}
+
+	try {
+		const realContent = await Bun.file(bind.source).text();
+
+		const unchanged = await refreshResolvConfSnapshot(bind.source);
+		expect(unchanged).toBe(false);
+		expect(await Bun.file(bind.source).text()).toBe(realContent);
+
+		await Bun.write(bind.source, "nameserver 203.0.113.1\n");
+		const changed = await refreshResolvConfSnapshot(bind.source);
+		expect(changed).toBe(true);
+		expect(await Bun.file(bind.source).text()).toBe(realContent);
+	} finally {
+		await Bun.spawn(["rm", "-f", bind.source]).exited;
+	}
+});
 
 // ### Test: home-isolation
 // EM: The sandbox no longer remaps $HOME to a separate synthetic path — its

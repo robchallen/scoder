@@ -21,9 +21,30 @@ localhost) unless explicitly allowed.
 ## Implementation
 
 [IMPLEMENTED_BY](/src/sandbox/builder.ts#buildBwrapCommand)
+[IMPLEMENTED_BY](/src/git/protection.ts#refreshResolvConfSnapshot)
+[IMPLEMENTED_BY](/src/sandbox/launch.ts#startResolvConfWatcher)
 
 - pasta runs with `--tcp-ns none --udp-ns none` by default (no localhost forwarding)
-- DNS: snapshots `/etc/resolv.conf`, preferring `/run/systemd/resolve/resolv.conf` when the host uses 127.0.0.53 (systemd-resolved)
+- **DNS**: snapshots `/etc/resolv.conf`, preferring
+  `/run/systemd/resolve/resolv.conf` when the host uses 127.0.0.53
+  (systemd-resolved) — `resolveResolvConfSource` in
+  `src/git/protection.ts`. **Live-refreshed**, like `.agentports`: a
+  background poll (`SCODER_RESOLVCONF_POLL_MS`, default 2000, its own
+  separate knob from `.agentports`' polling cadence — the two watch
+  unrelated things) re-reads the real host config and rewrites the
+  sandbox's snapshot file in place if it changed
+  (`refreshResolvConfSnapshot`). Fixes a real, reported gap: a
+  power-state event (suspend/resume) that changes the host's own DNS
+  server used to leave the one-time snapshot pointing at a
+  now-unreachable server for the rest of the session, unrecoverable
+  short of a full restart — confirmed directly that pasta's own routing
+  stayed healthy throughout (a raw-IP `curl` worked), isolating the
+  problem to this snapshot specifically. Much simpler than
+  `.agentports`' own live reload: no pasta/bwrap involvement at all,
+  since `/etc/resolv.conf` inside the sandbox is a `--ro-bind` of this
+  exact host file, not a copy detached from it — overwriting the file's
+  content on the host is visible inside the sandbox immediately, with
+  nothing to swap, restart, or fail over to.
 - **`.agentports`**: a project-root file, one port per line (`#` comments
   allowed), listing host-loopback ports forwarded into the sandbox — an MCP
   server, a locally hosted research-tool API (Zotero, say), or an LLM

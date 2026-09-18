@@ -1,5 +1,6 @@
 import { unlink } from "node:fs/promises";
 import type { ScoderOptions } from "../types.ts";
+import { readSysctl } from "../utils/checks.ts";
 import { error, warning } from "../utils/logger.ts";
 import { terminateProcess } from "../utils/process.ts";
 
@@ -33,10 +34,10 @@ export interface PastaSidecar {
 //
 // Deliberately no --foreground: in attach mode pasta must outlive the call that
 // starts it, so it can go on servicing the netns while scoder waits on the tool.
-export function buildPastaArgs(
+export async function buildPastaArgs(
 	options: ScoderOptions,
 	pidFile: string,
-): string[] {
+): Promise<string[]> {
 	const args = [
 		"pasta",
 		"--quiet",
@@ -48,6 +49,22 @@ export function buildPastaArgs(
 		"--pid",
 		pidFile,
 	];
+
+	// EM: Reported directly: pasta refuses to attach at all ("No routable
+	// EM: interface for IPv6: IPv6 is disabled" / "Couldn't switch to pasta
+	// EM: namespaces: No child processes") on a host with IPv6 fully
+	// EM: disabled at the kernel level (net.ipv6.conf.all.disable_ipv6=1) —
+	// EM: --config-net's own dual-stack auto-detection apparently treats a
+	// EM: kernel-wide IPv6 disablement as fatal rather than something to
+	// EM: skip gracefully, unlike a merely-unconfigured/unrouted IPv6
+	// EM: address. --ipv4-only sidesteps the IPv6 attempt entirely.
+	// EM: Conditional, not unconditional: forcing IPv4-only on a host where
+	// EM: IPv6 genuinely works would silently disable it for no reason —
+	// EM: same reasoning checkBwrapUserns's own readSysctl check already
+	// EM: uses for a different sysctl.
+	if ((await readSysctl("net.ipv6.conf.all.disable_ipv6")) === "1") {
+		args.push("--ipv4-only");
+	}
 
 	// EM: Forward the named localhost ports in, and block host loopback otherwise
 	if (options.openPorts.length > 0) {
@@ -73,7 +90,10 @@ export async function attachPasta(
 	childPid: number,
 	pidFile: string,
 ): Promise<PastaSidecar | null> {
-	const args = [...buildPastaArgs(options, pidFile), childPid.toString()];
+	const args = [
+		...(await buildPastaArgs(options, pidFile)),
+		childPid.toString(),
+	];
 
 	const proc = Bun.spawn(args, { stdout: "pipe", stderr: "pipe" });
 	await proc.exited;

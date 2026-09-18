@@ -21,10 +21,22 @@ localhost) unless explicitly allowed.
 ## Implementation
 
 [IMPLEMENTED_BY](/src/sandbox/builder.ts#buildBwrapCommand)
+[IMPLEMENTED_BY](/src/sandbox/pasta.ts#buildPastaArgs)
 [IMPLEMENTED_BY](/src/git/protection.ts#refreshResolvConfSnapshot)
 [IMPLEMENTED_BY](/src/sandbox/launch.ts#startResolvConfWatcher)
 
 - pasta runs with `--tcp-ns none --udp-ns none` by default (no localhost forwarding)
+- **IPv4-only fallback**: `--config-net`'s own dual-stack auto-detection
+  refuses to attach at all on a host with IPv6 fully disabled at the
+  kernel level (`net.ipv6.conf.all.disable_ipv6=1`) — reported directly
+  as `pasta failed to attach to the sandbox: No routable interface for
+  IPv6: IPv6 is disabled` / `Couldn't switch to pasta namespaces: No
+  child processes`, treating a kernel-wide disablement as fatal rather
+  than something to skip gracefully, unlike a merely-unconfigured or
+  unrouted IPv6 address. `buildPastaArgs` (`src/sandbox/pasta.ts`) checks
+  that sysctl directly and adds `--ipv4-only` only when it's actually
+  set — not unconditionally, since forcing IPv4-only on a host where
+  IPv6 genuinely works would silently disable it for no reason.
 - **DNS**: snapshots `/etc/resolv.conf`, preferring
   `/run/systemd/resolve/resolv.conf` when the host uses 127.0.0.53
   (systemd-resolved) — `resolveResolvConfSource` in

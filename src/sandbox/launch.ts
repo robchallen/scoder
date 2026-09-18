@@ -169,17 +169,17 @@ export async function launchSandbox(
 // ### describeLaunch
 // The two stages as they would run, for --dry-run. Printing only the bwrap
 // command would no longer describe what actually happens.
-export function describeLaunch(
+export async function describeLaunch(
 	bwrapCmd: string[],
 	options: ScoderOptions,
-): { sandbox: string[]; pasta: string[] } {
+): Promise<{ sandbox: string[]; pasta: string[] }> {
 	const infoPath = "<rendezvous>/info";
 	const blockPath = "<rendezvous>/block";
 
 	return {
 		sandbox: wrapWithFdShim(bwrapCmd, infoPath, blockPath),
 		pasta: [
-			...buildPastaArgs(options, "<rendezvous>/pasta.pid"),
+			...(await buildPastaArgs(options, "<rendezvous>/pasta.pid")),
 			"<bwrap-child-pid>",
 		],
 	};

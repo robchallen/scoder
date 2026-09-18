@@ -27,7 +27,7 @@ tags: [test-script, validation]
 
 `tests/scoder.test.ts` is a self-contained integration test suite that creates
 temporary git repositories under `/tmp`, runs `scoder` against them using
-`/bin/bash` as the sandboxed command, and asserts expected behaviour. 110
+`/bin/bash` as the sandboxed command, and asserts expected behaviour. 111
 tests cover all sandbox mechanics.
 
 Cleanup runs in an `afterAll` hook. It removes the temp repos, their worktrees
@@ -975,7 +975,22 @@ individual `--dev-bind` of specific real host device nodes (`null`,
 construction, confirmed working directly for both a plain tool
 (`scoder pi`) and a GUI companion (`scoder --ide eclipse pi`).
 
-### 109. direct-mode-requires-git-repo
+### 109. dev-pts-ptmx-shadowed-by-working-top-level-device
+[TESTED_BY](/tests/scoder.test.ts#testDevPtsPtmxShadowedByWorkingTopLevelDevice)
+
+Regression test: reported directly, on a real host, the devpts-internal
+`/dev/pts/ptmx` node (exposed only because the whole `/dev/pts`
+directory is bound above) carries mode `0000` — locked down by that
+host's own devpts configuration — while the top-level `/dev/ptmx` bound
+separately is mode `0666` and demonstrably works. Some native pty
+libraries open the per-instance `/dev/pts/ptmx` specifically rather
+than the top-level symlink. Confirms a later, narrower `--dev-bind` at
+`/dev/pts/ptmx`, sourced from the confirmed-working top-level device,
+appears after the broader `/dev/pts` bind it shadows — ordering is
+load-bearing, since a shadow bind before the directory it shadows would
+itself be overridden by that directory instead.
+
+### 110. direct-mode-requires-git-repo
 [TESTED_BY](/tests/scoder.test.ts#testDirectModeRequiresGitRepo)
 
 Direct mode used to silently tolerate a non-git directory — git commands
@@ -987,7 +1002,7 @@ undo/audit trail for whatever the agent did there. It now refuses (exit 1,
 checked before any sandbox setup. Runs `scoder --no-worktree` against a
 plain `mkdir`'d directory (no `git init`) and asserts the refusal.
 
-### 110. worktree-mode-requires-git-repo
+### 111. worktree-mode-requires-git-repo
 [TESTED_BY](/tests/scoder.test.ts#testWorktreeModeRequiresGitRepo)
 
 Parity coverage for the same requirement in worktree mode — already

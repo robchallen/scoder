@@ -194,6 +194,26 @@ export async function buildBwrapCommand(
 		"--dev-bind",
 		"/dev/ptmx",
 		"/dev/ptmx",
+		// EM: Shadows the devpts-internal ptmx node the /dev/pts bind above
+		// EM: just exposed at /dev/pts/ptmx, with the confirmed-working
+		// EM: top-level device — bwrap applies binds in order, so a later,
+		// EM: narrower one (this) overrides an earlier, broader one (the
+		// EM: whole /dev/pts directory) covering the same path. Reported
+		// EM: directly: on at least one real host, the devpts-internal
+		// EM: /dev/pts/ptmx carries mode 0000 (locked down, by that host's
+		// EM: own devpts configuration, not anything this sandbox does),
+		// EM: while the top-level /dev/ptmx bound just above is mode 0666
+		// EM: and demonstrably works — confirmed directly, multiple real
+		// EM: pty slaves already existed under /dev/pts on that host's own
+		// EM: live session. Some native pty libraries open the
+		// EM: per-instance /dev/pts/ptmx specifically, rather than the
+		// EM: top-level symlink, as the more namespace-aware path — this
+		// EM: makes that path resolve to the same working device instead
+		// EM: of the host's own locked-down one, without touching any real
+		// EM: host file's actual permissions.
+		"--dev-bind",
+		"/dev/ptmx",
+		"/dev/pts/ptmx",
 		"--dev-bind",
 		"/dev/fd",
 		"/dev/fd",

@@ -48,15 +48,48 @@ The sandbox shape:
   `fd`), plus a fresh `--tmpfs` for `/dev/shm` — not a wholesale
   `--dev-bind /dev /dev` (every raw disk, TPM, USB, and other device
   node on the host), and not bwrap's own synthetic `--dev` construction
-  either: confirmed directly that `--dev` fails to initialize the
-  sandbox on at least one real host (bwrap itself failing silently,
-  surfaced only as a generic, uninformative pasta attach error, "Couldn't
-  switch to pasta namespaces" with no further detail — pasta's own error
-  text, not a description of what actually went wrong). Individually-named
-  real `--dev-bind`s side-steps whatever that incompatibility is, while
-  still narrowing exposure far below the original wholesale bind.
-  Confirmed working directly for a plain tool (`scoder pi`); `full` and
-  `ptmx` were added to the list afterward.
+  either. `--dev`'s incompatibility with pasta is now pinned down
+  precisely, via a direct `strace` comparison of pasta's real attach
+  sequence: with individual `--dev-bind`s, pasta's `setns(fd,
+  CLONE_NEWUSER)` and `setns(fd, CLONE_NEWNET)` both succeed cleanly;
+  with `--dev /dev`, the exact same sequence up to that point instead
+  fails at `setns(fd, CLONE_NEWNET)` with `EPERM` — `Couldn't switch to
+  pasta namespaces`, pasta's own generic error text for that failure,
+  with no indication of which syscall or namespace was actually
+  involved. `lsns` shows an identical, single-layer namespace structure
+  either way — this is not a persistently-nested user namespace (a
+  plausible-sounding but directly disproven theory floated during
+  investigation), but most likely the network namespace's frozen
+  "owning user namespace" reference ending up different depending on
+  exactly when in `--dev`'s extra internal setup (mounting a fresh
+  devpts instance, symlinking `ptmx`) the network namespace gets
+  created relative to the user namespace settling into its final form
+  — not confirmed against bwrap's own source, but reproduced
+  deterministically across delays and namespace-topology checks, ruling
+  out a timing race or a namespace-nesting difference as the cause.
+  Individually-named real `--dev-bind`s side-steps whatever that
+  incompatibility is, while still narrowing exposure far below the
+  original wholesale bind. Confirmed working directly for a plain tool
+  (`scoder pi`); `full` and `ptmx` were added to the list afterward.
+- `/dev/pts/ptmx` — the devpts-*internal* multiplexer node, exposed as
+  a side effect of binding the whole `/dev/pts` directory above, is
+  separately shadowed by a later, narrower `--dev-bind` sourced from
+  the top-level `/dev/ptmx` (bwrap applies binds in order, so a later,
+  narrower bind at a nested path overrides an earlier, broader one
+  covering it — confirmed directly with an isolated non-`/dev`
+  reproduction). Reported directly: on at least one real host, the
+  host's own devpts-internal `/dev/pts/ptmx` carries mode `0000`
+  (locked down by that host's own devpts configuration, unrelated to
+  anything this sandbox does), while the top-level `/dev/ptmx` bound
+  separately is mode `0666` and demonstrably works — multiple real pty
+  slaves already existed under `/dev/pts` in that host's own live
+  session, proving ordinary PTY allocation via the standard path was
+  never broken. Some native pty libraries (used by GUI terminal panes,
+  e.g. Eclipse's or RStudio's embedded terminal) open the per-instance
+  `/dev/pts/ptmx` specifically — the namespace-aware convention — rather
+  than the top-level symlink; this makes that path resolve to the
+  confirmed-working device too, without touching any real host file's
+  actual permissions.
 - `/dev/dri` (GPU render nodes) — bound separately, only for GUI presets
   that need it (`rstudio`, `eclipse` — see `guiX11Binds` in
   `src/tools/presets.ts`), not part of the fixed list above. **Load-bearing,

@@ -529,6 +529,46 @@ test("dev-minimal-real-nodes: /dev exposes only specific real host device nodes,
 	}
 });
 
+// ### Test: dev-pts-ptmx-shadowed-by-working-top-level-device
+// Regression test: reported directly, on a real host, the devpts-
+// internal /dev/pts/ptmx node (exposed only because the whole /dev/pts
+// directory is bound above) carries mode 0000 — locked down by that
+// host's own devpts configuration, unrelated to anything this sandbox
+// does — while the top-level /dev/ptmx bound separately is mode 0666
+// and demonstrably works (confirmed directly: multiple real pty slaves
+// already existed under /dev/pts in that host's own live session). Some
+// native pty libraries open the per-instance /dev/pts/ptmx specifically
+// rather than the top-level symlink. A later, narrower --dev-bind at
+// /dev/pts/ptmx, sourced from the confirmed-working top-level device,
+// shadows whatever the broader /dev/pts bind exposed there — bwrap
+// applies binds in order, confirmed directly with an isolated
+// non-/dev reproduction.
+test("dev-pts-ptmx-shadowed-by-working-top-level-device: /dev/pts/ptmx is bound from the top-level /dev/ptmx, not the host's devpts-internal one", async () => {
+	const repoDir = await createTempRepo();
+	tempRepos.push(repoDir);
+
+	try {
+		const output = await runScoder(repoDir, [
+			"--dry-run",
+			"--no-worktree",
+			"/bin/bash",
+		]);
+
+		const ptsBindIndex = output.indexOf("--dev-bind /dev/pts /dev/pts");
+		const shadowBindIndex = output.indexOf(
+			"--dev-bind /dev/ptmx /dev/pts/ptmx",
+		);
+
+		expect(ptsBindIndex).toBeGreaterThan(-1);
+		expect(shadowBindIndex).toBeGreaterThan(-1);
+		// Ordering is load-bearing: a shadow bind before the directory it
+		// shadows would be overridden BY that directory instead.
+		expect(shadowBindIndex).toBeGreaterThan(ptsBindIndex);
+	} finally {
+		await cleanupRepo(repoDir);
+	}
+});
+
 // ### Test: system-read-only
 test("system-read-only: Cannot create file under /usr/bin", async () => {
 	const repoDir = await createTempRepo();

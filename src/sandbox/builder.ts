@@ -95,7 +95,11 @@ export async function buildBwrapCommand(
 		// EM: --info-fd publishes {"child-pid": N} so pasta knows what to attach
 		// EM: to; --block-fd holds the exec until pasta has attached, so the tool
 		// EM: never observes a window without networking. Both fds are opened by
-		// EM: the shell shim in wrapWithFdShim.
+		// EM: the shell shim in wrapWithFdShim and reach this inner layer by
+		// EM: plain inheritance through the outer one, which opens neither and
+		// EM: closes neither — confirmed directly. They must stay on THIS layer:
+		// EM: the pid the outer layer would report is this bwrap process itself,
+		// EM: which sits outside the network namespace pasta has to attach to.
 		"--info-fd",
 		"3",
 		"--block-fd",
@@ -158,65 +162,34 @@ export async function buildBwrapCommand(
 		cmd.push("--ro-bind", "/var/lib/alternatives", "/var/lib/alternatives");
 	}
 
-	// EM: Individual real host device nodes, not a wholesale --dev-bind
-	// EM: /dev /dev (every raw disk, TPM, USB, and other device node on
-	// EM: the host — opened for early testing, never narrowed down until
-	// EM: now) and not bwrap's own synthetic --dev construction either:
-	// EM: confirmed directly that --dev alone fails to initialize the
-	// EM: sandbox on at least one real host (bwrap itself failing,
-	// EM: surfaced only as a generic, uninformative pasta attach error
-	// EM: with no indication /dev was the cause). Confirmed working
-	// EM: directly for a plain tool (`scoder pi`). /dev/full and
-	// EM: /dev/ptmx were added afterward — see
-	// EM: design/features/sandbox-isolation.md.
+	// EM: A wholesale --dev-bind of /dev — safe here, and only here, because
+	// EM: this is the inner of two bwrap layers and the /dev it binds is the
+	// EM: outer layer's synthetic one (buildDevLayer below), never the host's
+	// EM: real /dev with every raw disk, TPM and USB node on it.
+	// EM:
+	// EM: The bind is recursive, so it carries the outer layer's fresh devpts
+	// EM: instance across with it: /dev/ptmx stays a symlink onto a real
+	// EM: devpts, and pty allocation works. Binding individual device nodes
+	// EM: here instead — what this did until 2.3.1 — cannot work, for two
+	// EM: separate confirmed reasons: a bind of the devtmpfs /dev/ptmx node
+	// EM: keeps its source dentry, so the kernel's ptmx open path
+	// EM: (path_pts(), used by devpts_acquire()) looks for a "pts" sibling
+	// EM: beside it on devtmpfs rather than in the sandbox, finds no devpts,
+	// EM: and fails open() with ENOENT while stat() on the same path keeps
+	// EM: succeeding; and the host's own devpts, bound in at /dev/pts, is
+	// EM: mounted ptmxmode=000, so its internal ptmx node is unopenable by
+	// EM: the sandbox uid. Eclipse's and RStudio's terminal panes deadlocked
+	// EM: on exactly that. Binding the host's /dev/pts wholesale was also an
+	// EM: isolation hole in its own right — the sandbox could see, and being
+	// EM: the same uid open read/write, the user's own host terminals. See
+	// EM: design/implementation/issues/eclipse-rstudio-embedded-terminal-deadlocks.md.
 	cmd.push(
 		"--dev-bind",
-		"/dev/null",
-		"/dev/null",
-		"--dev-bind",
-		"/dev/zero",
-		"/dev/zero",
-		"--dev-bind",
-		"/dev/full",
-		"/dev/full",
-		"--dev-bind",
-		"/dev/urandom",
-		"/dev/urandom",
-		"--dev-bind",
-		"/dev/random",
-		"/dev/random",
-		"--dev-bind",
-		"/dev/tty",
-		"/dev/tty",
-		"--dev-bind",
-		"/dev/pts",
-		"/dev/pts",
-		"--dev-bind",
-		"/dev/ptmx",
-		"/dev/ptmx",
-		// EM: Shadows the devpts-internal ptmx node the /dev/pts bind above
-		// EM: just exposed at /dev/pts/ptmx, with the confirmed-working
-		// EM: top-level device — bwrap applies binds in order, so a later,
-		// EM: narrower one (this) overrides an earlier, broader one (the
-		// EM: whole /dev/pts directory) covering the same path. Reported
-		// EM: directly: on at least one real host, the devpts-internal
-		// EM: /dev/pts/ptmx carries mode 0000 (locked down, by that host's
-		// EM: own devpts configuration, not anything this sandbox does),
-		// EM: while the top-level /dev/ptmx bound just above is mode 0666
-		// EM: and demonstrably works — confirmed directly, multiple real
-		// EM: pty slaves already existed under /dev/pts on that host's own
-		// EM: live session. Some native pty libraries open the
-		// EM: per-instance /dev/pts/ptmx specifically, rather than the
-		// EM: top-level symlink, as the more namespace-aware path — this
-		// EM: makes that path resolve to the same working device instead
-		// EM: of the host's own locked-down one, without touching any real
-		// EM: host file's actual permissions.
-		"--dev-bind",
-		"/dev/ptmx",
-		"/dev/pts/ptmx",
-		"--dev-bind",
-		"/dev/fd",
-		"/dev/fd",
+		"/dev",
+		"/dev",
+		// EM: A private /dev/shm rather than the outer layer's: shared memory
+		// EM: is per-sandbox state, and bwrap's own --dev leaves only a plain
+		// EM: directory there anyway.
 		"--tmpfs",
 		"/dev/shm",
 		"--proc",
@@ -345,6 +318,7 @@ export async function buildBwrapCommand(
 	}
 
 	const passThrough = [
+		"SHELL",
 		"EDITOR",
 		"VISUAL",
 		"NO_COLOR",
@@ -424,7 +398,105 @@ export async function buildBwrapCommand(
 		cmd.push("--", toolBin, ...toolArgs);
 	}
 
-	return cmd;
+	// EM: Everything above is the INNER layer. Wrapping it in the outer /dev
+	// EM: layer is the last step, so every bind, tmpfs, namespace and env
+	// EM: decision in this function keeps applying to the sandbox the tool
+	// EM: actually runs in.
+	return [...buildDevLayer(uid, gid, cmd), "--", ...cmd];
+}
+
+// ### buildDevLayer
+// [IMPLEMENTS](/design/features/sandbox-isolation.md)
+// [IMPLEMENTS](/design/features/network-isolation.md)
+// EM: The outer of the two bwrap layers. It owns exactly one thing — /dev —
+// EM: and deliberately isolates nothing else: it binds the real root straight
+// EM: through so the inner layer can still name host paths as bind sources,
+// EM: and unshares only the user namespace it needs to mount anything at all.
+// EM: Nothing but the inner bwrap ever executes in it.
+//
+// EM: Why two layers rather than one bwrap with --dev /dev, which would also
+// EM: give a working devpts: pasta cannot attach to a network namespace
+// EM: created by a bwrap invoked with --dev. Confirmed directly on a real
+// EM: host, twice, with a prototype harness comparing the shapes side by side
+// EM: (design/prototype/nested-bwrap-pasta.sh): the attach fails with
+// EM: "Couldn't switch to pasta namespaces: Operation not permitted". No
+// EM: mechanism for that has ever been established — lsns shows an identical,
+// EM: single-layer namespace structure either way — so this splits the two
+// EM: concerns instead of trying to reconcile them: --dev lives out here, and
+// EM: --unshare-net lives on the inner layer, whose namespaces pasta attaches
+// EM: to and which never sees --dev.
+//
+// EM: bwrap's --dev builds the same small node set the pre-2.3.1 fixed list
+// EM: did (null, zero, full, random, urandom, tty, fd) on a private tmpfs, so
+// EM: this is no less isolating than binding those nodes individually — plus
+// EM: a fresh devpts instance at /dev/pts (ptmxmode=666) and /dev/ptmx as a
+// EM: symlink to pts/ptmx, which is the part that makes ptys work.
+//
+// EM: Device binds contributed by presets (e.g. /dev/dri for the GUI ones,
+// EM: see guiX11Binds in src/tools/presets.ts) are hoisted up here as well:
+// EM: --dev replaces /dev wholesale, so a node the inner layer binds from
+// EM: /dev must exist in THIS layer's /dev for the inner bind to resolve.
+// EM: They stay on the inner layer too, where the preset's own gating still
+// EM: decides whether the sandbox gets them at all.
+export function buildDevLayer(
+	uid: string,
+	gid: string,
+	innerCmd: string[],
+): string[] {
+	const layer = [
+		"bwrap",
+		"--unshare-user",
+		"--uid",
+		uid,
+		"--gid",
+		gid,
+		// EM: The real root, bound through unchanged. This layer confines
+		// EM: nothing; the inner one does all of it, from exactly the same
+		// EM: host paths it bound before there was an outer layer at all.
+		"--bind",
+		"/",
+		"/",
+		// EM: Ordering is load-bearing: --dev mounts a fresh tmpfs over /dev,
+		// EM: so it must come after the root bind (which carries the host's
+		// EM: own /dev) and before any device bind into /dev.
+		"--dev",
+		"/dev",
+	];
+
+	for (const [src, dest] of collectDeviceBinds(innerCmd)) {
+		// EM: --dev-bind-try, not --dev-bind: the inner layer's own bind of
+		// EM: the same node is the authoritative one, so a node that vanished
+		// EM: between the preset's existence check and launch should fail
+		// EM: there, with the inner layer's error, not here.
+		layer.push("--dev-bind-try", src, dest);
+	}
+
+	// EM: Without this the inner layer — and the tool inside it — survives
+	// EM: the outer layer's death.
+	layer.push("--die-with-parent");
+
+	return layer;
+}
+
+// ### collectDeviceBinds
+// Device nodes the inner layer binds from somewhere under /dev, which the
+// outer layer therefore has to expose in its own synthetic /dev. The inner
+// layer's own wholesale bind of /dev itself is not one of them.
+function collectDeviceBinds(cmd: string[]): [string, string][] {
+	const binds: [string, string][] = [];
+
+	for (let i = 0; i < cmd.length; i++) {
+		if (cmd[i] !== "--dev-bind" && cmd[i] !== "--dev-bind-try") {
+			continue;
+		}
+		const src = cmd[i + 1];
+		const dest = cmd[i + 2];
+		if (src && dest?.startsWith("/dev/")) {
+			binds.push([src, dest]);
+		}
+	}
+
+	return binds;
 }
 
 // ### wrapWithIdeBackground
@@ -543,10 +615,15 @@ export function wrapWithFdShim(
 // Extract every bind destination from a built bwrap command. The command is
 // the only place the full, dynamic bind set exists, so this is what lets
 // callers check whether a sandbox path will actually be populated.
+//
+// Only the inner layer counts. The outer /dev layer (buildDevLayer) binds the
+// real root at "/" on purpose, and that bind populates nothing in the sandbox
+// the tool actually runs in — counting it would make every path look bound and
+// silently defeat checkExecTargetReachable in src/index.ts.
 export function collectBindDests(cmd: string[]): string[] {
 	const dests: string[] = [];
 
-	for (let i = 0; i < cmd.length; i++) {
+	for (let i = innerLayerStart(cmd); i < cmd.length; i++) {
 		const arg = cmd[i];
 		if (arg === "--bind" || arg === "--ro-bind" || arg === "--dev-bind") {
 			const dest = cmd[i + 2];
@@ -557,6 +634,16 @@ export function collectBindDests(cmd: string[]): string[] {
 	}
 
 	return dests;
+}
+
+// ### innerLayerStart
+// Index of the inner bwrap layer's first argument in a composed command. The
+// outer layer contains exactly one "--", which buildBwrapCommand follows
+// immediately with the inner "bwrap" — anything else is a command that was
+// never wrapped, and starts at 0.
+function innerLayerStart(cmd: string[]): number {
+	const sep = cmd.indexOf("--");
+	return sep !== -1 && cmd[sep + 1] === "bwrap" ? sep + 1 : 0;
 }
 
 // ### buildExtraBinds

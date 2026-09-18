@@ -5,7 +5,7 @@ import type { ScoderOptions } from "../types.ts";
 // EM: Host-loopback port access is configured via .agentports, not a flag —
 // EM: see src/git/protection.ts and design/implementation/plans/agentports.md
 
-const USAGE = `scoder 2.3.0
+const USAGE = `scoder 2.3.1
 Sandboxed runner for coding tools using bubblewrap and pasta.
 
 Usage:
@@ -43,7 +43,7 @@ Setup (run once, requires sudo):
                           uses apt to install packages bubblewrap, passt
 `;
 
-const VERSION = "2.3.0";
+const VERSION = "2.3.1";
 
 interface ParseResult {
 	options: ScoderOptions;

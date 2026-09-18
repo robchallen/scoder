@@ -43,53 +43,75 @@ The sandbox shape:
   choices, priorities, auto/manual mode) under `/var/lib`, which nothing
   else mounts. See
   [design/implementation/issues/update-alternatives-state-not-mounted.md](/design/implementation/issues/update-alternatives-state-not-mounted.md).
-- `/dev` — individual `--dev-bind` of specific real host device nodes
-  (`null`, `zero`, `full`, `urandom`, `random`, `tty`, `pts`, `ptmx`,
-  `fd`), plus a fresh `--tmpfs` for `/dev/shm` — not a wholesale
-  `--dev-bind /dev /dev` (every raw disk, TPM, USB, and other device
-  node on the host), and not bwrap's own synthetic `--dev` construction
-  either. `--dev`'s incompatibility with pasta is now pinned down
-  precisely, via a direct `strace` comparison of pasta's real attach
-  sequence: with individual `--dev-bind`s, pasta's `setns(fd,
-  CLONE_NEWUSER)` and `setns(fd, CLONE_NEWNET)` both succeed cleanly;
-  with `--dev /dev`, the exact same sequence up to that point instead
-  fails at `setns(fd, CLONE_NEWNET)` with `EPERM` — `Couldn't switch to
-  pasta namespaces`, pasta's own generic error text for that failure,
-  with no indication of which syscall or namespace was actually
-  involved. `lsns` shows an identical, single-layer namespace structure
-  either way — this is not a persistently-nested user namespace (a
-  plausible-sounding but directly disproven theory floated during
-  investigation), but most likely the network namespace's frozen
-  "owning user namespace" reference ending up different depending on
-  exactly when in `--dev`'s extra internal setup (mounting a fresh
-  devpts instance, symlinking `ptmx`) the network namespace gets
-  created relative to the user namespace settling into its final form
-  — not confirmed against bwrap's own source, but reproduced
-  deterministically across delays and namespace-topology checks, ruling
-  out a timing race or a namespace-nesting difference as the cause.
-  Individually-named real `--dev-bind`s side-steps whatever that
-  incompatibility is, while still narrowing exposure far below the
-  original wholesale bind. Confirmed working directly for a plain tool
-  (`scoder pi`); `full` and `ptmx` were added to the list afterward.
-- `/dev/pts/ptmx` — the devpts-*internal* multiplexer node, exposed as
-  a side effect of binding the whole `/dev/pts` directory above, is
-  separately shadowed by a later, narrower `--dev-bind` sourced from
-  the top-level `/dev/ptmx` (bwrap applies binds in order, so a later,
-  narrower bind at a nested path overrides an earlier, broader one
-  covering it — confirmed directly with an isolated non-`/dev`
-  reproduction). Reported directly: on at least one real host, the
-  host's own devpts-internal `/dev/pts/ptmx` carries mode `0000`
-  (locked down by that host's own devpts configuration, unrelated to
-  anything this sandbox does), while the top-level `/dev/ptmx` bound
-  separately is mode `0666` and demonstrably works — multiple real pty
-  slaves already existed under `/dev/pts` in that host's own live
-  session, proving ordinary PTY allocation via the standard path was
-  never broken. Some native pty libraries (used by GUI terminal panes,
-  e.g. Eclipse's or RStudio's embedded terminal) open the per-instance
-  `/dev/pts/ptmx` specifically — the namespace-aware convention — rather
-  than the top-level symlink; this makes that path resolve to the
-  confirmed-working device too, without touching any real host file's
-  actual permissions.
+- `/dev` — **two bwrap layers**, not one. The *outer* layer
+  (`buildDevLayer` in `src/sandbox/builder.ts`) owns `/dev` and nothing
+  else: it binds the real root straight through, unshares only the user
+  namespace, and builds `/dev` with bwrap's own `--dev`. The *inner* layer
+  is everything else this document describes, and takes that `/dev`
+  wholesale with a recursive `--dev-bind /dev /dev`.
+
+  `--dev` builds the same small node set an earlier fixed list of
+  individual `--dev-bind`s did (`null`, `zero`, `full`, `random`,
+  `urandom`, `tty`, `fd`) on a private tmpfs, so this is no less isolating
+  than binding those nodes by hand — and it is emphatically not the
+  wholesale `--dev-bind /dev /dev` of every raw disk, TPM and USB node
+  that came before either, since the inner layer's wholesale bind binds
+  the *outer layer's synthetic* `/dev`, never the host's. What `--dev`
+  adds is a **fresh devpts instance** at `/dev/pts` (`ptmxmode=666`) with
+  `/dev/ptmx` a symlink to `pts/ptmx`, and that is the part that matters:
+  without it no process in the sandbox can allocate a pty at all.
+  Confirmed directly inside a live sandbox — with the hand-bound nodes,
+  `openat("/dev/ptmx")` and `openat("/dev/pts/ptmx")` both failed with
+  `ENOENT` and `openpty()` failed outright; with this shape both open and
+  `openpty()` returns `/dev/pts/0`. Two separate confirmed reasons the old
+  binds could not work: a bind of the devtmpfs `/dev/ptmx` node keeps its
+  source dentry, so the kernel's ptmx open path (`path_pts()`) looks for a
+  `pts` sibling beside it on devtmpfs rather than in the sandbox and finds
+  no devpts there; and the host's own devpts, bound in at `/dev/pts`, is
+  mounted `ptmxmode=000`, so its internal ptmx node is unopenable by the
+  sandbox uid. Eclipse's and RStudio's embedded terminals deadlocked on
+  exactly that — see
+  [design/implementation/issues/eclipse-rstudio-embedded-terminal-deadlocks.md](/design/implementation/issues/eclipse-rstudio-embedded-terminal-deadlocks.md).
+
+  Binding the host's `/dev/pts` wholesale was also an isolation hole in
+  its own right, independent of the deadlock: the sandbox could see the
+  host's pty slaves and, they being owned by the same uid, open them
+  read/write — i.e. reach the user's own terminals. A fresh devpts
+  instance closes that; the prototype harness checks for it explicitly.
+
+  **Why two layers instead of one bwrap with `--dev /dev`**, which would
+  also give a working devpts: pasta cannot attach to a network namespace
+  created by a bwrap invoked with `--dev`. Confirmed directly on a real
+  host with `design/prototype/nested-bwrap-pasta.sh`, which builds both
+  shapes and runs identical checks — the single-layer shape fails with
+  `Couldn't switch to pasta namespaces: Operation not permitted`, the
+  nested one passes everything. No mechanism for that has ever been
+  established (`lsns` shows an identical, single-layer namespace structure
+  either way, disproving the nested-userns explanation once offered for
+  it), so the two concerns are split rather than reconciled: `--dev` on
+  the outer layer, `--unshare-net` on the inner, whose namespaces pasta
+  attaches to and which never sees `--dev`.
+
+  Consequences worth knowing:
+  - Ordering is load-bearing twice over. `--dev` mounts a fresh tmpfs over
+    `/dev`, so in the outer layer it must follow the root bind and precede
+    any device bind into `/dev`.
+  - Device nodes a preset binds from `/dev` (e.g. `/dev/dri`, below) are
+    hoisted into the outer layer too, as `--dev-bind-try`, or the inner
+    layer's bind would have no source to resolve. The preset's own gating
+    still decides whether the sandbox gets them.
+  - `--info-fd` and `--block-fd` stay on the inner layer: the child pid the
+    outer layer would publish is the inner bwrap process, which sits
+    outside the network namespace pasta must attach to. Both fds reach the
+    inner layer by plain inheritance through the outer one, confirmed
+    directly.
+  - `--die-with-parent` is needed on both layers, or the inner one
+    outlives the outer.
+  - `collectBindDests` deliberately skips the outer layer: its `--bind / /`
+    populates nothing in the sandbox the tool runs in, and counting it
+    would make every path look bound and silently defeat the exec-target
+    reachability check in `src/index.ts`.
+
 - `/dev/dri` (GPU render nodes) — bound separately, only for GUI presets
   that need it (`rstudio`, `eclipse` — see `guiX11Binds` in
   `src/tools/presets.ts`), not part of the fixed list above. **Load-bearing,

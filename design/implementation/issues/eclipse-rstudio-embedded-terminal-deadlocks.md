@@ -1,12 +1,180 @@
 ---
 target-version: 2.5.0
-status: draft
+resolved-in: 2.3.1
+status: fixed in 2.3.1, pending live IDE confirmation
 tags: [issue, sandbox, dev, eclipse, rstudio, terminal, pty]
 ---
 
 # Eclipse and RStudio Embedded Terminal Panes Deadlock in the Sandbox
 
-## Summary
+## Resolution
+
+**Root cause: no process inside a scoder sandbox could allocate a pty at
+all.** Both routes to the pty multiplexer were shut, for two separate and
+independently verified reasons:
+
+- `--dev-bind /dev/ptmx /dev/ptmx` binds the *devtmpfs* ptmx node. A bind
+  keeps the source dentry, and the kernel's ptmx open path
+  (`path_pts()`, `fs/namei.c`, used by `devpts_acquire()`) resolves the
+  devpts instance by looking for a `pts` sibling **next to the opened
+  node's own dentry** — i.e. on devtmpfs, not in the sandbox. There is no
+  devpts mounted there, so the lookup fails and `open()` returns `ENOENT`
+  while `stat()` on the same path keeps succeeding.
+- The other route, the devpts-internal `/dev/pts/ptmx`, comes from the
+  host's own devpts instance, bound in wholesale — and that instance is
+  mounted `ptmxmode=000`, so its ptmx node is mode `0000` and unopenable
+  by the sandbox uid (whose mapping shows the owner as `nobody`).
+
+Commit `2d0da64` (shadowing `/dev/pts/ptmx` with the top-level device)
+closed the second route into the first: after it, *both* paths were
+devtmpfs binds returning `ENOENT`.
+
+**Fix (implemented in 2.3.1):** a **nested pair of bwraps**
+that splits the two concerns. The *outer* owns `/dev` and nothing else —
+`--dev /dev` plus `/dev/dri`, the real root bound through, no other
+namespace unshared. The *inner* does all the isolation over that `/dev`
+with a wholesale `--dev-bind /dev /dev` (recursive, so it carries the
+outer's devpts submount and `/dev/ptmx` still resolves onto a real
+devpts), and owns the network namespace, so pasta attaches to a netns
+created by a bwrap that never saw `--dev`.
+
+A single bwrap with `--dev /dev` fixes ptys but **does not work on the
+reference host**: pasta fails with `Couldn't switch
+to pasta namespaces: Operation not permitted`, reproduced directly with
+the prototype harness below. The earlier report of that incompatibility
+was therefore real, which is why the shipped fix splits the two concerns
+across layers rather than putting `--dev` on the sandbox pasta attaches
+to.
+
+`buildDevLayer` in `src/sandbox/builder.ts` builds the outer layer and
+wraps the inner command in it; everything else about the sandbox is
+unchanged. pasta still learns the pid it needs from `--info-fd`, which
+stays on the *inner* layer and reaches it by plain fd inheritance through
+the outer one (verified directly) — the outer layer's own `child-pid`
+would be the inner bwrap process, which sits outside the netns.
+
+Verified end-to-end in a live launch (with a fake pasta shim, inside a
+sandbox where pasta itself cannot run): scoder starts, the fd shim's
+`--info-fd`/`--block-fd` reach the inner layer, the sidecar attaches by
+pid, the block is released, the tool runs, and `script(1)` inside it
+allocates `/dev/pts/0`.
+
+Direct verification of pty allocation under the `--dev`-derived `/dev`,
+from inside a live sandbox:
+
+```
+# before (scoder's individual dev-binds)
+open /dev/ptmx      FAIL [Errno 2] No such file or directory
+open /dev/pts/ptmx  FAIL [Errno 2] No such file or directory
+os.openpty()        FAIL [Errno 2] No such file or directory
+
+# after (--dev /dev --tmpfs /dev/shm ... --dev-bind /dev/dri /dev/dri)
+open /dev/ptmx      OK
+open /dev/pts/ptmx  OK
+os.openpty()        OK -> /dev/pts/0
+script -qec tty     -> /dev/pts/1
+/dev/shm writable: True   /dev/dri: card1 card2 renderD128 renderD129
+```
+
+**Confirmed on the reference host** with
+`design/prototype/nested-bwrap-pasta.sh` (see below): only the nested
+shape passes everything.
+
+| check | `legacy` | `single` (`--dev /dev`) | `nested` |
+| --- | --- | --- | --- |
+| pasta attaches | PASS | **FAIL** (`EPERM`) | PASS |
+| `/dev/net/tun`, disks, TPM absent | PASS | PASS | PASS |
+| private devpts (no host ptys) | **FAIL** | PASS | PASS |
+| `openpty()` / `script(1)` / `pty.fork()` | **FAIL** | PASS | PASS |
+| opened port reaches host, others blocked | PASS | n/a | PASS |
+| outbound network | PASS | n/a | PASS |
+
+### Two earlier findings this corrects
+
+- "Ordinary PTY allocation works, repeatedly, in the exact same live
+  session" — **wrong**. The six pty slaves under `/dev/pts` are the
+  *host's*, visible only because the host's devpts instance is
+  bind-mounted in (a shared peer-group mount, `master:3`, with mtimes
+  predating the sandbox). Nothing inside the sandbox ever allocated one.
+- The `/dev/pts/ptmx` mode-`0000` anomaly was real, but shadowing it with
+  the top-level `/dev/ptmx` could not help, because that device is
+  exactly the one that cannot resolve its devpts instance through a bind.
+- Binding the host's `/dev/pts` wholesale is also an **isolation hole**,
+  independent of the deadlock: the sandbox sees the host's pty slaves, and
+  since they are owned by the same uid it can open them read/write —
+  verified directly (`/dev/pts/{0,1,2}`, modes 0620/0600, opened
+  `O_RDWR|O_NOCTTY` from inside a sandbox and closed again untouched).
+  A sandboxed process could therefore write to the user's own terminals.
+  A fresh devpts instance, which both `--dev` shapes give, closes this.
+
+### Pasta caveat
+
+`--dev /dev` was previously abandoned after bwrap failed to initialize on
+one real host, surfacing only as pasta's generic `Couldn't switch to
+pasta namespaces`, later attributed by `strace` to `setns(fd,
+CLONE_NEWNET)` → `EPERM`. No mechanism was ever established for that, and
+pasta cannot be exercised here (no `/dev/net/tun`). The materially new
+reason to revisit it is that `--dev` is the *only* configuration in which
+a pty can be allocated at all. If the sidecar now fails to attach, the
+verified fallback is to leave the outer sandbox untouched and run the
+payload under an inner `bwrap --bind / / --dev /dev --proc /proc` — tested
+here, it yields a working devpts without changing the namespaces pasta
+attaches to.
+
+### Prototype harness for the nested shape
+
+`design/prototype/nested-bwrap-pasta.sh` is a standalone bash harness for
+settling the pasta question outside any sandbox. It builds one of three
+shapes and runs identical checks against each:
+
+- `MODE=nested` — two bwraps. The outer owns `/dev` only (`--dev /dev`
+  plus `/dev/dri`, real root bound through, nothing else unshared); the
+  inner does all the isolation over it with a wholesale `--dev-bind /dev
+  /dev` and owns the network namespace, so pasta attaches to a netns
+  created by a bwrap that never saw `--dev`. The inner bind is recursive,
+  so it carries the outer's devpts submount and `/dev/ptmx` still resolves
+  onto a real devpts.
+- `MODE=single` — one bwrap with `--dev /dev` (what 2.3.1 ships).
+- `MODE=legacy` — one bwrap with the old individual `--dev-bind`s.
+
+Checks: pasta attaches at all; `/dev/net/tun` and host disks/TPM/mem are
+absent while the core nodes work; a process with pipe stdio and no
+controlling terminal can allocate a pty (`/dev/ptmx` open, `script(1)`,
+`pty.fork()`) — the exact shape a JVM terminal connector runs in; and only
+the port passed to `--tcp-ns` reaches a host loopback listener.
+
+Checks include `dev-pts-private`, which is the one the node list alone
+misses: a fresh devpts starts empty, so any numbered slave visible before
+the harness allocates one came from the host.
+
+Run on the reference host, `nested` passes every check; `single` fails
+only `pasta-attach` (`Operation not permitted`); `legacy` fails
+`dev-pts-private` and all three pty probes, reproducing the original
+symptom verbatim (`script: failed to create pseudo-terminal: No such file
+or directory`). Run inside the dev sandbox instead (where pasta cannot
+work at all — no `/dev/net/tun`), the same pty and `/dev` verdicts hold,
+and pasta gets as far as configuring `eth0` before failing on the missing
+tun node — i.e. it had already `setns`'d into the nested inner user and
+network namespaces, so the nesting itself does not obstruct the attach.
+
+### Implementation notes for the nested shape
+
+- The inner `--dev-bind /dev /dev` is only safe because that `/dev` is the
+  outer's synthetic one, not the host's; the outer must therefore always
+  be the layer that constructs `/dev`.
+- The outer deliberately binds the real root through and isolates nothing:
+  every existing bind, tmpfs, `--unshare-*`, `--new-session` and
+  `--die-with-parent` decision stays on the inner layer, so the shipped
+  isolation rules are unchanged.
+- `--die-with-parent` is needed on both layers, or the inner survives the
+  outer.
+- pasta targets the **inner** `--info-fd`'s `child-pid`; the outer's
+  `child-pid` is the inner bwrap process, which sits outside the inner
+  netns and is the wrong target.
+
+## Original Investigation Record
+
+### Summary
 
 Opening a terminal pane inside either GUI preset's own embedded terminal
 (Eclipse's Terminal view, RStudio's Terminal pane) hangs indefinitely inside
@@ -27,7 +195,7 @@ process from inside the sandbox.
 a concrete next-steps plan, written at the point of handing off to a fresh
 debugging session inside the sandbox.
 
-## What's Confirmed, Not Theory
+### What's Confirmed, Not Theory
 
 Each item below was verified directly — either by an agent running alongside
 the live, currently-stuck Eclipse process (with full visibility into the same
@@ -70,7 +238,7 @@ direct check.
   same session) — but **the terminal pane still deadlocks after this fix**.
   Whatever opens `/dev/pts/ptmx` specifically is not the (sole) blocker.
 
-## Confirmed Since the Devpts Fix
+### Confirmed Since the Devpts Fix
 
 After shadowing `/dev/pts/ptmx` (above), the terminal still deadlocks, and
 further live inspection of the stuck session added:
@@ -89,7 +257,7 @@ further live inspection of the stuck session added:
   entirely separate from whether `/dev/ptmx` itself works, and not yet
   directly confirmed either way.
 
-## Claims That Did Not Hold Up
+### Claims That Did Not Hold Up
 
 Two rounds of live diagnosis from an agent with full access to the stuck
 session each included a specific, confident technical claim that did not
@@ -126,7 +294,7 @@ in specific, checkable ways. Treat any new theory — including
 `PTY.isSupported()` above — as something to verify, not something to act on
 directly.
 
-## Theories Ruled Out
+### Theories Ruled Out
 
 Each of these was floated, by an agent with live access to the stuck
 session, as *the* root cause — and each was checked directly rather than
@@ -159,7 +327,7 @@ accepted on assertion.
    still deadlocks afterward, so this was at most a contributing red herring,
    not the actual blocker.
 
-## What's Still Unknown
+### What's Still Unknown
 
 The concrete, unanswered question: **why did Eclipse's terminal connector
 spawn `bash` via a plain pipe (`ProcessBuilder`-shaped), instead of via
@@ -179,7 +347,7 @@ possibilities, not yet distinguished:
   settings) to use the plain pipe-based connector regardless of sandbox
   mechanics.
 
-## Recommended Next Steps
+### Recommended Next Steps
 
 In order of expected diagnostic value per unit of effort, to run from
 *inside* a live, stuck sandbox session (matching the `jstack`-from-inside
@@ -229,15 +397,24 @@ approach that already worked, not from the host):
 
 ## Testing
 
-No regression test exists yet for the terminal-open path itself — this
-dev environment has no real Eclipse or RStudio install and no working
-`pasta` attach (missing `/dev/net/tun`), so nothing here can be verified
-end-to-end outside a real GUI-capable host. Once the actual cause is
-identified, add a test in the same shape as
-`rstudio-preset-binds-dev-dri-when-present` (asserting the specific fix's
-bind/config appears in `--dry-run` output, gated on the relevant host
-resource existing) — not a live terminal-open test, which isn't practical
-in CI.
+`tests/scoder.test.ts` covers the shape in `--dry-run`:
+`dev-owned-by-outer-layer` (outer builds `/dev` with `--dev`, after its
+root bind; inner takes it wholesale; no hand-bound `/dev/ptmx` or
+`/dev/pts` anywhere), `dev-layer-leaves-isolation-to-inner`
+(`--unshare-net`, `--info-fd`, `--block-fd` on the inner only;
+`--die-with-parent` on both), `dev-layer-hoists-preset-device-binds`
+(`/dev/dri` exposed by the outer as `--dev-bind-try` and still bound by
+the inner), plus two unit tests for `buildDevLayer`/`collectBindDests`.
+
+A live terminal-open test is still not practical in CI, and two unrelated
+things stop the full suite running *inside* a scoder sandbox: the
+`/tmp` staging-dir leak
+([scoder-local-bin-staging-dirs-leak-into-tmp.md](/design/implementation/issues/scoder-local-bin-staging-dirs-leak-into-tmp.md)),
+and the live-sandbox tests failing whenever one of the host files the
+sandbox binds has been replaced on the host since that outer sandbox
+started (its bind then points at a deleted inode, and bwrap cannot use it
+as a bind source) — confirmed identical at HEAD, i.e. environmental, not
+caused by this change.
 
 [HAS_FEATURE](/design/features/sandbox-isolation.md)
 [HAS_FEATURE](/design/features/tool-presets.md)

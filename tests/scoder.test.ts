@@ -12,6 +12,7 @@ import {
 	removeGitExclude,
 	setupResolvConf,
 } from "../src/git/protection.ts";
+import { buildDevLayer, collectBindDests } from "../src/sandbox/builder.ts";
 import { getSandboxUsername } from "../src/sandbox/identity.ts";
 import { isIpv6RoutabilityFailure } from "../src/sandbox/pasta.ts";
 import { getRealHome } from "../src/utils/paths.ts";
@@ -486,20 +487,19 @@ test("sandbox-uid-maps-to-host-user: files created in the sandbox are owned by t
 });
 
 // ### Test: system-read-only
-// ### Test: dev-minimal-real-nodes
-// Regression test for /dev exposure: an earlier --dev-bind /dev /dev
-// gave the sandbox the host's entire real /dev — every raw disk, TPM,
-// USB, and other device node on the machine — opened for early testing
-// and never narrowed down. A later attempt to replace it with bwrap's
-// own synthetic --dev construction was reverted: confirmed directly that
-// --dev alone fails to initialize the sandbox on at least one real host
-// (bwrap itself failing, surfaced only as a generic, uninformative pasta
-// attach error with no indication /dev was the cause). Settled instead
-// on individual --dev-bind of specific real host device nodes — narrows
-// exposure without bwrap's own synthetic construction, confirmed working
-// directly for both a plain tool (`scoder pi`) and a GUI companion
-// (`scoder --ide eclipse pi`).
-test("dev-minimal-real-nodes: /dev exposes only specific real host device nodes, not the whole host /dev", async () => {
+// ### Test: dev-owned-by-outer-layer
+// Regression test for /dev exposure and for pty allocation, which are one
+// decision. An early --dev-bind /dev /dev gave the sandbox the host's whole
+// real /dev; narrowing that to a fixed list of individual --dev-binds made pty
+// allocation impossible (openat("/dev/ptmx") and openat("/dev/pts/ptmx") both
+// ENOENT, openpty() failing outright, confirmed directly inside a live
+// sandbox), which is what deadlocked Eclipse's and RStudio's terminal panes.
+// The sandbox is now two bwrap layers: an outer one owning only /dev, built by
+// bwrap's own --dev (same small node set, on a private tmpfs, plus a fresh
+// devpts instance), and an inner one carrying every other isolation decision
+// over it via a recursive --dev-bind /dev /dev. See
+// design/implementation/issues/eclipse-rstudio-embedded-terminal-deadlocks.md.
+test("dev-owned-by-outer-layer: /dev comes from bwrap's own --dev in an outer layer, not from hand-bound host device nodes", async () => {
 	const repoDir = await createTempRepo();
 	tempRepos.push(repoDir);
 
@@ -510,40 +510,41 @@ test("dev-minimal-real-nodes: /dev exposes only specific real host device nodes,
 			"/bin/bash",
 		]);
 
-		for (const node of [
-			"/dev/null",
-			"/dev/zero",
-			"/dev/urandom",
-			"/dev/random",
-			"/dev/tty",
-			"/dev/pts",
-			"/dev/fd",
-		]) {
-			expect(output).toContain(`--dev-bind ${node} ${node}`);
-		}
-		expect(output).toContain("--tmpfs /dev/shm");
-		expect(output).not.toContain("--dev-bind /dev /dev");
-		expect(output).not.toContain("--dev /dev");
+		const boundary = output.indexOf("-- bwrap");
+		expect(boundary).toBeGreaterThan(-1);
+		const outer = output.slice(0, boundary);
+		const inner = output.slice(boundary);
+
+		expect(outer).toContain("--dev /dev");
+		// Ordering is load-bearing: --dev mounts a fresh tmpfs over /dev, so
+		// the root bind that carries the host's own /dev must precede it.
+		expect(outer.indexOf("--bind / /")).toBeLessThan(
+			outer.indexOf("--dev /dev"),
+		);
+
+		// The inner layer takes that synthetic /dev wholesale — recursively, so
+		// the outer's devpts instance comes with it.
+		expect(inner).toContain("--dev-bind /dev /dev");
+		expect(inner).toContain("--tmpfs /dev/shm");
+
+		// The hand-bound pty nodes are exactly what could not work.
+		expect(output).not.toContain("--dev-bind /dev/ptmx");
+		expect(output).not.toContain("--dev-bind /dev/pts /dev/pts");
+		// And the host's real /dev is never bound wholesale.
+		expect(output).not.toContain("--dev-bind /dev /dev /dev");
 	} finally {
 		await cleanupRepo(repoDir);
 	}
 });
 
-// ### Test: dev-pts-ptmx-shadowed-by-working-top-level-device
-// Regression test: reported directly, on a real host, the devpts-
-// internal /dev/pts/ptmx node (exposed only because the whole /dev/pts
-// directory is bound above) carries mode 0000 — locked down by that
-// host's own devpts configuration, unrelated to anything this sandbox
-// does — while the top-level /dev/ptmx bound separately is mode 0666
-// and demonstrably works (confirmed directly: multiple real pty slaves
-// already existed under /dev/pts in that host's own live session). Some
-// native pty libraries open the per-instance /dev/pts/ptmx specifically
-// rather than the top-level symlink. A later, narrower --dev-bind at
-// /dev/pts/ptmx, sourced from the confirmed-working top-level device,
-// shadows whatever the broader /dev/pts bind exposed there — bwrap
-// applies binds in order, confirmed directly with an isolated
-// non-/dev reproduction.
-test("dev-pts-ptmx-shadowed-by-working-top-level-device: /dev/pts/ptmx is bound from the top-level /dev/ptmx, not the host's devpts-internal one", async () => {
+// ### Test: dev-layer-leaves-isolation-to-inner
+// The outer layer owns /dev and nothing else: it binds the real root straight
+// through and must not take the network namespace, because pasta cannot attach
+// to a netns created by a bwrap invoked with --dev (confirmed directly on a
+// real host: "Couldn't switch to pasta namespaces: Operation not permitted").
+// --info-fd and --block-fd stay on the inner layer for the same reason — the
+// pid the outer layer would publish sits outside the netns pasta attaches to.
+test("dev-layer-leaves-isolation-to-inner: namespaces, fds and confinement all belong to the inner layer", async () => {
 	const repoDir = await createTempRepo();
 	tempRepos.push(repoDir);
 
@@ -554,19 +555,93 @@ test("dev-pts-ptmx-shadowed-by-working-top-level-device: /dev/pts/ptmx is bound 
 			"/bin/bash",
 		]);
 
-		const ptsBindIndex = output.indexOf("--dev-bind /dev/pts /dev/pts");
-		const shadowBindIndex = output.indexOf(
-			"--dev-bind /dev/ptmx /dev/pts/ptmx",
-		);
+		const boundary = output.indexOf("-- bwrap");
+		const outer = output.slice(0, boundary);
+		const inner = output.slice(boundary);
 
-		expect(ptsBindIndex).toBeGreaterThan(-1);
-		expect(shadowBindIndex).toBeGreaterThan(-1);
-		// Ordering is load-bearing: a shadow bind before the directory it
-		// shadows would be overridden BY that directory instead.
-		expect(shadowBindIndex).toBeGreaterThan(ptsBindIndex);
+		expect(outer).not.toContain("--unshare-net");
+		expect(outer).not.toContain("--info-fd");
+		expect(outer).not.toContain("--block-fd");
+		expect(inner).toContain("--unshare-net");
+		expect(inner).toContain("--info-fd 3");
+		expect(inner).toContain("--block-fd 9");
+
+		// Both layers, or the inner one survives the outer's death.
+		expect(outer).toContain("--die-with-parent");
+		expect(inner).toContain("--die-with-parent");
 	} finally {
 		await cleanupRepo(repoDir);
 	}
+});
+
+// ### Test: dev-layer-hoists-preset-device-binds
+// --dev replaces /dev wholesale, so a device node a preset binds from /dev has
+// to exist in the outer layer's /dev for the inner bind to resolve at all. The
+// preset's own gating still decides whether the sandbox gets it: the bind stays
+// on the inner layer too.
+test("dev-layer-hoists-preset-device-binds: /dev/dri is exposed by the outer layer as well as bound by the inner one", async () => {
+	const repoDir = await createTempRepo();
+	tempRepos.push(repoDir);
+	const fakeBinDir = await createFakeToolDir("rstudio");
+
+	try {
+		const output = await runScoder(repoDir, ["--dry-run", "rstudio"], {
+			PATH: `${fakeBinDir}:${process.env.PATH}`,
+		});
+
+		const boundary = output.indexOf("-- bwrap");
+		const outer = output.slice(0, boundary);
+		const inner = output.slice(boundary);
+
+		if (await dirExists("/dev/dri")) {
+			expect(outer).toContain("--dev-bind-try /dev/dri /dev/dri");
+			expect(inner).toContain("--dev-bind /dev/dri /dev/dri");
+		} else {
+			expect(output).not.toContain("/dev/dri");
+		}
+	} finally {
+		await Bun.spawn(["rm", "-rf", fakeBinDir]).exited;
+		await cleanupRepo(repoDir);
+	}
+});
+
+// ### Test: bind-dests-ignore-outer-layer
+// collectBindDests feeds checkExecTargetReachable, which asks whether a tool's
+// own directory is bound into the sandbox. The outer layer binds the real root
+// at "/" on purpose; counting that would make every path look bound and
+// silently disable the check.
+test("bind-dests-ignore-outer-layer: the outer layer's root bind is not a sandbox bind destination", () => {
+	const inner = ["bwrap", "--ro-bind", "/usr", "/usr", "--", "/bin/bash"];
+	const composed = [...buildDevLayer("1000", "1000", inner), "--", ...inner];
+
+	expect(composed).toContain("--bind");
+	expect(collectBindDests(composed)).toEqual(["/usr"]);
+	// An unwrapped command still works, so the helper stays usable on its own.
+	expect(collectBindDests(inner)).toEqual(["/usr"]);
+});
+
+// ### Test: dev-layer-hoists-only-nodes-under-dev
+// The inner layer's own wholesale bind of /dev is not a node to hoist, and a
+// bind that merely mentions /dev outside it is not one either.
+test("dev-layer-hoists-only-nodes-under-dev: /dev itself and non-device binds are left alone", () => {
+	const inner = [
+		"bwrap",
+		"--dev-bind",
+		"/dev",
+		"/dev",
+		"--dev-bind",
+		"/dev/dri",
+		"/dev/dri",
+		"--ro-bind",
+		"/dev/null",
+		"/home/u/devnull",
+	];
+	const layer = buildDevLayer("1000", "1000", inner);
+
+	expect(layer).toContain("--dev-bind-try");
+	expect(layer.join(" ")).toContain("--dev-bind-try /dev/dri /dev/dri");
+	expect(layer.join(" ")).not.toContain("--dev-bind-try /dev /dev");
+	expect(layer.join(" ")).not.toContain("/home/u/devnull");
 });
 
 // ### Test: system-read-only

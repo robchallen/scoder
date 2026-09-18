@@ -1,6 +1,5 @@
 import { unlink } from "node:fs/promises";
 import type { ScoderOptions } from "../types.ts";
-import { readSysctl } from "../utils/checks.ts";
 import { error, warning } from "../utils/logger.ts";
 import { terminateProcess } from "../utils/process.ts";
 
@@ -34,10 +33,10 @@ export interface PastaSidecar {
 //
 // Deliberately no --foreground: in attach mode pasta must outlive the call that
 // starts it, so it can go on servicing the netns while scoder waits on the tool.
-export async function buildPastaArgs(
+export function buildPastaArgs(
 	options: ScoderOptions,
 	pidFile: string,
-): Promise<string[]> {
+): string[] {
 	const args = [
 		"pasta",
 		"--quiet",
@@ -49,22 +48,6 @@ export async function buildPastaArgs(
 		"--pid",
 		pidFile,
 	];
-
-	// EM: Reported directly: pasta refuses to attach at all ("No routable
-	// EM: interface for IPv6: IPv6 is disabled" / "Couldn't switch to pasta
-	// EM: namespaces: No child processes") on a host with IPv6 fully
-	// EM: disabled at the kernel level (net.ipv6.conf.all.disable_ipv6=1) —
-	// EM: --config-net's own dual-stack auto-detection apparently treats a
-	// EM: kernel-wide IPv6 disablement as fatal rather than something to
-	// EM: skip gracefully, unlike a merely-unconfigured/unrouted IPv6
-	// EM: address. --ipv4-only sidesteps the IPv6 attempt entirely.
-	// EM: Conditional, not unconditional: forcing IPv4-only on a host where
-	// EM: IPv6 genuinely works would silently disable it for no reason —
-	// EM: same reasoning checkBwrapUserns's own readSysctl check already
-	// EM: uses for a different sysctl.
-	if ((await readSysctl("net.ipv6.conf.all.disable_ipv6")) === "1") {
-		args.push("--ipv4-only");
-	}
 
 	// EM: Forward the named localhost ports in, and block host loopback otherwise
 	if (options.openPorts.length > 0) {
@@ -80,6 +63,29 @@ export async function buildPastaArgs(
 	return args;
 }
 
+// ### isIpv6RoutabilityFailure
+// True if pasta's own stderr blames a lack of IPv6 routability for its
+// failure to attach — reported directly: "No routable interface for
+// IPv6: IPv6 is disabled" followed by "Couldn't switch to pasta
+// namespaces: ...". --config-net's own dual-stack auto-detection
+// apparently treats IPv6 being unavailable as fatal rather than
+// something to skip gracefully, unlike a merely-unconfigured/unrouted
+// IPv6 address on an otherwise dual-stack-capable host.
+//
+// Deliberately checking pasta's own stderr after a failed attempt,
+// rather than predicting the failure ahead of time by reading a sysctl
+// (net.ipv6.conf.all.disable_ipv6, tried first — see git history): that
+// prediction turned out to be unreliable in practice, missing at least
+// one real case (IPv6 disabled via the ipv6.disable=1 kernel boot
+// parameter rather than the per-sysctl toggle, under which
+// /proc/sys/net/ipv6 does not exist at all, so the sysctl read silently
+// — and wrongly — reported "not disabled"). Trusting pasta's own
+// authoritative determination, after the fact, covers every route to
+// this same failure without needing to enumerate them.
+export function isIpv6RoutabilityFailure(stderr: string): boolean {
+	return /no routable interface for ipv6/i.test(stderr);
+}
+
 // ### attachPasta
 // [IMPLEMENTS](/design/features/network-isolation.md)
 // Attach networking to an existing network namespace, identified by a process
@@ -90,16 +96,32 @@ export async function attachPasta(
 	childPid: number,
 	pidFile: string,
 ): Promise<PastaSidecar | null> {
-	const args = [
-		...(await buildPastaArgs(options, pidFile)),
-		childPid.toString(),
-	];
+	const args = buildPastaArgs(options, pidFile);
 
-	const proc = Bun.spawn(args, { stdout: "pipe", stderr: "pipe" });
+	let proc = Bun.spawn([...args, childPid.toString()], {
+		stdout: "pipe",
+		stderr: "pipe",
+	});
 	await proc.exited;
+	let stderr = await new Response(proc.stderr).text();
+
+	// EM: See isIpv6RoutabilityFailure — retried once, not predicted ahead
+	// EM: of time, since pasta's own determination of whether IPv6 is
+	// EM: viable is more reliable than anything scoder could check itself
+	// EM: beforehand.
+	if (proc.exitCode !== 0 && isIpv6RoutabilityFailure(stderr)) {
+		warning(
+			"pasta could not find a routable IPv6 interface — retrying with --ipv4-only",
+		);
+		proc = Bun.spawn([...args, "--ipv4-only", childPid.toString()], {
+			stdout: "pipe",
+			stderr: "pipe",
+		});
+		await proc.exited;
+		stderr = await new Response(proc.stderr).text();
+	}
 
 	if (proc.exitCode !== 0) {
-		const stderr = await new Response(proc.stderr).text();
 		error(`pasta failed to attach to the sandbox: ${stderr.trim()}`);
 		return null;
 	}

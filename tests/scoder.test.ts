@@ -13,7 +13,7 @@ import {
 	setupResolvConf,
 } from "../src/git/protection.ts";
 import { getSandboxUsername } from "../src/sandbox/identity.ts";
-import { buildPastaArgs } from "../src/sandbox/pasta.ts";
+import { isIpv6RoutabilityFailure } from "../src/sandbox/pasta.ts";
 import { getRealHome } from "../src/utils/paths.ts";
 
 // ### Constants
@@ -1702,35 +1702,35 @@ test("outbound-dns-works: DNS resolution works inside sandbox", async () => {
 	}
 });
 
-// ### Test: pasta-args-ipv4-only-follows-host-ipv6-disable-sysctl
+// ### Test: pasta-ipv6-routability-failure-detected-for-retry
 // Regression test: reported directly, pasta refused to attach at all
 // ("No routable interface for IPv6: IPv6 is disabled" / "Couldn't switch
-// to pasta namespaces: No child processes") on a host with IPv6 fully
-// disabled at the kernel level. --config-net's own dual-stack
-// auto-detection apparently treats a kernel-wide IPv6 disablement as
-// fatal rather than something to skip gracefully, unlike a
-// merely-unconfigured/unrouted IPv6 address. buildPastaArgs
-// (src/sandbox/pasta.ts) now checks net.ipv6.conf.all.disable_ipv6
-// directly and adds --ipv4-only only when it's actually set — checked
-// against the real value on whichever host runs this test, not a fixed
-// expectation, since this dev environment's own IPv6 state is unknown
-// and shouldn't be assumed either way.
-test("pasta-args-ipv4-only-follows-host-ipv6-disable-sysctl: --ipv4-only tracks the real host sysctl", async () => {
-	const sysctlProc = Bun.spawn(
-		["sysctl", "-n", "net.ipv6.conf.all.disable_ipv6"],
-		{ stdout: "pipe", stderr: "pipe" },
-	);
-	await sysctlProc.exited;
-	const ipv6Disabled =
-		sysctlProc.exitCode === 0 &&
-		(await new Response(sysctlProc.stdout).text()).trim() === "1";
-
-	const args = await buildPastaArgs(
-		{ openPorts: [] } as unknown as Parameters<typeof buildPastaArgs>[0],
-		"/tmp/scoder-test-pasta.pid",
-	);
-
-	expect(args.includes("--ipv4-only")).toBe(ipv6Disabled);
+// to pasta namespaces: ...") on a host with IPv6 unavailable.
+// --config-net's own dual-stack auto-detection apparently treats IPv6
+// being unavailable as fatal rather than something to skip gracefully.
+//
+// isIpv6RoutabilityFailure (src/sandbox/pasta.ts) detects this exact
+// failure from pasta's own stderr so attachPasta can retry once with
+// --ipv4-only — deliberately not predicted ahead of time by reading a
+// sysctl (net.ipv6.conf.all.disable_ipv6, tried first): that missed a
+// real case reported directly, where IPv6 was disabled via the
+// ipv6.disable=1 kernel boot parameter rather than the per-sysctl
+// toggle, so /proc/sys/net/ipv6 doesn't exist at all and the sysctl read
+// silently (and wrongly) reported "not disabled". Trusting pasta's own
+// authoritative determination, after the fact, covers every route to
+// this failure without needing to enumerate them.
+test("pasta-ipv6-routability-failure-detected-for-retry: matches pasta's real error text, not unrelated failures", () => {
+	expect(
+		isIpv6RoutabilityFailure(
+			"pasta: No routable interface for IPv6: IPv6 is disabled\nCouldn't switch to pasta namespaces: No child processes",
+		),
+	).toBe(true);
+	expect(
+		isIpv6RoutabilityFailure(
+			"Failed to open() /dev/net/tun: No such file or directory",
+		),
+	).toBe(false);
+	expect(isIpv6RoutabilityFailure("")).toBe(false);
 });
 
 // ### Test: dry-run-uses-pasta

@@ -571,7 +571,7 @@ async function main(): Promise<void> {
 		// EM: Dry-run mode outputs both stages without executing. Printing only
 		// EM: the bwrap command would no longer describe what actually runs.
 		// EM: Implements HAS_FEATURE: dry-run-mode
-		const stages = await describeLaunch(bwrapCmd, options);
+		const stages = describeLaunch(bwrapCmd, options);
 
 		info("Dry run — would execute, in order:");
 		console.log("");

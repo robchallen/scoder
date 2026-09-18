@@ -21,22 +21,34 @@ localhost) unless explicitly allowed.
 ## Implementation
 
 [IMPLEMENTED_BY](/src/sandbox/builder.ts#buildBwrapCommand)
-[IMPLEMENTED_BY](/src/sandbox/pasta.ts#buildPastaArgs)
+[IMPLEMENTED_BY](/src/sandbox/pasta.ts#attachPasta)
 [IMPLEMENTED_BY](/src/git/protection.ts#refreshResolvConfSnapshot)
 [IMPLEMENTED_BY](/src/sandbox/launch.ts#startResolvConfWatcher)
 
 - pasta runs with `--tcp-ns none --udp-ns none` by default (no localhost forwarding)
-- **IPv4-only fallback**: `--config-net`'s own dual-stack auto-detection
-  refuses to attach at all on a host with IPv6 fully disabled at the
-  kernel level (`net.ipv6.conf.all.disable_ipv6=1`) — reported directly
-  as `pasta failed to attach to the sandbox: No routable interface for
-  IPv6: IPv6 is disabled` / `Couldn't switch to pasta namespaces: No
-  child processes`, treating a kernel-wide disablement as fatal rather
+- **IPv4-only retry**: `--config-net`'s own dual-stack auto-detection
+  refuses to attach at all on a host with IPv6 unavailable — reported
+  directly as `pasta failed to attach to the sandbox: No routable
+  interface for IPv6: IPv6 is disabled` / `Couldn't switch to pasta
+  namespaces: ...`, treating IPv6 being unavailable as fatal rather
   than something to skip gracefully, unlike a merely-unconfigured or
-  unrouted IPv6 address. `buildPastaArgs` (`src/sandbox/pasta.ts`) checks
-  that sysctl directly and adds `--ipv4-only` only when it's actually
-  set — not unconditionally, since forcing IPv4-only on a host where
-  IPv6 genuinely works would silently disable it for no reason.
+  unrouted IPv6 address on an otherwise dual-stack-capable host.
+  `isIpv6RoutabilityFailure` (`src/sandbox/pasta.ts`) detects this exact
+  failure from pasta's own stderr, and `attachPasta` retries once with
+  `--ipv4-only`. Deliberately reactive, not predictive: an earlier
+  version tried predicting the failure ahead of time by reading
+  `net.ipv6.conf.all.disable_ipv6` directly, but that missed a real,
+  reported case — IPv6 disabled via the `ipv6.disable=1` kernel boot
+  parameter rather than the per-sysctl toggle, under which
+  `/proc/sys/net/ipv6` doesn't exist at all, so the sysctl read
+  silently (and wrongly) reported "not disabled". Trusting pasta's own
+  authoritative determination, after a real attempt fails, covers every
+  route to this failure without needing to enumerate them — and never
+  disables IPv6 on a host where it actually works, since the retry only
+  fires after a genuine failure blaming IPv6 specifically. `--dry-run`
+  never shows the retry's `--ipv4-only`, only the first-attempt args —
+  the retry only happens after a real attach genuinely fails, which
+  `--dry-run` never does.
 - **DNS**: snapshots `/etc/resolv.conf`, preferring
   `/run/systemd/resolve/resolv.conf` when the host uses 127.0.0.53
   (systemd-resolved) — `resolveResolvConfSource` in

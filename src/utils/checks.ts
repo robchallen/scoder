@@ -75,7 +75,7 @@ export async function checkBwrapUserns(): Promise<void> {
 	}
 }
 
-export async function readSysctl(key: string): Promise<string> {
+async function readSysctl(key: string): Promise<string> {
 	try {
 		const proc = await Bun.spawn(["sysctl", "-n", key], {
 			stdout: "pipe",

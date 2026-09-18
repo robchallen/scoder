@@ -234,22 +234,24 @@ sandbox without any CLI flag — `.agentports` replaced `--llm-port` entirely.
 
 DNS resolution works inside the sandbox via pasta's DHCP/DNS.
 
-### 25. pasta-args-ipv4-only-follows-host-ipv6-disable-sysctl
-[TESTED_BY](/tests/scoder.test.ts#testPastaArgsIpv4OnlyFollowsHostIpv6DisableSysctl)
+### 25. pasta-ipv6-routability-failure-detected-for-retry
+[TESTED_BY](/tests/scoder.test.ts#testPastaIpv6RoutabilityFailureDetectedForRetry)
 
 Regression test: reported directly, pasta refused to attach at all
 ("No routable interface for IPv6: IPv6 is disabled" / "Couldn't switch
-to pasta namespaces: No child processes") on a host with IPv6 fully
-disabled at the kernel level. `--config-net`'s own dual-stack
-auto-detection apparently treats a kernel-wide IPv6 disablement as
-fatal rather than something to skip gracefully, unlike a
-merely-unconfigured/unrouted IPv6 address. `buildPastaArgs`
-(`src/sandbox/pasta.ts`) now checks
-`net.ipv6.conf.all.disable_ipv6` directly and adds `--ipv4-only` only
-when it's actually set, not unconditionally — forcing IPv4-only on a
-host where IPv6 genuinely works would silently disable it for no
-reason. Checked against the real value on whichever host runs this
-test, not a fixed expectation.
+to pasta namespaces: ...") on a host with IPv6 unavailable —
+`--config-net`'s own dual-stack auto-detection apparently treats IPv6
+being unavailable as fatal rather than something to skip gracefully.
+`isIpv6RoutabilityFailure` (`src/sandbox/pasta.ts`) detects this exact
+failure from pasta's own stderr so `attachPasta` can retry once with
+`--ipv4-only`. Deliberately not predicted ahead of time by reading a
+sysctl (`net.ipv6.conf.all.disable_ipv6`, tried first): that missed a
+real case reported directly, where IPv6 was disabled via the
+`ipv6.disable=1` kernel boot parameter rather than the per-sysctl
+toggle, so `/proc/sys/net/ipv6` doesn't exist at all and the sysctl read
+silently — and wrongly — reported "not disabled". Trusting pasta's own
+authoritative determination, after the fact, covers every route to this
+failure without needing to enumerate them.
 
 ### 26. dry-run-uses-pasta
 [TESTED_BY](/tests/scoder.test.ts#testDryRunUsesPasta)

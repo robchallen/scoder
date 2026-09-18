@@ -169,17 +169,22 @@ export async function launchSandbox(
 // ### describeLaunch
 // The two stages as they would run, for --dry-run. Printing only the bwrap
 // command would no longer describe what actually happens.
-export async function describeLaunch(
+//
+// Always shows attachPasta's first-attempt args, never the --ipv4-only
+// retry (see isIpv6RoutabilityFailure in pasta.ts) — that retry only
+// happens after a real attach genuinely fails, which --dry-run,
+// deliberately side-effect free, never does.
+export function describeLaunch(
 	bwrapCmd: string[],
 	options: ScoderOptions,
-): Promise<{ sandbox: string[]; pasta: string[] }> {
+): { sandbox: string[]; pasta: string[] } {
 	const infoPath = "<rendezvous>/info";
 	const blockPath = "<rendezvous>/block";
 
 	return {
 		sandbox: wrapWithFdShim(bwrapCmd, infoPath, blockPath),
 		pasta: [
-			...(await buildPastaArgs(options, "<rendezvous>/pasta.pid")),
+			...buildPastaArgs(options, "<rendezvous>/pasta.pid"),
 			"<bwrap-child-pid>",
 		],
 	};

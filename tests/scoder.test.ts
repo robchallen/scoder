@@ -1733,6 +1733,38 @@ test("pasta-ipv6-routability-failure-detected-for-retry: matches pasta's real er
 	expect(isIpv6RoutabilityFailure("")).toBe(false);
 });
 
+// ### Test: dry-run-redacts-sensitive-env-vars
+// Regression test: reported directly, --dry-run's own preview printed
+// several real API keys/tokens in cleartext (COPILOT_GITHUB_TOKEN,
+// DEEPSEEK_API_KEY, and others from builder.ts's passThrough list),
+// pasted directly into a chat log by a user who had no reason to expect
+// a *preview* to expose live secrets. printBwrapCommand (src/index.ts)
+// now redacts any --setenv value whose name matches a substring
+// heuristic (token/key/secret/password/credential, case-insensitive) —
+// deliberately a heuristic, not an exact match against passThrough's
+// own list, so a newly added provider env var is covered automatically
+// rather than needing a second, separately-maintained list here.
+test("dry-run-redacts-sensitive-env-vars: real secret values never appear in the preview", async () => {
+	const repoDir = await createTempRepo();
+	tempRepos.push(repoDir);
+
+	try {
+		const output = await runScoder(repoDir, ["--dry-run", "-q", "/bin/bash"], {
+			DEEPSEEK_API_KEY: "sk-should-not-appear",
+			GITHUB_TOKEN: "ghp-should-not-appear",
+			EDITOR: "should-still-appear",
+		});
+
+		expect(output).not.toContain("sk-should-not-appear");
+		expect(output).not.toContain("ghp-should-not-appear");
+		expect(output).toContain("--setenv DEEPSEEK_API_KEY <redacted>");
+		expect(output).toContain("--setenv GITHUB_TOKEN <redacted>");
+		expect(output).toContain("--setenv EDITOR should-still-appear");
+	} finally {
+		await cleanupRepo(repoDir);
+	}
+});
+
 // ### Test: dry-run-uses-pasta
 test("dry-run-uses-pasta: Dry-run output includes pasta in command", async () => {
 	const repoDir = await createTempRepo();

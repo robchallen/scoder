@@ -704,16 +704,37 @@ function printPostSessionCommands(worktreeInfo: GitWorktreeInfo): void {
 	);
 }
 
+// EM: Names that look sensitive enough to redact from --dry-run's own
+// EM: printed preview — a substring heuristic, not an exact match against
+// EM: builder.ts's own passThrough list: that list grows as new providers
+// EM: are added, and a hardcoded exact-name list here would silently stop
+// EM: covering a new one the moment it's added there. Reported directly:
+// EM: --dry-run's preview printed several real API keys/tokens in
+// EM: cleartext (COPILOT_GITHUB_TOKEN, DEEPSEEK_API_KEY, HF_TOKEN, and
+// EM: others), pasted directly into a chat log by a user who had no
+// EM: reason to expect a *preview* to expose live secrets — --dry-run's
+// EM: own contract (side-effect free, safe to run to inspect what would
+// EM: happen) implies it should be safe to run and share the output of,
+// EM: which printing real secret values directly contradicts.
+const SENSITIVE_ENV_VAR_PATTERN = /token|key|secret|password|credential/i;
+
+function looksLikeSensitiveEnvVar(name: string): boolean {
+	return SENSITIVE_ENV_VAR_PATTERN.test(name);
+}
+
 function printBwrapCommand(cmd: string[]): void {
 	process.stdout.write(cmd[0]);
 
 	for (let i = 1; i < cmd.length; i++) {
 		const arg = cmd[i];
+		const isSetenvValue =
+			cmd[i - 2] === "--setenv" && looksLikeSensitiveEnvVar(cmd[i - 1] || "");
+		const printed = isSetenvValue ? "<redacted>" : arg;
 
 		if (arg?.startsWith("--")) {
-			process.stdout.write(` \\\n  ${arg}`);
+			process.stdout.write(` \\\n  ${printed}`);
 		} else if (arg) {
-			process.stdout.write(` ${arg}`);
+			process.stdout.write(` ${printed}`);
 		}
 	}
 

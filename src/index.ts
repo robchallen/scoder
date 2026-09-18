@@ -520,6 +520,7 @@ async function main(): Promise<void> {
 		toolEnv,
 		ideBin,
 		ideArgs,
+		ideShutdown: idePreset?.ideShutdown,
 		protectionConfig,
 	};
 

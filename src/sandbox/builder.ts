@@ -6,13 +6,28 @@ import {
 	getWorktreesParentDir,
 	isInGitRepo,
 } from "../git/worktree.ts";
-import type { BindMount, GitWorktreeInfo, ScoderOptions } from "../types.ts";
+import type {
+	BindMount,
+	GitWorktreeInfo,
+	IdeShutdown,
+	ScoderOptions,
+} from "../types.ts";
 import { getRealHome } from "../utils/paths.ts";
 import {
 	getSandboxGid,
 	getSandboxUid,
 	getSandboxUsername,
 } from "./identity.ts";
+
+// EM: How an --ide companion is asked to close when no preset says otherwise.
+// EM: SIGTERM to the children before the process is what Eclipse needs (its
+// EM: launcher is a stub around the JVM, which is the process that actually
+// EM: has the window); confirmed directly. A preset whose IDE wants something
+// EM: else says so via ToolPreset.ideShutdown.
+export const DEFAULT_IDE_SHUTDOWN: IdeShutdown = {
+	signal: "TERM",
+	order: "children-first",
+};
 
 // EM: Implements sandbox-isolation, network-isolation, path-mirroring, and host-tool-binding features
 // EM: Constructs bwrap command with system mounts, binds, env vars, and pasta networking
@@ -31,6 +46,7 @@ export interface SandboxConfig {
 	// EM: design/features/ide-companion.md and wrapWithIdeBackground below.
 	ideBin?: string;
 	ideArgs?: string[];
+	ideShutdown?: IdeShutdown;
 	protectionConfig?: ProtectionConfig;
 }
 
@@ -56,6 +72,7 @@ export async function buildBwrapCommand(
 		toolEnv,
 		ideBin,
 		ideArgs,
+		ideShutdown,
 		protectionConfig,
 	} = config;
 
@@ -392,7 +409,13 @@ export async function buildBwrapCommand(
 	if (ideBin) {
 		cmd.push(
 			"--",
-			...wrapWithIdeBackground(toolBin, toolArgs, ideBin, ideArgs ?? []),
+			...wrapWithIdeBackground(
+				toolBin,
+				toolArgs,
+				ideBin,
+				ideArgs ?? [],
+				ideShutdown ?? DEFAULT_IDE_SHUTDOWN,
+			),
 		);
 	} else {
 		cmd.push("--", toolBin, ...toolArgs);
@@ -529,11 +552,43 @@ function collectDeviceBinds(cmd: string[]): [string, string][] {
 // later — the message is just slightly premature, not wrong) and prints a
 // notice, styled like scoder's own info() (src/utils/logger.ts) so it
 // reads as the same kind of message, before blocking on `wait`.
+//
+// Three things happen at that point, all for the same reason — the terminal
+// has just been handed back by a full-screen agent TUI and has to be legible
+// on its own:
+//
+//   - The screen is cleared (ESC[H ESC[2J), so whatever the agent left
+//     rendered does not sit there looking live. Scrollback is deliberately
+//     NOT cleared (no ESC[3J): the session transcript is still worth having.
+//     Guarded on stderr being a tty, so a redirected log gets no escapes.
+//   - The notice names the IDE and its pid, because with several IDE windows
+//     open it is not obvious which one belongs to this terminal.
+//   - ENTER asks that IDE to close, which is also the reliable way to
+//     identify it: the window that disappears was the attached one. A second
+//     ENTER escalates to SIGKILL, for an IDE that ignores SIGTERM (sitting on
+//     a modal dialog, say). Children are signalled before the process itself
+//     — an IDE launcher like Eclipse's is a thin wrapper around a JVM, and
+//     killing only the wrapper would orphan the JVM and leave its window on
+//     screen. SIGTERM is a shutdown *request*, not the IDE's own File → Exit:
+//     it gives the JVM its shutdown hooks, but what happens to unsaved editor
+//     state is the IDE's business, so the prompt says "ask", not "save".
+//
+// The read loop is not gated on stdin being a tty — only the prompt is. With
+// stdin closed or on /dev/null, `read` returns EOF immediately and the `elif`
+// breaks out to the same plain `wait` this did before, rather than spinning.
+// Confirmed directly both ways: ENTER tears the IDE and its child down in
+// milliseconds and still exits with the primary tool's own status, and with
+// stdin closed the script waits the IDE out exactly as it used to.
+//
+// `wait` has its own stderr redirected because bash reports a SIGKILLed
+// background job there ("line 1: 1234 Killed ..."), which is noise the user
+// did not cause and cannot act on.
 export function wrapWithIdeBackground(
 	toolBin: string,
 	toolArgs: string[],
 	ideBin: string,
 	ideArgs: string[],
+	ideShutdown: IdeShutdown = DEFAULT_IDE_SHUTDOWN,
 ): string[] {
 	// biome-ignore-start lint/suspicious/noTemplateCurlyInString: this is a
 	// literal bash "${...}" reference in a generated shell script, not a
@@ -541,16 +596,35 @@ export function wrapWithIdeBackground(
 	// template literal, so JS never interpolates it.
 	const script =
 		'IDE_LOG="$1"; shift; ' +
+		'IDE_SIG="$1"; shift; ' +
+		'IDE_ORDER="$1"; shift; ' +
 		'IDE_ARGC="$1"; shift; ' +
 		"IDE_ARGV=(); " +
 		'for ((i=0; i<IDE_ARGC; i++)); do IDE_ARGV+=("$1"); shift; done; ' +
+		'IDE_NAME="${IDE_ARGV[0]##*/}"; ' +
 		'"${IDE_ARGV[@]}" >"$IDE_LOG" 2>&1 & ' +
 		"IDE_PID=$!; " +
 		'"$@"; STATUS=$?; ' +
 		'if kill -0 "$IDE_PID" 2>/dev/null; then ' +
-		'echo "\x1b[0;32mscoder: Waiting for attached IDE to close...\x1b[0m" >&2; ' +
+		'[ -t 2 ] && printf "\x1b[H\x1b[2J" >&2; ' +
+		'echo "\x1b[0;32mscoder: Waiting for attached IDE to close: $IDE_NAME (pid $IDE_PID)\x1b[0m" >&2; ' +
+		'[ -t 0 ] && echo "\x1b[0;32mscoder: Press ENTER to ask it to close, or close it yourself\x1b[0m" >&2; ' +
+		"IDE_SIGNALLED=0; " +
+		'while kill -0 "$IDE_PID" 2>/dev/null; do ' +
+		"if read -r -t 1 _; then " +
+		'if [ "$IDE_SIGNALLED" -eq 0 ]; then ' +
+		'echo "\x1b[0;32mscoder: Asking $IDE_NAME to close (SIG$IDE_SIG); press ENTER again to force it\x1b[0m" >&2; ' +
+		"IDE_SIGNALLED=1; " +
+		'if [ "$IDE_ORDER" = children-first ] && command -v pkill >/dev/null; then ' +
+		'pkill "-$IDE_SIG" -P "$IDE_PID" 2>/dev/null; fi; ' +
+		'kill "-$IDE_SIG" "$IDE_PID" 2>/dev/null; ' +
+		'else echo "\x1b[0;32mscoder: Forcing $IDE_NAME to stop\x1b[0m" >&2; ' +
+		'command -v pkill >/dev/null && pkill -KILL -P "$IDE_PID" 2>/dev/null; ' +
+		'kill -KILL "$IDE_PID" 2>/dev/null; fi; ' +
+		"elif [ $? -le 128 ]; then break; fi; " +
+		"done; " +
 		"fi; " +
-		'wait "$IDE_PID"; ' +
+		'wait "$IDE_PID" 2>/dev/null; ' +
 		'exit "$STATUS"';
 	// biome-ignore-end lint/suspicious/noTemplateCurlyInString: see above
 	return [
@@ -559,6 +633,8 @@ export function wrapWithIdeBackground(
 		script,
 		"_",
 		"/tmp/scoder-ide.log",
+		ideShutdown.signal,
+		ideShutdown.order,
 		(1 + ideArgs.length).toString(),
 		ideBin,
 		...ideArgs,

@@ -9,6 +9,28 @@ export interface ScoderOptions {
 	ide: string | null;
 }
 
+/**
+ * How a companion IDE is asked to shut down when the primary tool exits
+ * first and the user presses ENTER. Both fields are per-IDE because the
+ * right answer is, empirically, not the same for two IDEs — see
+ * design/features/ide-companion.md.
+ */
+export interface IdeShutdown {
+	/** Signal name as kill(1) takes it, without the SIG prefix. */
+	signal: string;
+	/**
+	 * "children-first" signals the process's direct children before the
+	 * process itself — for a launcher that is a thin wrapper around the real
+	 * application (Eclipse's is, around its JVM), signalling only the wrapper
+	 * orphans the application and leaves its window on screen.
+	 * "process-first" signals only the process, leaving its children for the
+	 * application itself to shut down — RStudio's own R session is a direct
+	 * child, and killing it out from under RStudio loses the session without
+	 * closing the IDE.
+	 */
+	order: "children-first" | "process-first";
+}
+
 export interface ToolPreset {
 	description: string;
 	configBinds: (realHome: string, sandboxHome: string) => Promise<ToolBindSpec>;
@@ -35,6 +57,9 @@ export interface ToolPreset {
 		existingArgs: string[],
 		dependencyDirs: string[],
 	) => Promise<string[]>;
+	// Only meaningful for a preset used as an --ide companion. Omitted means
+	// the default (SIGTERM, children-first) in src/sandbox/builder.ts.
+	ideShutdown?: IdeShutdown;
 }
 
 export interface ToolBindSpec {

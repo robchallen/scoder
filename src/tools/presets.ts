@@ -588,6 +588,20 @@ export const TOOL_PRESETS: Record<string, ToolPreset> = {
 	rstudio: {
 		description: "RStudio Desktop",
 
+		// EM: Measured directly against a running RStudio Desktop: SIGTERM to
+		// EM: the main process does not close it, while SIGHUP, SIGINT and
+		// EM: SIGUSR1 all do, cleanly. SIGHUP is the one picked — "the terminal
+		// EM: this was attached to has gone away" is exactly what has happened,
+		// EM: and unlike SIGINT it carries no risk of being read as "interrupt
+		// EM: the running computation" by anything downstream.
+		// EM:
+		// EM: process-first, not children-first: rsession (the R session
+		// EM: itself) is a direct child of the main process, so signalling
+		// EM: children first killed the user's R session and left the IDE
+		// EM: standing — also confirmed directly. RStudio shuts its own
+		// EM: rsession down when it closes.
+		ideShutdown: { signal: "HUP", order: "process-first" },
+
 		configBinds: async (realHome, sandboxHome) => {
 			// EM: RStudio Desktop is a GUI app — it needs a live connection to
 			// EM: the host's X server. Verified directly (see
@@ -750,6 +764,14 @@ export const TOOL_PRESETS: Record<string, ToolPreset> = {
 
 	eclipse: {
 		description: "Eclipse IDE",
+
+		// EM: The default, stated explicitly because it is the opposite of
+		// EM: rstudio's above and both were measured, not assumed: Eclipse
+		// EM: closes on SIGTERM to the JVM, which is a child of the thin
+		// EM: /opt/eclipse/eclipse launcher that is IDE_PID — signalling only
+		// EM: the launcher orphans the JVM and leaves the window up. SIGHUP,
+		// EM: SIGINT and SIGUSR1 do not close Eclipse at all.
+		ideShutdown: { signal: "TERM", order: "children-first" },
 
 		// EM: Requires the seeq12/eclipse-import-projects-plugin fork at
 		// EM: https://github.com/robchallen/eclipse-import-projects-plugin

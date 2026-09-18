@@ -22,6 +22,12 @@ automatically, with config read-only and data/cache read-write.
 
 [IMPLEMENTED_BY](/src/tools/presets.ts)
 
+A preset may also carry `ideShutdown` (`{ signal, order }`), used only when
+it is named as an `--ide` companion: how that IDE is asked to close when the
+primary tool exits first. The values are measurements per IDE, not
+preferences — see
+[design/features/ide-companion.md](/design/features/ide-companion.md).
+
 Every preset has an async function pair:
 - `configBinds(realHome, sandboxHome)` — returns bind mounts and directory specs
 - `validate()` — checks tool is installed, prints install instructions if missing

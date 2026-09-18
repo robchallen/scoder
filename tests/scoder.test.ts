@@ -12,9 +12,15 @@ import {
 	removeGitExclude,
 	setupResolvConf,
 } from "../src/git/protection.ts";
-import { buildDevLayer, collectBindDests } from "../src/sandbox/builder.ts";
+import {
+	buildDevLayer,
+	collectBindDests,
+	DEFAULT_IDE_SHUTDOWN,
+	wrapWithIdeBackground,
+} from "../src/sandbox/builder.ts";
 import { getSandboxUsername } from "../src/sandbox/identity.ts";
 import { isIpv6RoutabilityFailure } from "../src/sandbox/pasta.ts";
+import { TOOL_PRESETS } from "../src/tools/presets.ts";
 import { getRealHome } from "../src/utils/paths.ts";
 
 // ### Constants
@@ -2673,6 +2679,168 @@ test.skipIf(!ideE2eToolsAvailable)(
 		}
 	},
 );
+
+// ### Test: ide-companion-enter-requests-ide-shutdown
+// EM: Reported directly: when the primary tool exits first, the terminal is
+// EM: left showing whatever the agent's full-screen TUI last rendered, and
+// EM: with several IDE windows open it is not obvious which one this terminal
+// EM: is waiting on. ENTER now asks that IDE to close — which also identifies
+// EM: it, since the window that disappears is the attached one. Exercises the
+// EM: generated script directly rather than through a sandbox: the wrapper is
+// EM: plain bash, and a real IDE cannot be launched in CI. The fake IDE forks
+// EM: a child and waits on it, the shape of a launcher like Eclipse's around
+// EM: its JVM — the child must be signalled too, or the JVM is orphaned and
+// EM: its window stays on screen.
+test("ide-companion-enter-requests-ide-shutdown: ENTER closes the IDE and its children, keeping the primary tool's exit code", async () => {
+	const pidFile = `/tmp/scoder-ide-child-${Date.now()}.pid`;
+
+	try {
+		const cmd = wrapWithIdeBackground(
+			"/bin/bash",
+			["-c", "exit 7"],
+			"/bin/bash",
+			["-c", `sleep 120 & echo $! > ${pidFile}; wait`],
+		);
+
+		const start = Date.now();
+		const proc = Bun.spawn(cmd, {
+			stdin: new Blob(["\n"]),
+			stdout: "pipe",
+			stderr: "pipe",
+		});
+		await proc.exited;
+		const elapsedMs = Date.now() - start;
+		const stderr = await new Response(proc.stderr).text();
+
+		// The primary tool's status, not the IDE's, even though the IDE was
+		// signalled rather than left to finish.
+		expect(proc.exitCode).toBe(7);
+		// Nowhere near the IDE's own 120s: ENTER ended the wait.
+		expect(elapsedMs).toBeLessThan(15000);
+		expect(stderr).toContain("Waiting for attached IDE to close");
+		expect(stderr).toContain("Asking bash to close");
+
+		const childPid = (await Bun.file(pidFile).text()).trim();
+		const stillAlive = await Bun.spawn(["kill", "-0", childPid], {
+			stdout: "ignore",
+			stderr: "ignore",
+		}).exited;
+		expect(stillAlive).not.toBe(0);
+	} finally {
+		await Bun.spawn(["rm", "-f", pidFile]).exited;
+	}
+});
+
+// ### Test: ide-companion-waits-out-ide-without-stdin
+// EM: The read loop is deliberately not gated on stdin being a tty — only the
+// EM: prompt is — so a closed or /dev/null stdin must fall straight through to
+// EM: the plain `wait` this did before, not spin on EOF or exit early.
+test("ide-companion-waits-out-ide-without-stdin: with no stdin the wrapper waits for the IDE exactly as before", async () => {
+	const cmd = wrapWithIdeBackground(
+		"/bin/bash",
+		["-c", "exit 5"],
+		"/bin/bash",
+		["-c", "sleep 2"],
+	);
+
+	const start = Date.now();
+	const proc = Bun.spawn(cmd, {
+		stdin: "ignore",
+		stdout: "pipe",
+		stderr: "pipe",
+	});
+	await proc.exited;
+	const elapsedMs = Date.now() - start;
+	const stderr = await new Response(proc.stderr).text();
+
+	expect(proc.exitCode).toBe(5);
+	expect(elapsedMs).toBeGreaterThanOrEqual(1900);
+	expect(stderr).toContain("Waiting for attached IDE to close");
+	// No tty, so no prompt for a key nobody can press.
+	expect(stderr).not.toContain("Press ENTER");
+});
+
+// ### Test: ide-companion-clears-screen-not-scrollback
+// EM: The clear exists because the agent TUI's last frame otherwise sits there
+// EM: looking live. Scrollback is deliberately kept (no ESC[3J) — the session
+// EM: transcript is still worth having — and the escape is guarded on stderr
+// EM: being a tty so a redirected IDE log never collects control codes.
+test("ide-companion-clears-screen-not-scrollback: the wrapper clears the screen, guarded on a tty, and keeps scrollback", () => {
+	const script = wrapWithIdeBackground(
+		"/bin/bash",
+		[],
+		"/usr/bin/eclipse",
+		[],
+	)[2];
+
+	expect(script).toContain('[ -t 2 ] && printf "\x1b[H\x1b[2J" >&2');
+	expect(script).not.toContain("\x1b[3J");
+	expect(script).toContain("Press ENTER");
+});
+
+// ### Test: ide-shutdown-process-first-leaves-children-alone
+// EM: Measured directly against the real IDEs, and the two want opposite
+// EM: things. Eclipse's /opt/eclipse/eclipse is a thin launcher around the JVM
+// EM: that actually owns the window, so the children must be signalled or the
+// EM: JVM is orphaned and the window stays up. RStudio's own rsession is a
+// EM: direct child, so signalling children first killed the user's R session
+// EM: and left the IDE standing. Hence process-first must not touch children.
+test("ide-shutdown-process-first-leaves-children-alone: a process-first preset signals only the IDE itself", async () => {
+	const pidFile = `/tmp/scoder-ide-child-${Date.now()}-pf.pid`;
+	let childPid = "";
+
+	try {
+		const cmd = wrapWithIdeBackground(
+			"/bin/bash",
+			["-c", "exit 4"],
+			"/bin/bash",
+			["-c", `trap 'exit 0' HUP; sleep 120 & echo $! > ${pidFile}; wait`],
+			{ signal: "HUP", order: "process-first" },
+		);
+
+		const proc = Bun.spawn(cmd, {
+			stdin: new Blob(["\n"]),
+			stdout: "pipe",
+			stderr: "pipe",
+		});
+		await proc.exited;
+		const stderr = await new Response(proc.stderr).text();
+
+		expect(proc.exitCode).toBe(4);
+		expect(stderr).toContain("(SIGHUP)");
+
+		childPid = (await Bun.file(pidFile).text()).trim();
+		const childAlive = await Bun.spawn(["kill", "-0", childPid], {
+			stdout: "ignore",
+			stderr: "ignore",
+		}).exited;
+		expect(childAlive).toBe(0);
+	} finally {
+		if (childPid) {
+			await Bun.spawn(["kill", "-9", childPid], { stderr: "ignore" }).exited;
+		}
+		await Bun.spawn(["rm", "-f", pidFile]).exited;
+	}
+});
+
+// ### Test: ide-shutdown-presets-record-measured-signals
+// EM: These two values are measurements, not preferences — pinned here so a
+// EM: later tidy-up cannot quietly collapse them back to one shared default.
+test("ide-shutdown-presets-record-measured-signals: rstudio and eclipse keep their own shutdown specs", () => {
+	expect(TOOL_PRESETS.rstudio?.ideShutdown).toEqual({
+		signal: "HUP",
+		order: "process-first",
+	});
+	expect(TOOL_PRESETS.eclipse?.ideShutdown).toEqual({
+		signal: "TERM",
+		order: "children-first",
+	});
+	// The fallback for any preset that has not been measured.
+	expect(DEFAULT_IDE_SHUTDOWN).toEqual({
+		signal: "TERM",
+		order: "children-first",
+	});
+});
 
 // EM: ### Tests for session commit and cleanup correctness
 // EM: Covers the four issues in design/implementation/issues/

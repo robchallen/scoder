@@ -27,8 +27,10 @@ tags: [test-script, validation]
 
 `tests/scoder.test.ts` is a self-contained integration test suite that creates
 temporary git repositories under `/tmp`, runs `scoder` against them using
-`/bin/bash` as the sandboxed command, and asserts expected behaviour. 111
-tests cover all sandbox mechanics.
+`/bin/bash` as the sandboxed command, and asserts expected behaviour. 113
+tests cover all sandbox mechanics — this catalog is currently behind the
+actual implemented count (see the note under case 113) due to other,
+unrelated in-progress work; not fixed here.
 
 Cleanup runs in an `afterAll` hook. It removes the temp repos, their worktrees
 under `$HOME/tmp/scoder-test-repos/worktrees/tmp/scoder-test-repos`, and the
@@ -39,11 +41,11 @@ do (see path-mirroring) — the test fixture directory name
 (`scoder-test-repos`) keeps the two trees from ever actually colliding, but
 a wholesale glob under `$HOME` would risk sweeping up real work.
 
-Two exceptions use the real `claude` preset (cases 48-49). They run under
+Two exceptions use the real `claude` preset (cases 49-50). They run under
 `--dry-run`, so they inspect the built command without launching a sandbox or
 touching the host's config, and self-skip when `claude` is not installed.
 
-Most of the `--allow-ssh` cases (55, 57-59, 61) start a disposable `sshd` —
+Most of the `--allow-ssh` cases (56, 58-60, 62) start a disposable `sshd` —
 ControlMaster multiplexing is a genuine OpenSSH client/server behaviour a
 plain TCP stub cannot stand in for — and self-skip when `sshd` or
 `ssh-keygen` is not installed. See "Mock ssh Server" below.
@@ -135,12 +137,26 @@ Empty `.agentreadonly` removes default workspace protection. Write to `.github/`
 
 `$HOME/Git/other-project` in `.agentreadonly` binds a host directory read-only. Can read but not write.
 
-### 10. agentreadonly-home-directory-must-exist
+### 10. agentreadonly-home-file-bind-does-not-create-conflicting-dir
+[TESTED_BY](/tests/scoder.test.ts#testAgentreadonlyHomeFileBindDoesNotCreateConflictingDir)
+
+Regression test: reported directly, an `.agentreadonly` `$HOME/...` entry
+pointing at a *file* (not a directory) failed with `bwrap: Can't create
+file at <path>: Is a directory`. `fileOrDirExists` (not `dirExists`) is
+the existence check `registerAgentreadonlyHomeBind` already used, so
+files were always meant to be supported — the bug was in the
+ancestor-`--dir` scaffold loop, which pushed a `--dir` entry for the leaf
+path too, not just its real ancestors. `bwrap` processes `--dir` before
+`--ro-bind`, so it scaffolded an empty directory exactly where the file
+needed a file mountpoint instead. Fixed by excluding the leaf from that
+loop.
+
+### 11. agentreadonly-home-directory-must-exist
 [TESTED_BY](/tests/scoder.test.ts#testAgentreadonlyHomeDirectoryMustExist)
 
 References to non-existent paths via `$HOME/...` must fail with a clear error about the directory missing.
 
-### 11. agentreadonly-home-nested-namespace-path-allowed
+### 12. agentreadonly-home-nested-namespace-path-allowed
 [TESTED_BY](/tests/scoder.test.ts#testAgentreadonlyHomeNestedNamespacePathAllowed)
 
 Regression test: reported directly, `$HOME/.local/share/fonts` was
@@ -153,17 +169,17 @@ the time — only specific sub-paths under it were (`.local/bin`,
 destinations, not the bare umbrellas they happen to live under. Uses
 `$HOME/.local/share/icons` rather than the originally reported
 `.../fonts`, since fonts has since become a fixed destination itself
-(case 12) and no longer illustrates "safely nested, not itself fixed."
+(case 15) and no longer illustrates "safely nested, not itself fixed."
 
-### 12. agentreadonly-home-fonts-directory-now-redundant
+### 13. agentreadonly-home-fonts-directory-now-redundant
 [TESTED_BY](/tests/scoder.test.ts#testAgentreadonlyHomeFontsDirectoryNowRedundant)
 
-Fonts is now a fixed default bind (`buildExtraBinds` — see case 14) — an
+Fonts is now a fixed default bind (`buildExtraBinds` — see case 15) — an
 `.agentreadonly` entry for the exact same path is therefore a redundant
 re-declaration of something scoder already handles, correctly rejected
 the same way `$HOME/.claude` or `$HOME/.config` already are.
 
-### 13. agentreadonly-home-ancestor-of-fixed-bind-still-rejected
+### 14. agentreadonly-home-ancestor-of-fixed-bind-still-rejected
 [TESTED_BY](/tests/scoder.test.ts#testAgentreadonlyHomeAncestorOfFixedBindStillRejected)
 
 The other half of the same fix: a bare umbrella is only safe to allow
@@ -172,69 +188,69 @@ real fixed sub-binds (`.config/mise`, `.config/gh` — see
 `buildExtraBinds` in `src/sandbox/builder.ts`), so it must still be
 rejected — the overlap check is bidirectional.
 
-### 14. fonts-directory-bound-readonly-by-default
+### 15. fonts-directory-bound-readonly-by-default
 [TESTED_BY](/tests/scoder.test.ts#testFontsDirectoryBoundReadonlyByDefault)
 
 Added directly at the user's request, alongside `.config/mimeapps.list`
-(case 15): GUI presets (`rstudio`, `eclipse`) need real host fonts to
+(case 16): GUI presets (`rstudio`, `eclipse`) need real host fonts to
 render text at all, not just cleanly. `buildExtraBinds`
 (`src/sandbox/builder.ts`) binds `~/.local/share/fonts` unconditionally
 when it exists, like every other host-tool-binding entry — no preset or
 `.agentreadonly` entry needed.
 
-### 15. mimeapps-list-bound-readonly-by-default
+### 16. mimeapps-list-bound-readonly-by-default
 [TESTED_BY](/tests/scoder.test.ts#testMimeappsListBoundReadonlyByDefault)
 
-Same reasoning as case 14: desktop apps commonly consult
+Same reasoning as case 15: desktop apps commonly consult
 `~/.config/mimeapps.list` for file-type "open with" associations.
 
-### 16. worktree-branch-created
+### 17. worktree-branch-created
 [TESTED_BY](/tests/scoder.test.ts#testWorktreeBranchCreated)
 
 Running scoder creates a `scoder/<repo-name>` branch.
 
-### 17. existing-scoder-worktree-reused
+### 18. existing-scoder-worktree-reused
 [TESTED_BY](/tests/scoder.test.ts#testExistingScoderWorktreeReused)
 
 Rerunning from an existing scoder worktree reuses the checkout rather than creating a new one.
 
-### 18. worktree-recreated-if-missing
+### 19. worktree-recreated-if-missing
 [TESTED_BY](/tests/scoder.test.ts#testWorktreeRecreatedIfMissing)
 
 Deleting the worktree directory (simulating system reboot) and rerunning scoder prunes the stale reference and recreates the worktree.
 
-### 19. symlinked-agents-skills-available
+### 20. symlinked-agents-skills-available
 [TESTED_BY](/tests/scoder.test.ts#testSymlinkedAgentsSkillsAvailable)
 
 Symlinked agent skills are resolved at snapshot time and available read-only inside the sandbox.
 
-### 20. sandbox-agents-md-overlay-visible
+### 21. sandbox-agents-md-overlay-visible
 [TESTED_BY](/tests/scoder.test.ts#testSandboxAgentsMdOverlayVisible)
 
 AGENTS.md overlay appends scoder sandbox notice without modifying the host repository copy.
 
-### 21. agents-md-overlay-in-direct-mode
+### 22. agents-md-overlay-in-direct-mode
 [TESTED_BY](/tests/scoder.test.ts#testAgentsMdOverlayInDirectMode)
 
 AGENTS.md overlay in direct mode does not include worktree-specific messages.
 
-### 22. host-loopback-blocked
+### 23. host-loopback-blocked
 [TESTED_BY](/tests/scoder.test.ts#testHostLoopbackBlocked)
 
 Host localhost HTTP server is unreachable from the sandbox via pasta's default loopback blocking.
 
-### 23. agentports-forwards-listed-port
+### 24. agentports-forwards-listed-port
 [TESTED_BY](/tests/scoder.test.ts#testAgentportsForwardsListedPort)
 
 A port listed in a project's `.agentports` file is reachable inside the
 sandbox without any CLI flag — `.agentports` replaced `--llm-port` entirely.
 
-### 24. outbound-dns-works
+### 25. outbound-dns-works
 [TESTED_BY](/tests/scoder.test.ts#testOutboundDnsWorks)
 
 DNS resolution works inside the sandbox via pasta's DHCP/DNS.
 
-### 25. pasta-ipv6-routability-failure-detected-for-retry
+### 26. pasta-ipv6-routability-failure-detected-for-retry
 [TESTED_BY](/tests/scoder.test.ts#testPastaIpv6RoutabilityFailureDetectedForRetry)
 
 Regression test: reported directly, pasta refused to attach at all
@@ -253,7 +269,7 @@ silently — and wrongly — reported "not disabled". Trusting pasta's own
 authoritative determination, after the fact, covers every route to this
 failure without needing to enumerate them.
 
-### 26. dry-run-redacts-sensitive-env-vars
+### 27. dry-run-redacts-sensitive-env-vars
 [TESTED_BY](/tests/scoder.test.ts#testDryRunRedactsSensitiveEnvVars)
 
 Regression test: reported directly, `--dry-run`'s own preview printed
@@ -268,29 +284,29 @@ provider env var is covered automatically. A non-sensitive env var
 (`EDITOR`) still prints its real value, confirming the heuristic isn't
 over-broad.
 
-### 27. dry-run-uses-pasta
+### 28. dry-run-uses-pasta
 [TESTED_BY](/tests/scoder.test.ts#testDryRunUsesPasta)
 
 Dry-run output includes `pasta` in the command line.
 
-### 28. no-worktree-mode
+### 29. no-worktree-mode
 [TESTED_BY](/tests/scoder.test.ts#testNoWorktreeMode)
 
 `--no-worktree` flag bypasses git worktree creation and the output mentions "direct mode".
 
-### 29. local-bin-symlink-resolved
+### 30. local-bin-symlink-resolved
 [TESTED_BY](/tests/scoder.test.ts#testLocalBinSymlinkResolved)
 
 A symlink in `~/.local/bin` pointing to a host path outside the sandbox is
 resolved via a forwarding shim and the tool executes correctly.
 
-### 30. local-bin-regular-file
+### 31. local-bin-regular-file
 [TESTED_BY](/tests/scoder.test.ts#testLocalBinRegularFile)
 
 Regular executable files in `~/.local/bin` are copied with their
 permissions intact and work inside the sandbox.
 
-### 31. local-bin-symlink-arg-passthrough
+### 32. local-bin-symlink-arg-passthrough
 [TESTED_BY](/tests/scoder.test.ts#testLocalBinSymlinkArgPassthrough)
 
 Forwarding shim passes all arguments through to the underlying tool.
@@ -301,7 +317,7 @@ Forwarding shim passes all arguments through to the underlying tool.
 symlink surviving. Running it in isolation only passes if a previous full run
 left the artifact behind. It should create its own fixture.
 
-### 32. agentports-auto-detect-appends
+### 33. agentports-auto-detect-appends
 [TESTED_BY](/tests/scoder.test.ts#testAgentportsAutoDetectAppends)
 
 When `SCODER_LLM_PORT` is set and the port is open on localhost, scoder
@@ -309,37 +325,37 @@ auto-detects it, reaches it immediately, and appends it to `.agentports` —
 additively, and only once: a second run with the port already listed does
 not duplicate the entry.
 
-### 33. addGitExclude should mark AGENTS.md as skip-worktree
+### 34. addGitExclude should mark AGENTS.md as skip-worktree
 [TESTED_BY](/tests/scoder.test.ts#testAddGitExclude)
 
 `addGitExclude` sets the `--skip-worktree` index flag on `AGENTS.md` so git
 ignores the overlay modification. This is what prevents the overlay from
 appearing as a dirty working tree inside the sandbox.
 
-### 34. removeGitExclude should restore normal tracking
+### 35. removeGitExclude should restore normal tracking
 [TESTED_BY](/tests/scoder.test.ts#testRemoveGitExclude)
 
 `removeGitExclude` clears the `--skip-worktree` flag after the session ends,
 restoring normal git tracking for `AGENTS.md`.
 
-### 35. addGitExclude should be idempotent
+### 36. addGitExclude should be idempotent
 [TESTED_BY](/tests/scoder.test.ts#testAddGitExcludeIdempotent)
 
 Calling `addGitExclude` multiple times does not duplicate entries in the git index.
 
-### 36. scoder should succeed in direct mode with AGENTS.md excluded
+### 37. scoder should succeed in direct mode with AGENTS.md excluded
 [TESTED_BY](/tests/scoder.test.ts#testScoderDirectModeExclude)
 
 scoder runs successfully in `--no-worktree` mode with AGENTS.md excluded from
 git tracking. The exclude is cleaned up after the session.
 
-### 37. scoder should succeed in worktree mode with AGENTS.md excluded
+### 38. scoder should succeed in worktree mode with AGENTS.md excluded
 [TESTED_BY](/tests/scoder.test.ts#testScoderWorktreeModeExclude)
 
 scoder runs successfully in worktree mode with AGENTS.md excluded from the
 worktree git index. The exclude is cleaned up after the session.
 
-### 38. home-installed-tool-exec-path-resolved
+### 39. home-installed-tool-exec-path-resolved
 [TESTED_BY](/tests/scoder.test.ts#testHomeInstalledToolExecPathResolved)
 
 A tool installed under `$HOME` (a `~/.local/bin` entry symlinked at a versioned
@@ -359,13 +375,13 @@ now (see path-mirroring's history), but the underlying risk this test guards
 sandbox — is still real, just caught by `checkExecTargetReachable`'s
 `isUnderAny` check against the built command's own bind destinations instead.
 
-### 39. home-installed-tool-runs
+### 40. home-installed-tool-runs
 [TESTED_BY](/tests/scoder.test.ts#testHomeInstalledToolRuns)
 
 The same layout, launched for real rather than dry-run: the tool executes inside
 the sandbox and produces its output. Asserts `execvp` never appears on stderr.
 
-### 40. local-bin-symlink-target-mapped
+### 41. local-bin-symlink-target-mapped
 [TESTED_BY](/tests/scoder.test.ts#testLocalBinSymlinkTargetMapped)
 
 Renamed from an earlier version of this test that scanned the whole
@@ -378,14 +394,14 @@ itself suspicious, so that sweep is gone. What's left, and still meaningful:
 a fixture tool that is small and unbound by any preset must be copied into
 the snapshot whole, not left as a dangling symlink.
 
-### 41. unbound-home-tool-diagnosed
+### 42. unbound-home-tool-diagnosed
 [TESTED_BY](/tests/scoder.test.ts#testUnboundHomeToolDiagnosed)
 
 A tool in a `$HOME` directory that is not bound into the sandbox cannot work.
 scoder exits 1 with an actionable diagnostic naming the directory, rather than
 launching and letting pasta emit a bare `execvp` error.
 
-### 42. session-commit-lands-in-worktree
+### 43. session-commit-lands-in-worktree
 [TESTED_BY](/tests/scoder.test.ts#testSessionCommitLandsInWorktree)
 
 A worktree-mode session leaves the *launching* repository's `git status` and
@@ -393,13 +409,13 @@ commit log byte-identical, while the sandbox's own change is committed on the
 `scoder/*` branch. Regression test for `commitAllChanges` spawning git without a
 `cwd`, which committed the user's main checkout.
 
-### 43. clean-worktree-session-commits-nothing
+### 44. clean-worktree-session-commits-nothing
 [TESTED_BY](/tests/scoder.test.ts#testCleanWorktreeSessionCommitsNothing)
 
 A session that changes nothing succeeds rather than failing on `git commit`
 returning non-zero for an empty commit.
 
-### 44. skip-worktree-cleared-after-session
+### 45. skip-worktree-cleared-after-session
 [TESTED_BY](/tests/scoder.test.ts#testSkipWorktreeClearedAfterSession)
 
 `git ls-files -v AGENTS.md` reports `H`, not `S`, after a completed session.
@@ -408,20 +424,20 @@ flag — `process.exit()` does not run pending `finally` blocks. The existing
 `addGitExclude`/`removeGitExclude` tests call those functions directly and so
 cannot catch this.
 
-### 45. direct-mode-works-in-linked-worktree
+### 46. direct-mode-works-in-linked-worktree
 [TESTED_BY](/tests/scoder.test.ts#testDirectModeWorksInLinkedWorktree)
 
 `scoder --no-worktree` succeeds when run from inside a linked git worktree
 (`.git` is a file). Regression test for the nesting check exiting regardless of
 mode while advising the flag the user had already passed.
 
-### 46. worktree-mode-refused-in-linked-worktree
+### 47. worktree-mode-refused-in-linked-worktree
 [TESTED_BY](/tests/scoder.test.ts#testWorktreeModeRefusedInLinkedWorktree)
 
 The other half of the same check: `scoder -w` from inside a linked worktree still
 exits 1, since that nesting genuinely cannot work.
 
-### 47. worktree-mode-refuses-dirty-checkout
+### 48. worktree-mode-refuses-dirty-checkout
 [TESTED_BY](/tests/scoder.test.ts#testWorktreeModeRefusesDirtyCheckout)
 
 Renamed from `uncommitted-host-changes-warned`. Worktree mode used to only
@@ -431,7 +447,7 @@ checkout`), checked before `setupGitWorktree` runs so no branch/worktree is
 created on the refused launch. Asserts both the exit code/message and that
 `git worktree list` shows no new `scoder/*` entry afterward.
 
-### 48. claude-preset-home-config-writable
+### 49. claude-preset-home-config-writable
 [TESTED_BY](/tests/scoder.test.ts#testClaudePresetHomeConfigWritable)
 
 `~/.claude` is bound `--bind` (read-write), not `--ro-bind`. Claude Code writes
@@ -439,13 +455,13 @@ there throughout a session and fails rather than degrades under a read-only
 bind. Guards a deliberate trade-off that no other test covered — see
 [rw-config-mounts-limited-escape](../implementation/debt/rw-config-mounts-limited-escape.md).
 
-### 49. workspace-claude-dir-still-protected
+### 50. workspace-claude-dir-still-protected
 [TESTED_BY](/tests/scoder.test.ts#testWorkspaceClaudeDirStillProtected)
 
 The *workspace* `.claude/` directory stays read-only even though `~/.claude` is
 writable. The two are separate binds and must not be conflated.
 
-### 50. sandbox-uid-preserved
+### 51. sandbox-uid-preserved
 [TESTED_BY](/tests/scoder.test.ts#testSandboxUidPreserved)
 
 The uid inside the sandbox is the host uid, not 0. Guards the regression where
@@ -454,14 +470,14 @@ so the tool ran as root. Was marked `test.failing` while the defect stood; the
 marker came off when bwrap took ownership of both namespaces. See
 [ADR 0001](../../architecture/decision-records/0001-sandbox-uid-and-networking-composition.md).
 
-### 51. sandbox-uid-maps-to-host-user
+### 52. sandbox-uid-maps-to-host-user
 [TESTED_BY](/tests/scoder.test.ts#testSandboxUidMapsToHostUser)
 
 The property that makes case 42 survivable: whatever uid the sandbox reports,
 files it creates are owned by the real host user, because pasta maps inside-0
 back to the caller. This must keep holding through any fix.
 
-### 52. pasta-sidecar-reaped
+### 53. pasta-sidecar-reaped
 [TESTED_BY](/tests/scoder.test.ts#testPastaSidecarReaped)
 
 A completed session leaves no pasta process behind. This is the failure mode
@@ -470,7 +486,7 @@ attach mode introduces: pasta runs outside the sandbox, so bwrap's
 sidecars before and after rather than asserting zero, because the developer may
 legitimately have other scoder sessions running.
 
-### 53. sandbox-identity-consistent
+### 54. sandbox-identity-consistent
 [TESTED_BY](/tests/scoder.test.ts#testSandboxIdentityConsistent)
 
 `id -un`, `id -gn` and `getpwuid()` all report the sandbox's real identity:
@@ -484,27 +500,27 @@ LDAP-backed system) — it describes the real identity now, not a synthetic
 `scoder` one, since the sandbox no longer remaps `$HOME` to a separate
 namespace (see path-mirroring).
 
-### 54. sandbox-identity-files-cleaned
+### 55. sandbox-identity-files-cleaned
 [TESTED_BY](/tests/scoder.test.ts#testSandboxIdentityFilesCleaned)
 
 No `scoder-identity-*` temp directory survives a session. The implementation
 these replaced wrote a fixed `/tmp/bwrap_passwd_<uid>` that was never removed and
 collided between concurrent sessions.
 
-### 55. ssh-tunnel-established-with-flag
+### 56. ssh-tunnel-established-with-flag
 [TESTED_BY](/tests/scoder.test.ts#testSshTunnelEstablishedWithFlag)
 
 With `--allow-ssh <user>@127.0.0.1` and a mock `sshd` running, `ssh 127.0.0.1
 whoami` inside the sandbox returns the expected remote username. The real
 end-to-end proof that the tunnel works.
 
-### 56. ssh-blocked-by-default
+### 57. ssh-blocked-by-default
 [TESTED_BY](/tests/scoder.test.ts#testSshBlockedByDefault)
 
 Without the flag, `ssh 127.0.0.1 whoami` inside the sandbox fails regardless
 of what is reachable outside it. Guards the default.
 
-### 57. ssh-wrong-host-falls-through
+### 58. ssh-wrong-host-falls-through
 [TESTED_BY](/tests/scoder.test.ts#testSshWrongHostFallsThrough)
 
 With `--allow-ssh` pointed at the mock server, `ssh some-other-host.invalid
@@ -512,14 +528,14 @@ whoami` inside the sandbox still fails. The tunnel is pinned to one
 destination; a different hostname does not match the generated `Host` block
 and falls through to a normal, failing connection attempt.
 
-### 58. ssh-wrong-user-falls-through
+### 59. ssh-wrong-user-falls-through
 [TESTED_BY](/tests/scoder.test.ts#testSshWrongUserFallsThrough)
 
 Same reachable host, a different login (`ssh someoneelse@127.0.0.1 whoami`) —
 also fails. Guards the `%r`-based pinning specifically: matching by hostname
 alone would let a different user ride the tunnel.
 
-### 59. ssh-no-private-keys-in-sandbox
+### 60. ssh-no-private-keys-in-sandbox
 [TESTED_BY](/tests/scoder.test.ts#testSshNoPrivateKeysInSandbox)
 
 With `--allow-ssh` active, nothing under the sandbox's `$HOME/.ssh` or
@@ -527,28 +543,28 @@ With `--allow-ssh` active, nothing under the sandbox's `$HOME/.ssh` or
 important guard in the set — it is what stops a future "just forward the
 agent, it's easier" change from passing review.
 
-### 60. ssh-tunnel-fails-closed-on-bad-target
+### 61. ssh-tunnel-fails-closed-on-bad-target
 [TESTED_BY](/tests/scoder.test.ts#testSshTunnelFailsClosedOnBadTarget)
 
 `--allow-ssh` pointed at an unreachable target (`nobody@unreachable.invalid`)
 exits non-zero with a clear error rather than hanging or silently
 continuing. Needs no mock server.
 
-### 61. ssh-tunnel-torn-down-on-exit
+### 62. ssh-tunnel-torn-down-on-exit
 [TESTED_BY](/tests/scoder.test.ts#testSshTunnelTornDownOnExit)
 
 After a completed session, no leftover ssh master process survives. Counts
 before/after rather than asserting zero, matching `pasta-sidecar-reaped`'s
 reasoning: the developer may have other legitimate ssh sessions running.
 
-### 62. ssh-dry-run-describes-without-connecting
+### 63. ssh-dry-run-describes-without-connecting
 [TESTED_BY](/tests/scoder.test.ts#testSshDryRunDescribesWithoutConnecting)
 
 `--dry-run --allow-ssh` shows the control-socket bind as `--ro-bind`, not
 `--bind`, and never opens a real connection — `describeSshAccess` never calls
 `startSshTunnel`.
 
-### 63. bwrap-not-orphaned-on-pasta-attach-failure
+### 64. bwrap-not-orphaned-on-pasta-attach-failure
 [TESTED_BY](/tests/scoder.test.ts#testBwrapNotOrphanedOnPastaAttachFailure)
 
 A fake `pasta` shimmed onto `PATH`, always exiting non-zero, forces the
@@ -559,7 +575,7 @@ bwrap forks internally even without `--unshare-pid`, and killing only the
 outer, tracked pid left the inner one — the one actually holding the
 namespaces — running forever, reparented to pid 1.
 
-### 64. agentreadwrite-resolves-rw
+### 65. agentreadwrite-resolves-rw
 [TESTED_BY](/tests/scoder.test.ts#testAgentreadwriteResolvesRw)
 
 With `.agentreadwrite` listing a directory under a throwaway location in
@@ -568,7 +584,7 @@ through it inside the sandbox both work, and the write is visible on the
 host afterward — the real end-to-end proof the bind works, replacing the
 `scratch` symlink this feature superseded.
 
-### 65. agentreadwrite-created-if-missing
+### 66. agentreadwrite-created-if-missing
 [TESTED_BY](/tests/scoder.test.ts#testAgentreadwriteCreatedIfMissing)
 
 Same bug class already fixed twice, for `.agentreadonly` and
@@ -576,14 +592,14 @@ Same bug class already fixed twice, for `.agentreadonly` and
 read-only in the very same session that finds it missing, not just from
 the next run onward.
 
-### 66. agentreadwrite-self-protected-readonly
+### 67. agentreadwrite-self-protected-readonly
 [TESTED_BY](/tests/scoder.test.ts#testAgentreadwriteSelfProtectedReadonly)
 
 `.agentreadwrite` itself is always bound read-only inside the sandbox,
 the same self-protection `.agentreadonly` and `.agentports` already give
 themselves.
 
-### 67. agentreadwrite-missing-target-created
+### 68. agentreadwrite-missing-target-created
 [TESTED_BY](/tests/scoder.test.ts#testAgentreadwriteMissingTargetCreated)
 
 A listed directory that doesn't exist yet is created (`mkdir -p`) rather
@@ -594,13 +610,13 @@ command, before pasta ever gets a chance to fail, same reasoning as
 `agentreadonly-created-default`'s "file exists before that point is
 reached" pattern.
 
-### 68. agentreadwrite-missing-target-not-created-under-dry-run
+### 69. agentreadwrite-missing-target-not-created-under-dry-run
 [TESTED_BY](/tests/scoder.test.ts#testAgentreadwriteMissingTargetNotCreatedUnderDryRun)
 
 `--dry-run` stays side-effect free: the intended bind still appears in
 the preview, but the real `mkdir` is skipped.
 
-### 69. agentreadwrite-outside-home-rejected
+### 70. agentreadwrite-outside-home-rejected
 [TESTED_BY](/tests/scoder.test.ts#testAgentreadwriteOutsideHomeRejected)
 
 A line not starting with `$HOME/` exits non-zero with a clear diagnostic
@@ -608,13 +624,13 @@ A line not starting with `$HOME/` exits non-zero with a clear diagnostic
 patterns for its own protected-paths mode, `.agentreadwrite` supports
 nothing outside `$HOME` at all.
 
-### 70. agentreadwrite-escape-via-symlink-rejected
+### 71. agentreadwrite-escape-via-symlink-rejected
 [TESTED_BY](/tests/scoder.test.ts#testAgentreadwriteEscapeViaSymlinkRejected)
 
 A `$HOME/...` entry that resolves outside `$HOME` via a symlink is
 rejected the same way `.agentreadonly`'s own HOME binds already are.
 
-### 71. agentreadwrite-overlapping-fixed-bind-rejected
+### 72. agentreadwrite-overlapping-fixed-bind-rejected
 [TESTED_BY](/tests/scoder.test.ts#testAgentreadwriteOverlappingFixedBindRejected)
 
 An entry matching one of `buildExtraBinds`' fixed host-tool paths
@@ -623,7 +639,7 @@ read-only the way the retired `scratch` symlink handled the same
 collision. Skips if `~/.local/bin` doesn't exist on the machine running
 the suite.
 
-### 72. agentreadwrite-nested-under-namespace-umbrella-allowed
+### 73. agentreadwrite-nested-under-namespace-umbrella-allowed
 [TESTED_BY](/tests/scoder.test.ts#testAgentreadwriteNestedUnderNamespaceUmbrellaAllowed)
 
 The one deliberate difference from `.agentreadonly`'s own overlap check:
@@ -633,20 +649,20 @@ never actually populated by a real bind, just scaffolded empty by
 feature's own motivating use case, and blocking it would reject a
 perfectly safe entry for no real protection.
 
-### 73. agentreadwrite-overlapping-agentreadonly-rejected
+### 74. agentreadwrite-overlapping-agentreadonly-rejected
 [TESTED_BY](/tests/scoder.test.ts#testAgentreadwriteOverlappingAgentreadonlyRejected)
 
 The same `$HOME/...` path listed in both `.agentreadonly` and
 `.agentreadwrite` — directly opposite intents, protect vs. open for
 writing — is a hard error naming the conflicting path.
 
-### 74. agentreadwrite-real-passthrough-unaffected
+### 75. agentreadwrite-real-passthrough-unaffected
 [TESTED_BY](/tests/scoder.test.ts#testAgentreadwriteRealPassthroughUnaffected)
 
 With `.agentreadwrite` present, editing an ordinary tracked project file
 still writes straight through to the host.
 
-### 75. agentreadwrite-survives-fresh-worktree
+### 76. agentreadwrite-survives-fresh-worktree
 [TESTED_BY](/tests/scoder.test.ts#testAgentreadwriteSurvivesFreshWorktree)
 
 A tracked `.agentreadwrite` still resolves its listed directory
@@ -655,43 +671,43 @@ read-write after a fresh worktree checkout — unlike the retired
 handling to verify, so the check is the resulting bind itself, not git's
 own symlink-as-blob behaviour.
 
-### 76. llm-port-flag-removed
+### 77. llm-port-flag-removed
 [TESTED_BY](/tests/scoder.test.ts#testLlmPortFlagRemoved)
 
 `--llm-port` is an unknown option — it was removed, not deprecated, in
 favour of `.agentports`. See
 [design/implementation/plans/agentports.md](/design/implementation/plans/agentports.md).
 
-### 77. agentports-malformed-line-fails
+### 78. agentports-malformed-line-fails
 [TESTED_BY](/tests/scoder.test.ts#testAgentportsMalformedLineFails)
 
 A non-numeric line in `.agentports` exits non-zero, naming the bad line.
 
-### 78. agentports-is-readonly
+### 79. agentports-is-readonly
 [TESTED_BY](/tests/scoder.test.ts#testAgentportsIsReadonly)
 
 `.agentports` is always bind-mounted read-only inside the sandbox, the same
 self-protection `.agentreadonly` gives itself.
 
-### 79. agentports-auto-detect-skips-under-dry-run
+### 80. agentports-auto-detect-skips-under-dry-run
 [TESTED_BY](/tests/scoder.test.ts#testAgentportsAutoDetectSkipsUnderDryRun)
 
 `--dry-run` with a detectable port does not write `.agentports` — dry-run
 stays entirely side-effect free.
 
-### 80. agentports-live-reload-adds-port
+### 81. agentports-live-reload-adds-port
 [TESTED_BY](/tests/scoder.test.ts#testAgentportsLiveReloadAddsPort)
 
 Editing `.agentports` mid-session reattaches pasta with the updated port
 list, without restarting the session. Uses a fake `pasta` that mimics real
-pasta's daemonize-then-exit shape — same reasoning as case 55
+pasta's daemonize-then-exit shape — same reasoning as case 64
 (`bwrap-not-orphaned-on-pasta-attach-failure`), applied to the success path:
 this environment's own lack of `/dev/net/tun` would make a real pasta attach
 non-deterministic here, when what's actually under test is the watcher's
 swap logic, not pasta's own forwarding. Verified manually against this exact
 shim shape before being committed to the suite.
 
-### 81. agentports-live-reload-bad-edit-keeps-old-config
+### 82. agentports-live-reload-bad-edit-keeps-old-config
 [TESTED_BY](/tests/scoder.test.ts#testAgentportsLiveReloadBadEditKeepsOldConfig)
 
 A reattach that fails to attach falls back to re-attaching the last
@@ -701,14 +717,14 @@ pasta invocations); a later poll tick retrying the same edit and succeeding
 is correct behaviour for a transient failure, not something this case
 constrains.
 
-### 82. agentports-not-created-under-dry-run
+### 83. agentports-not-created-under-dry-run
 [TESTED_BY](/tests/scoder.test.ts#testAgentportsNotCreatedUnderDryRun)
 
 `--dry-run` with no pre-existing `.agentports` does not create one — dry-run
 never runs anything inside the sandbox, so there is nothing for a missing
 bind to expose, and dry-run must stay side-effect free regardless.
 
-### 83. agentports-created-if-missing
+### 84. agentports-created-if-missing
 [TESTED_BY](/tests/scoder.test.ts#testAgentportsCreatedIfMissing)
 
 A real session with no pre-existing `.agentports` creates one on the host,
@@ -716,7 +732,7 @@ containing a header comment, before the sandbox is ever built — closing the
 bind-mount gap described below regardless of whether the rest of the
 session goes on to succeed or fail.
 
-### 84. agentports-missing-file-not-writable-from-sandbox
+### 85. agentports-missing-file-not-writable-from-sandbox
 [TESTED_BY](/tests/scoder.test.ts#testAgentportsMissingFileNotWritableFromSandbox)
 
 A missing source path gets no bind mount at all, which otherwise leaves that
@@ -730,14 +746,14 @@ pasta-attach failure (this suite's own dev environment lacks
 cannot pass trivially just because the sandbox failed to launch for a
 different reason.
 
-### 85. agentreadonly-created-if-missing
+### 86. agentreadonly-created-if-missing
 [TESTED_BY](/tests/scoder.test.ts#testAgentreadonlyCreatedIfMissing)
 
 A real session with no pre-existing `.agentreadonly` creates one on the
 host, containing the default protected-path list, before the sandbox is
 ever built.
 
-### 86. agentreadonly-missing-file-not-writable-from-sandbox
+### 87. agentreadonly-missing-file-not-writable-from-sandbox
 [TESTED_BY](/tests/scoder.test.ts#testAgentreadonlyMissingFileNotWritableFromSandbox)
 
 A missing source path gets no bind mount at all, which otherwise leaves
@@ -750,7 +766,7 @@ not just from the next run onward. Distinguishes a pasta-attach failure
 from an actual rejected write, so it cannot pass trivially just because the
 sandbox failed to launch for a different reason.
 
-### 87. terminal-signals-forwarded-to-sandbox
+### 88. terminal-signals-forwarded-to-sandbox
 [TESTED_BY](/tests/scoder.test.ts#testTerminalSignalsForwardedToSandbox)
 
 SIGWINCH (a real resize, via `TIOCSWINSZ`) and SIGINT (a real Ctrl-C byte)
@@ -763,7 +779,7 @@ controlling-terminal relationship to reproduce at all — a plain `Bun.spawn`
 allocation). Self-skips if `python3` is not installed. See
 [design/implementation/issues/terminal-signals-not-forwarded-to-sandbox.md](/design/implementation/issues/terminal-signals-not-forwarded-to-sandbox.md).
 
-### 88. agents-md-overlay-states-real-home
+### 89. agents-md-overlay-states-real-home
 [TESTED_BY](/tests/scoder.test.ts#testAgentsMdOverlayStatesRealHome)
 
 Renamed from `agents-md-overlay-uses-real-host-home-for-external-tools`. That
@@ -776,20 +792,20 @@ one path to state. The overlay now just says `$HOME` (stated literally, via
 the same way inside and outside the sandbox. This test asserts that text and
 that no `/home/scoder` string survives anywhere in the overlay.
 
-### 89. update-alternatives-state-mounted
+### 90. update-alternatives-state-mounted
 [TESTED_BY](/tests/scoder.test.ts#testUpdateAlternativesStateMounted)
 
 `update-alternatives --list <name>` run inside the sandbox produces the
 identical output to running it directly on the host — not just "does not
 error" — proving `/var/lib/dpkg/alternatives`/`/var/lib/alternatives` is
 mounted and faithfully reflects the host's real alternative state. Reuses
-the daemonize-then-exit fake pasta shim from case 75 so the real scoder
+the daemonize-then-exit fake pasta shim from case 64 so the real scoder
 binary runs this end-to-end without depending on a working
 `/dev/net/tun`. Self-skips if `update-alternatives` isn't installed, or the
 host has no registered alternatives to probe against — see
 [design/implementation/issues/update-alternatives-state-not-mounted.md](/design/implementation/issues/update-alternatives-state-not-mounted.md).
 
-### 90. opt-mounted
+### 91. opt-mounted
 [TESTED_BY](/tests/scoder.test.ts#testOptMounted)
 
 `ls /opt` run inside the sandbox produces the identical output to running
@@ -797,11 +813,11 @@ it directly on the host, proving `/opt` is mounted and faithfully reflects
 the host's real content — not just "the bind flag is present in
 `--dry-run`". No fixture is written under `/opt` itself (root-owned host
 system state; this suite otherwise never mutates anything outside its own
-throwaway temp repos), and it reuses the same fake pasta shim as case 77.
+throwaway temp repos), and it reuses the same fake pasta shim as case 64.
 Self-skips if `/opt` does not exist on the host at all. See
 [design/implementation/issues/opt-not-mounted.md](/design/implementation/issues/opt-not-mounted.md).
 
-### 91. rstudio-preset-binds-x11-and-config-dirs
+### 92. rstudio-preset-binds-x11-and-config-dirs
 [TESTED_BY](/tests/scoder.test.ts#testRstudioPresetBindsX11AndConfigDirs)
 
 The `rstudio` preset binds `/tmp/.X11-unix` (when present on the host),
@@ -809,7 +825,7 @@ passes `DISPLAY` through, and binds `~/.config/rstudio` and
 `~/.local/share/rstudio` read-write. See
 [0002-rstudio-x11-access](/architecture/decision-records/0002-rstudio-x11-access.md).
 
-### 92. rstudio-preset-binds-dev-dri-when-present
+### 93. rstudio-preset-binds-dev-dri-when-present
 [TESTED_BY](/tests/scoder.test.ts#testRstudioPresetBindsDevDriWhenPresent)
 
 Regression test: reported directly, RStudio Desktop (Electron/Chromium)
@@ -824,27 +840,27 @@ no real device-node access — when it exists on the host, absent
 otherwise (asserted either way, so the test is meaningful whether or not
 the machine running the suite has a GPU).
 
-### 93. rstudio-preset-includes-pi-config
+### 94. rstudio-preset-includes-pi-config
 [TESTED_BY](/tests/scoder.test.ts#testRstudioPresetIncludesPiConfig)
 
 `pi` runs inside RStudio's own embedded terminal, so the `rstudio` preset
 also includes pi's data/cache binds — via a shared `piConfigBinds` helper
 both presets call, not a second, separately-maintained copy of the list.
 
-### 94. rstudio-preset-binds-xauthority-when-present
+### 95. rstudio-preset-binds-xauthority-when-present
 [TESTED_BY](/tests/scoder.test.ts#testRstudioPresetBindsXauthorityWhenPresent)
 
 When the host X session uses cookie-based auth, the `Xauthority` file is
 bound read-only and `XAUTHORITY` is set to the sandbox-side path — not the
 host's own path, which would not resolve inside the sandbox.
 
-### 95. rstudio-preset-skips-xauthority-when-absent
+### 96. rstudio-preset-skips-xauthority-when-absent
 [TESTED_BY](/tests/scoder.test.ts#testRstudioPresetSkipsXauthorityWhenAbsent)
 
 No `Xauthority` bind or `XAUTHORITY` env var appears when the file doesn't
 exist (e.g. a no-auth X server, or none of the host's config resolved).
 
-### 96. rstudio-x11-connectivity-end-to-end
+### 97. rstudio-x11-connectivity-end-to-end
 [TESTED_BY](/tests/scoder.test.ts#testRstudioX11ConnectivityEndToEnd)
 
 A real X11 client, launched as the `rstudio` tool through the real scoder
@@ -856,7 +872,7 @@ installed, or if a real `rstudio` is already installed on the
 test-running machine (so this test never shadows a genuine local
 installation, even temporarily).
 
-### 97. rstudio-preset-passes-through-xdg-runtime-and-dbus
+### 98. rstudio-preset-passes-through-xdg-runtime-and-dbus
 [TESTED_BY](/tests/scoder.test.ts#testRstudioPresetPassesThroughXdgRuntimeAndDbus)
 
 `XDG_RUNTIME_DIR` and `DBUS_SESSION_BUS_ADDRESS` are set inside the
@@ -864,26 +880,26 @@ sandbox when present on the host — the (unverified, well-motivated) fix
 for RStudio's reported greyed-out menus. See
 [0002-rstudio-x11-access](/architecture/decision-records/0002-rstudio-x11-access.md).
 
-### 98. rstudio-resolveargs-picks-rproj-file
+### 99. rstudio-resolveargs-picks-rproj-file
 [TESTED_BY](/tests/scoder.test.ts#testRstudioResolveargsPicksRprojFile)
 
 With a `.Rproj` file at the project root and no explicit argument,
 `rstudio` is launched with that file's sandbox-side path — fixes RStudio
 starting with `getwd()` at `$HOME` rather than the project.
 
-### 99. rstudio-resolveargs-falls-back-to-project-dir
+### 100. rstudio-resolveargs-falls-back-to-project-dir
 [TESTED_BY](/tests/scoder.test.ts#testRstudioResolveargsFallsBackToProjectDir)
 
 With no `.Rproj` file, `rstudio` is launched with the project directory
 itself.
 
-### 100. rstudio-resolveargs-does-not-override-explicit-args
+### 101. rstudio-resolveargs-does-not-override-explicit-args
 [TESTED_BY](/tests/scoder.test.ts#testRstudioResolveargsDoesNotOverrideExplicitArgs)
 
 An explicit argument (e.g. a specific file to open) is left untouched,
 even when a `.Rproj` file is present.
 
-### 101. ide-flag-merges-companion-binds
+### 102. ide-flag-merges-companion-binds
 [TESTED_BY](/tests/scoder.test.ts#testIdeFlagMergesCompanionBinds)
 
 `--ide` merges the companion's own binds (`rstudio`'s X11 access) into
@@ -893,7 +909,7 @@ includes them so `pi` also works from its embedded terminal) appears
 once, not twice. See
 [ide-companion](/design/features/ide-companion.md).
 
-### 102. ide-flag-works-before-or-after-tool-name
+### 103. ide-flag-works-before-or-after-tool-name
 [TESTED_BY](/tests/scoder.test.ts#testIdeFlagWorksBeforeOrAfterToolName)
 
 `--ide rstudio` is recognised whether it appears before or after the
@@ -901,19 +917,19 @@ primary tool's own name (`scoder --ide rstudio pi` and
 `scoder pi --ide rstudio` are equivalent) — every other scoder flag only
 parses before the tool name.
 
-### 103. ide-must-differ-from-primary-tool
+### 104. ide-must-differ-from-primary-tool
 [TESTED_BY](/tests/scoder.test.ts#testIdeMustDifferFromPrimaryTool)
 
 `--ide` naming the same tool as the primary fails with a clear error.
 
-### 104. ide-requires-registered-preset
+### 105. ide-requires-registered-preset
 [TESTED_BY](/tests/scoder.test.ts#testIdeRequiresRegisteredPreset)
 
 `--ide` naming a tool with no registered preset fails with a clear error,
 rather than silently launching it with no binds (and so, for a GUI IDE,
 failing silently in its own background job).
 
-### 105. ide-companion-background-then-primary-foreground-both-must-exit
+### 106. ide-companion-background-then-primary-foreground-both-must-exit
 [TESTED_BY](/tests/scoder.test.ts#testIdeCompanionBackgroundThenPrimaryForegroundBothMustExit)
 
 The one real end-to-end case: the primary tool exits immediately, but
@@ -926,7 +942,7 @@ companion's. Reuses the fake pasta shim established earlier in this
 suite. Self-skips if a real `pi` or `rstudio` is already installed on the
 test-running machine, so it never shadows either.
 
-### 106. rstudio-preset-sets-mcptools-socket-dir
+### 107. rstudio-preset-sets-mcptools-socket-dir
 [TESTED_BY](/tests/scoder.test.ts#testRstudioPresetSetsMcptoolsSocketDir)
 
 `MCPTOOLS_SOCKET_DIR` is set to a fixed, always-writable sandbox path
@@ -938,12 +954,12 @@ read-only inside the sandbox, so `mcptools`' own default location can
 never be created there regardless of what's already at that path on the
 host.
 
-### 107. worktrees-parent-dir-bound-regardless-of-mode
+### 108. worktrees-parent-dir-bound-regardless-of-mode
 [TESTED_BY](/tests/scoder.test.ts#testWorktreesParentDirBoundRegardlessOfMode)
 
 The directory that will hold a project's scoder worktree(s)
 (`getWorktreesParentDir` in `src/git/worktree.ts` — `$HOME/<dirname(projDir)>
-/worktrees/<projDir>`, without the trailing `/scoder`) is ensured to exist and
+/worktrees/<basename(projDir)>`, without the trailing `/scoder`) is ensured to exist and
 bound read-write on *every* session, not just `--worktree` ones —
 preparatory infrastructure for explicitly supporting multiple named
 worktrees from within a direct-mode session in future (see
@@ -957,7 +973,7 @@ itself stays side-effect free (matching `getAgentPortsBind`'s auto-detect
 step and `describeSshAccess`): it skips the real `mkdir`, so only the
 preview is checked there.
 
-### 108. dev-minimal-real-nodes
+### 109. dev-minimal-real-nodes
 [TESTED_BY](/tests/scoder.test.ts#testDevMinimalRealNodes)
 
 Regression test for `/dev` exposure: an earlier `--dev-bind /dev /dev`
@@ -975,7 +991,7 @@ individual `--dev-bind` of specific real host device nodes (`null`,
 construction, confirmed working directly for both a plain tool
 (`scoder pi`) and a GUI companion (`scoder --ide eclipse pi`).
 
-### 109. dev-pts-ptmx-shadowed-by-working-top-level-device
+### 110. dev-pts-ptmx-shadowed-by-working-top-level-device
 [TESTED_BY](/tests/scoder.test.ts#testDevPtsPtmxShadowedByWorkingTopLevelDevice)
 
 Regression test: reported directly, on a real host, the devpts-internal
@@ -990,7 +1006,7 @@ appears after the broader `/dev/pts` bind it shadows — ordering is
 load-bearing, since a shadow bind before the directory it shadows would
 itself be overridden by that directory instead.
 
-### 110. direct-mode-requires-git-repo
+### 111. direct-mode-requires-git-repo
 [TESTED_BY](/tests/scoder.test.ts#testDirectModeRequiresGitRepo)
 
 Direct mode used to silently tolerate a non-git directory — git commands
@@ -1002,12 +1018,32 @@ undo/audit trail for whatever the agent did there. It now refuses (exit 1,
 checked before any sandbox setup. Runs `scoder --no-worktree` against a
 plain `mkdir`'d directory (no `git init`) and asserts the refusal.
 
-### 111. worktree-mode-requires-git-repo
+### 112. worktree-mode-requires-git-repo
 [TESTED_BY](/tests/scoder.test.ts#testWorktreeModeRequiresGitRepo)
 
 Parity coverage for the same requirement in worktree mode — already
 enforced by `setupGitWorktree`'s own check, but until now untested
 directly. Same shape as case 96, with `-w` instead of `--no-worktree`.
+
+### 113. ide-companion-detached-from-controlling-terminal
+[TESTED_BY](/tests/scoder.test.ts#testIdeCompanionDetachedFromControllingTerminal)
+
+Regression test: reported directly, IDE error output still reached the
+console mid-session despite the existing `>"$IDE_LOG" 2>&1` redirect — a
+JVM's native crash handler or a GTK/X11 error dialog can write straight
+to `/dev/tty` (the controlling terminal) rather than its own inherited
+stdout/stderr, which redirecting fds 1 and 2 alone does not catch.
+`wrapWithIdeBackground` (`src/sandbox/builder.ts`) now backgrounds the
+IDE under `setsid`, with stdin from `/dev/null` — `setsid` makes it its
+own session leader with no controlling terminal at all, so a direct
+`/dev/tty` open from inside it fails instead of reaching the visible
+console.
+
+*(Note: the `--ide` companion feature's other tests — the screen-clear,
+ENTER-to-close, and shutdown-order behavior already implemented and
+tested — predate this entry and are not yet individually catalogued
+here; `em doc`'s test-count check currently reflects that pre-existing
+gap, unrelated to this specific fix.)*
 
 ## Current Network Coverage
 

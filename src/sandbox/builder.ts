@@ -247,7 +247,7 @@ export async function buildBwrapCommand(
 	// EM: named worktrees from within a direct-mode session in future. Pushed
 	// EM: before the project-dir bind below: in worktree mode that bind's
 	// EM: destination nests inside this one
-	// EM: (.../worktrees/<projDir>/scoder), and bind mounts applied later at
+	// EM: (.../worktrees/<basename(projDir)>/scoder), and bind mounts applied later at
 	// EM: an ancestor path hide whatever was already mounted at a path nested
 	// EM: beneath it — confirmed directly while building the eclipse preset
 	// EM: (see design/implementation/plans/eclipse-preset.md) — so the
@@ -323,6 +323,27 @@ export async function buildBwrapCommand(
 		"--setenv",
 		"LANG",
 		process.env.LANG || "C.UTF-8",
+		// EM: worktrunk's own worktree-path, pinned to this sandbox's
+		// EM: worktrees parent so `wt switch --create` inside the sandbox
+		// EM: lands in the one directory scoder binds read-write, next to
+		// EM: scoder's own worktree. Without it worktrunk uses its default —
+		// EM: a sibling of the repository — which is outside every bind, so
+		// EM: the new worktree is unwritable or invisible. Confirmed
+		// EM: directly, in a throwaway repo: the default put a branch at
+		// EM: <repo>.feat-one, and this variable moved it to
+		// EM: <parent>/feat-one.
+		// EM:
+		// EM: Set unconditionally: only worktrunk reads it, and it costs
+		// EM: nothing on a host without worktrunk. It also overrides the
+		// EM: user's own ~/.config/worktrunk/config.toml template (which is
+		// EM: bound read-only, see buildExtraBinds) for the sandbox only,
+		// EM: which is deliberate — scoder computes the parent itself, so
+		// EM: this is exact even for a repository outside $HOME, where a
+		// EM: relative host-side template ({{ repo_path }}/../worktrees/...)
+		// EM: would resolve somewhere scoder binds nothing.
+		"--setenv",
+		"WORKTRUNK_WORKTREE_PATH",
+		`${worktreesParentDir}/{{ branch | sanitize }}`,
 	);
 
 	// EM: Preset-specific env vars that can't come from the blind host
@@ -536,6 +557,17 @@ function collectDeviceBinds(cmd: string[]): [string, string][] {
 // The IDE's own stdout/stderr are redirected to a log file rather than left
 // attached to the terminal — an Electron/GUI app's own console chatter
 // would otherwise interleave with the primary tool's interactive session.
+// Fully detached with `setsid`, not just a plain background job: a JVM's
+// native crash handler or a GTK/X11 error dialog can write straight to
+// `/dev/tty` (the controlling terminal) rather than its own inherited
+// stdout/stderr, which `>"$IDE_LOG" 2>&1` alone does not catch — `setsid`
+// makes the IDE its own session leader with no controlling terminal at
+// all, so a direct `/dev/tty` open from inside it fails instead of
+// reaching the visible console. Stdin is also redirected from `/dev/null`,
+// not left shared with the primary tool's own — confirmed directly that
+// `setsid` under bwrap's own `--new-session` still leaves `$!` as the
+// IDE's real pid (no extra fork layer to account for), so this needs no
+// change to the kill/wait logic below.
 //
 // Args are passed as positional parameters ("$@"), never interpolated into
 // the script string, matching wrapWithFdShim's own convention: a tool
@@ -602,7 +634,7 @@ export function wrapWithIdeBackground(
 		"IDE_ARGV=(); " +
 		'for ((i=0; i<IDE_ARGC; i++)); do IDE_ARGV+=("$1"); shift; done; ' +
 		'IDE_NAME="${IDE_ARGV[0]##*/}"; ' +
-		'"${IDE_ARGV[@]}" >"$IDE_LOG" 2>&1 & ' +
+		'setsid "${IDE_ARGV[@]}" </dev/null >"$IDE_LOG" 2>&1 & ' +
 		"IDE_PID=$!; " +
 		'"$@"; STATUS=$?; ' +
 		'if kill -0 "$IDE_PID" 2>/dev/null; then ' +
@@ -869,6 +901,35 @@ async function buildExtraBinds(
 			type: "ro-bind",
 			source: mimeappsPath,
 			dest: `${sandboxHome}/.config/mimeapps.list`,
+		});
+	}
+
+	// EM: worktrunk (`wt`) keeps its user config here — most importantly
+	// EM: worktree-path, which decides where `wt switch --create` puts a new
+	// EM: worktree. Without it the sandbox would use worktrunk's own default
+	// EM: (a sibling of the repo), which lands outside every bind scoder set
+	// EM: up and so appears read-only or missing inside the sandbox.
+	// EM:
+	// EM: This is the only host-level path worktrunk needs: everything else
+	// EM: it writes — caches, logs, branch markers, trash — lives in the
+	// EM: repository's own .git/wt/, already bound read-write (confirmed
+	// EM: directly by tracing `wt config state get`). Gated on the config
+	// EM: file existing rather than on the `wt` binary: a host with the
+	// EM: binary and no config has nothing to bind, and a config with no
+	// EM: binary costs nothing.
+	// EM:
+	// EM: Read-only, like every other entry here. One consequence worth
+	// EM: knowing: worktrunk writes approvals for project hooks and aliases
+	// EM: to ~/.config/worktrunk/approvals.toml, which is deliberately NOT
+	// EM: bound — bwrap creates the parent directory on the sandbox's own
+	// EM: tmpfs $HOME, so an approval granted inside a sandbox stays inside
+	// EM: that session rather than becoming a standing host-side approval.
+	const worktrunkConfigPath = `${realHome}/.config/worktrunk/config.toml`;
+	if (await fileExists(worktrunkConfigPath)) {
+		binds.push({
+			type: "ro-bind",
+			source: worktrunkConfigPath,
+			dest: `${sandboxHome}/.config/worktrunk/config.toml`,
 		});
 	}
 

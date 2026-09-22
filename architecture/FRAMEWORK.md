@@ -67,7 +67,7 @@ tests/
 5. **Special modes** — `--configure-apparmor`, `--install-dependencies` exit early
 6. **Tool selection** — resolve preset, validate tool exists, get config binds, translate the host tool path into the sandbox namespace; if `--ide NAME` was given, the same for NAME's own preset, with binds/dirs/env merged (deduplicated) into the one sandbox
 7. **If worktree mode:**
-   - Create/reuse/prune git worktree at `$HOME/<dirname(projDir)>/worktrees/<projDir>/scoder`
+   - Create/reuse/prune git worktree at `$HOME/<dirname(projDir)>/worktrees/<basename(projDir)>/scoder`
    - Check for stale worktree directories (reboot recovery)
 8. **Infrastructure protection:**
    - Parse `.agentreadonly` for protected paths and `$HOME/` binds

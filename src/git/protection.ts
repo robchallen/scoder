@@ -66,6 +66,7 @@ function fixedBindDestinations(realHome: string): string[] {
 		`${realHome}/.config/gh`,
 		`${realHome}/.config/mimeapps.list`,
 		`${realHome}/.config/mise`,
+		`${realHome}/.config/worktrunk/config.toml`,
 		`${realHome}/.copilot`,
 		`${realHome}/.gitconfig`,
 		`${realHome}/.local/bin`,
@@ -238,7 +239,7 @@ async function registerAgentreadonlyHomeBind(
 
 	if (!sourceReal || !(await fileOrDirExists(sourceReal))) {
 		error(
-			`.agentreadonly HOME bind must reference an existing directory: ${homePathExpr}`,
+			`.agentreadonly HOME bind must reference an existing file or directory: ${homePathExpr}`,
 		);
 		process.exit(1);
 	}
@@ -259,11 +260,22 @@ async function registerAgentreadonlyHomeBind(
 		}
 	}
 
+	// EM: Ancestors only, not sandboxDest itself: unlike .agentreadwrite's
+	// EM: own equivalent loop, where every entry is always a directory (an
+	// EM: existing --dir scaffold at the leaf is harmless, since it's just
+	// EM: getting bind-mounted over by another directory), .agentreadonly
+	// EM: HOME binds can reference a FILE too (fileOrDirExists, not
+	// EM: dirExists, is the existence check below). Reported directly:
+	// EM: `$HOME/.private/apis/secrets.prop` (a file) failed with
+	// EM: `bwrap: Can't create file at .../secrets.prop: Is a directory` —
+	// EM: the old version of this loop pushed a --dir for the leaf
+	// EM: unconditionally, so bwrap scaffolded an empty directory exactly
+	// EM: where the --ro-bind below then needed a file mountpoint instead.
 	if (sandboxDest !== realHome) {
 		const rel = sandboxDest.slice(`${realHome}/`.length);
 		const parts = rel.split("/");
 		let currentPath = realHome;
-		for (const part of parts) {
+		for (const part of parts.slice(0, -1)) {
 			currentPath = `${currentPath}/${part}`;
 			if (!dirs.includes(currentPath)) {
 				dirs.push(currentPath);

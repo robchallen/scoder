@@ -33,7 +33,7 @@ gitdir: /path/to/main/.git/worktrees/<name>
 
 And the main repo's `.git/worktrees/<name>/gitdir` points back:
 ```
-$HOME/<dirname(projDir)>/worktrees/<projDir>/scoder
+$HOME/<dirname(projDir)>/worktrees/<basename(projDir)>/scoder
 ```
 
 If the sandbox remapped paths onto a separate namespace, these

@@ -1,6 +1,7 @@
-import { dirname, join } from "node:path";
+import { mkdir } from "node:fs/promises";
+import { basename, dirname, join } from "node:path";
 import type { GitWorktreeInfo } from "../types.ts";
-import { error, info } from "../utils/logger.ts";
+import { error, info, warning } from "../utils/logger.ts";
 import { getRealHome } from "../utils/paths.ts";
 
 // EM: Git worktree lifecycle management for scoder sandbox isolation
@@ -9,13 +10,26 @@ import { getRealHome } from "../utils/paths.ts";
 // ### getWorktreesParentDir
 // [IMPLEMENTS](/design/features/git-worktree-isolation.md)
 // The directory that holds a project's scoder worktree(s):
-// $HOME/<dirname(projDir)>/worktrees/<projDir>. Deliberately not nested
-// directly under the project's own location — since the sandbox's $HOME is
-// now the real host $HOME (see path-mirroring), a worktree mapped onto
-// $HOME/<projDir> would collide with the project's own real checkout at
-// that same path. The /worktrees/<projDir> detour keeps it a sibling
-// instead, and puts "worktree" in the path itself so it's obvious to the
-// user what they're looking at.
+// $HOME/<dirname(projDir)>/worktrees/<basename(projDir)>. Deliberately not
+// nested directly under the project's own location — since the sandbox's
+// $HOME is now the real host $HOME (see path-mirroring), a worktree mapped
+// onto $HOME/<projDir> would collide with the project's own real checkout
+// at that same path. The /worktrees/ detour keeps it a sibling instead, and
+// puts "worktree" in the path itself so it's obvious to the user what
+// they're looking at. Two projects cannot collide here either: same
+// basename means the same directory name, which within one parent
+// directory can only be the same project.
+//
+// The basename (rather than the whole relative projDir repeated, which is
+// what this built until 2.3.3) is what makes the layout expressible as a
+// worktrunk worktree-path template, so `wt` and scoder put their worktrees
+// side by side in one directory per project:
+//
+//   worktree-path = "{{ repo_path }}/../worktrees/{{ repo }}/{{ branch | sanitize }}"
+//
+// scoder's own worktree is the "scoder" leaf under the same parent, i.e.
+// exactly where that template would put a branch named "scoder". See
+// design/features/git-worktree-isolation.md.
 //
 // Ensured to exist and bound writable on every session, worktree or direct
 // mode alike — see buildBwrapCommand in src/sandbox/builder.ts — as
@@ -25,7 +39,7 @@ export function getWorktreesParentDir(
 	realHome: string,
 	projDir: string,
 ): string {
-	return join(realHome, dirname(projDir), "worktrees", projDir);
+	return join(realHome, dirname(projDir), "worktrees", basename(projDir));
 }
 
 export async function isInGitRepo(): Promise<boolean> {
@@ -353,6 +367,12 @@ export async function setupGitWorktree(
 			const pruneProc = await Bun.spawn(["git", "worktree", "prune"]);
 			await pruneProc.exited;
 			existingWorktree = null;
+		} else {
+			existingWorktree = await relocateWorktree(
+				existingWorktree,
+				worktreeDir,
+				repoRoot,
+			);
 		}
 	}
 
@@ -398,6 +418,78 @@ export async function setupGitWorktree(
 		sourceHead,
 		sourceRefLabel: formatRefLabel(sourceBranch, sourceHead),
 	};
+}
+
+// ### relocateWorktree
+// [IMPLEMENTS](/design/features/git-worktree-isolation.md)
+// Move an existing scoder worktree to where getWorktreesParentDir now says
+// it belongs, and return wherever it actually ended up.
+//
+// Only ever does anything after the layout itself changes — 2.3.3 moved from
+// $HOME/<dirname(projDir)>/worktrees/<projDir>/scoder to
+// .../worktrees/<basename(projDir)>/scoder, and a session that predates that
+// has its worktree registered at the old path. Leaving it there is not
+// broken (buildBwrapCommand binds worktreeInfo.worktreeDir explicitly,
+// wherever it is), just untidy and no longer alongside worktrunk's, so this
+// is a tidy-up and never a precondition: any failure is a warning and the
+// session continues at the old path.
+//
+// `git worktree move` is the whole implementation — it relocates the
+// directory and rewrites both sides of git's own bookkeeping, which a plain
+// mv would leave dangling. It declines on its own for the cases that should
+// not be forced (a locked worktree, submodules), which is exactly when the
+// warning path is the right outcome.
+export async function relocateWorktree(
+	existingWorktree: string,
+	expectedWorktreeDir: string,
+	repoDir: string,
+): Promise<string> {
+	let existingReal: string;
+	try {
+		existingReal = await realpath(existingWorktree);
+	} catch {
+		return existingWorktree;
+	}
+
+	// The expected path usually does not exist yet, so compare against the
+	// realpath of its parent instead of the leaf itself.
+	const expectedParent = dirname(expectedWorktreeDir);
+	let expectedReal = expectedWorktreeDir;
+	try {
+		expectedReal = join(
+			await realpath(expectedParent),
+			basename(expectedWorktreeDir),
+		);
+	} catch {
+		// Parent does not exist yet; the unresolved path is fine to compare.
+	}
+
+	if (existingReal === expectedReal) {
+		return existingWorktree;
+	}
+
+	info(`Moving worktree to its current layout: ${expectedWorktreeDir}`);
+	await mkdir(expectedParent, { recursive: true });
+
+	// EM: cwd is explicit rather than inherited: git has to act on the
+	// EM: repository that owns this worktree, and a caller's own cwd being
+	// EM: that repository is an assumption this does not need to make.
+	const moveProc = Bun.spawn(
+		["git", "worktree", "move", existingWorktree, expectedWorktreeDir],
+		{ cwd: repoDir, stdout: "pipe", stderr: "pipe" },
+	);
+	await moveProc.exited;
+
+	if (moveProc.exitCode !== 0) {
+		const stderr = (await new Response(moveProc.stderr).text()).trim();
+		warning(
+			`Could not move the worktree: ${stderr || "git worktree move failed"}`,
+		);
+		warning(`Continuing with the existing one at ${existingWorktree}`);
+		return existingWorktree;
+	}
+
+	return expectedWorktreeDir;
 }
 
 async function findWorktreeForBranch(

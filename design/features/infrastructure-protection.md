@@ -25,7 +25,15 @@ rules, or alter lockfiles. Read-only overlays prevent this.
 - Default protected paths are always applied
 - `.agentreadonly` (gitignore-style, one path per line, `#` comments) overrides defaults
 - An empty `.agentreadonly` removes all default protections
-- `$HOME/...` entries bind host home directories read-only into the sandbox's own `$HOME` (the real host `$HOME` — see `path-mirroring`), at the same path they already live at
+- `$HOME/...` entries bind a host file *or* directory read-only into the
+  sandbox's own `$HOME` (the real host `$HOME` — see `path-mirroring`), at
+  the same path it already lives at. Only real ancestor directories get a
+  scaffolding `--dir` entry, never the entry's own leaf path — reported
+  directly, a file target (`$HOME/.private/apis/secrets.prop`) failed with
+  `bwrap: Can't create file at <path>: Is a directory` when the leaf was
+  included too, since bwrap processes `--dir` before `--ro-bind` and had
+  already scaffolded an empty directory exactly where the file needed a
+  file mountpoint instead.
 - A `$HOME/...` entry must not overlap `fixedBindDestinations`
   (`src/git/protection.ts`, shared with `.agentreadwrite`'s own overlap
   check) — the exact, specific real host paths scoder itself

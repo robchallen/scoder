@@ -13,6 +13,10 @@ import {
 	setupResolvConf,
 } from "../src/git/protection.ts";
 import {
+	getWorktreesParentDir,
+	relocateWorktree,
+} from "../src/git/worktree.ts";
+import {
 	buildDevLayer,
 	collectBindDests,
 	DEFAULT_IDE_SHUTDOWN,
@@ -217,15 +221,16 @@ async function cleanupRepo(repoDir: string): Promise<void> {
 // is not under $HOME, so projDir for /tmp/scoder-test-repos/repo-X is
 // "tmp/scoder-test-repos/repo-X" (its leading slash stripped, per
 // getProjDir), and getWorktreesParentDir(realHome, projDir) is
-// $HOME/<dirname(projDir)>/worktrees/<projDir> — dirname(projDir) is the
-// same "tmp/scoder-test-repos" for every test repo, so this prefix (down to
-// but not including the varying "/repo-X/scoder" leaf) covers all of them.
+// $HOME/<dirname(projDir)>/worktrees/<basename(projDir)> — dirname(projDir)
+// is the same "tmp/scoder-test-repos" for every test repo, so this prefix
+// (down to but not including the varying "/repo-X/scoder" leaf) covers all
+// of them.
 // Unlike the old /tmp/scoder/... location, no real project's worktrees can
 // plausibly land under this prefix — it would require a real checkout
 // literally at ~/tmp/scoder-test-repos/... — so the old "never remove
 // wholesale" collision risk no longer applies, but the scoping is kept
 // anyway since there's no reason to widen it.
-const TEST_WORKTREE_BASE = `${SANDBOX_HOME}/tmp/scoder-test-repos/worktrees/tmp/scoder-test-repos`;
+const TEST_WORKTREE_BASE = `${SANDBOX_HOME}/tmp/scoder-test-repos/worktrees`;
 
 // Artifacts the ~/.local/bin tests create in the *real* home directory. Left
 // behind, they show up in every subsequent real scoder session.
@@ -759,9 +764,9 @@ test("worktrees-parent-dir-bound-regardless-of-mode: a direct-mode session still
 	// repoDir sits under TEST_BASE ("/tmp/scoder-test-repos"), not $HOME, so
 	// its projDir (getProjDir) is "tmp/scoder-test-repos/<repo-name>" and its
 	// worktrees-parent dir is
-	// $HOME/tmp/scoder-test-repos/worktrees/tmp/scoder-test-repos/<repo-name>
-	// — i.e. TEST_WORKTREE_BASE (the shared prefix every test repo's worktree
-	// lands under) plus this repo's own name.
+	// $HOME/tmp/scoder-test-repos/worktrees/<repo-name> — i.e.
+	// TEST_WORKTREE_BASE (the shared prefix every test repo's worktree lands
+	// under) plus this repo's own name.
 	const repoName = repoDir.split("/").pop();
 	const expectedParent = `${TEST_WORKTREE_BASE}/${repoName}`;
 
@@ -1016,6 +1021,61 @@ test("agentreadonly-home-directory-readonly: .agentreadonly HOME bind is read-on
 	}
 });
 
+// ### Test: agentreadonly-home-file-bind-does-not-create-conflicting-dir
+// Regression test: reported directly, an .agentreadonly $HOME/... entry
+// pointing at a FILE (not a directory) failed with
+// `bwrap: Can't create file at <path>: Is a directory`.
+// fileOrDirExists (not dirExists) is the existence check
+// registerAgentreadonlyHomeBind already used, so files were always meant
+// to be supported — the bug was in the ancestor-`--dir` scaffold loop,
+// which pushed a --dir entry for the leaf path too, not just its real
+// ancestors. bwrap processes --dir before --ro-bind, so it scaffolded an
+// empty directory exactly where the file needed a file mountpoint
+// instead. Fixed by excluding the leaf from that loop — only true
+// ancestors get a --dir entry now, matching how a --ro-bind of a
+// directory never needed one for itself either (bwrap creates whatever
+// mountpoint type matches the source automatically).
+test("agentreadonly-home-file-bind-does-not-create-conflicting-dir: a file target binds without a bwrap directory-vs-file conflict", async () => {
+	const testHomeDir = `${process.env.HOME}/.scoder-test-home-file-bind`;
+	const testFile = `${testHomeDir}/nested/secret.txt`;
+	await Bun.spawn(["mkdir", "-p", `${testHomeDir}/nested`]).exited;
+	await Bun.write(testFile, "secret content\n");
+
+	const repoDir = await createTempRepo();
+	tempRepos.push(repoDir);
+
+	try {
+		await Bun.write(
+			`${repoDir}/.agentreadonly`,
+			`$HOME/${testFile.slice(`${process.env.HOME}/`.length)}\n`,
+		);
+
+		// Structural check: the leaf itself must not get a --dir entry, only
+		// its real ancestors — provable via --dry-run regardless of whether
+		// this environment can complete a real launch.
+		const output = await runScoder(repoDir, ["--dry-run", "/bin/bash"]);
+		expect(output).toContain(`--dir ${testHomeDir}`);
+		expect(output).toContain(`--dir ${testHomeDir}/nested`);
+		expect(output).not.toContain(`--dir ${testFile}`);
+		expect(output).toContain(`--ro-bind ${testFile} ${testFile}`);
+
+		// Real launch: the actual bwrap error this bug produced happens
+		// during mount setup, before pasta ever runs, so it's a valid check
+		// independent of this environment's own missing /dev/net/tun.
+		const proc = Bun.spawn([SCODER_PATH, "-q", "/bin/bash", "-c", "true"], {
+			cwd: repoDir,
+			stdout: "pipe",
+			stderr: "pipe",
+		});
+		await proc.exited;
+		const stderr = await new Response(proc.stderr).text();
+		expect(stderr).not.toContain("Can't create file");
+	} finally {
+		await cleanupRepo(repoDir);
+		await Bun.spawn(["rm", "-rf", testHomeDir]).exited;
+	}
+});
+
 // ### Test: agentreadonly-home-directory-must-exist
 test("agentreadonly-home-directory-must-exist: Non-existent HOME bind path fails with error", async () => {
 	const repoDir = await createTempRepo();
@@ -1036,7 +1096,7 @@ test("agentreadonly-home-directory-must-exist: Non-existent HOME bind path fails
 		expect(proc.exitCode).not.toBe(0);
 
 		const stderr = await new Response(proc.stderr).text();
-		expect(stderr).toMatch(/must reference an existing directory/);
+		expect(stderr).toMatch(/must reference an existing file or directory/);
 	} finally {
 		await cleanupRepo(repoDir);
 	}
@@ -1108,6 +1168,161 @@ test("agentreadonly-home-fonts-directory-now-redundant: $HOME/.local/share/fonts
 	} finally {
 		if (!fontsDirPreexisted) {
 			await Bun.spawn(["rm", "-rf", fontsDir]).exited;
+		}
+		await cleanupRepo(repoDir);
+	}
+});
+
+// ### Test: worktrunk-worktree-path-pinned-to-sandbox-parent
+// WORKTRUNK_WORKTREE_PATH overrides worktrunk's own worktree-path for this
+// sandbox only, pinning it to the same parent scoder binds read-write, so a
+// `wt switch --create` inside the sandbox lands next to scoder's own
+// worktree instead of at worktrunk's default (a sibling of the repository,
+// which is outside every bind — confirmed directly in a throwaway repo).
+// Absolute rather than a relative template, because scoder computes the
+// parent itself: that stays correct for a repository outside $HOME, whose
+// worktrees scoder deliberately relocates under $HOME.
+test("worktrunk-worktree-path-pinned-to-sandbox-parent: WORKTRUNK_WORKTREE_PATH points at the bound worktrees parent", async () => {
+	const repoDir = await createTempRepo();
+	tempRepos.push(repoDir);
+	const repoName = repoDir.split("/").pop();
+
+	try {
+		const output = await runScoder(repoDir, [
+			"--dry-run",
+			"--no-worktree",
+			"/bin/bash",
+		]);
+
+		expect(output).toContain(
+			`--setenv WORKTRUNK_WORKTREE_PATH ${TEST_WORKTREE_BASE}/${repoName}/{{ branch | sanitize }}`,
+		);
+		// The same directory the sandbox binds writable, not some other one.
+		expect(output).toContain(
+			`--bind ${TEST_WORKTREE_BASE}/${repoName} ${TEST_WORKTREE_BASE}/${repoName}`,
+		);
+	} finally {
+		await cleanupRepo(repoDir);
+	}
+});
+
+// ### Test: worktrunk-user-config-bound-readonly
+// worktrunk (`wt`) decides where a new worktree goes from worktree-path in
+// its user config. Without that config inside the sandbox, `wt switch
+// --create` falls back to worktrunk's own default — a sibling of the repo —
+// which is outside every bind scoder sets up, so the new worktree is not
+// writable (or even visible) from inside. Everything else worktrunk writes
+// lives in the repo's own .git/wt/, already bound read-write, so this one
+// file is the whole integration. Read-only: where worktrees go on the host
+// is not something a sandboxed session should be able to rewrite. Created
+// here if the host has none, same as the fonts test above.
+// ### Test: worktree-relocated-to-current-layout
+// relocateWorktree moves a worktree registered at a path the layout no
+// longer produces — which is what every pre-2.3.3 session's worktree is,
+// after the parent changed from repeating the whole relative projDir to
+// just its basename. Uses plain git rather than a scoder launch: worktree
+// mode cannot run inside a sandbox (the nesting guard refuses), and this is
+// the one piece of the change that moves a user's directory, so it is
+// checked rather than assumed. `git worktree move`, not `mv`: git rewrites
+// both sides of its own bookkeeping, which a plain move would leave
+// dangling — asserted here via `git worktree list`.
+test("worktree-relocated-to-current-layout: an existing worktree is moved to the path the layout now gives", async () => {
+	const repoDir = await createTempRepo();
+	tempRepos.push(repoDir);
+	const oldPath = `${repoDir}-old-layout/scoder`;
+	const newPath = `${repoDir}-new-layout/scoder`;
+
+	try {
+		await Bun.spawn(["git", "worktree", "add", "-b", "scoder/x", oldPath], {
+			cwd: repoDir,
+			stdout: "ignore",
+			stderr: "ignore",
+		}).exited;
+
+		const landed = await relocateWorktree(oldPath, newPath, repoDir);
+
+		expect(landed).toBe(newPath);
+		expect(await dirExists(newPath)).toBe(true);
+		expect(await dirExists(oldPath)).toBe(false);
+
+		// git's own bookkeeping followed the move, so the worktree is still
+		// usable rather than merely present at the new path.
+		const list = Bun.spawn(["git", "worktree", "list"], {
+			cwd: repoDir,
+			stdout: "pipe",
+			stderr: "ignore",
+		});
+		await list.exited;
+		const listing = await new Response(list.stdout).text();
+		expect(listing).toContain(newPath);
+		expect(listing).not.toContain(oldPath);
+
+		// Already where it belongs: a second call is a no-op, not a move.
+		expect(await relocateWorktree(newPath, newPath, repoDir)).toBe(newPath);
+	} finally {
+		await Bun.spawn(["rm", "-rf", `${repoDir}-old-layout`]).exited;
+		await Bun.spawn(["rm", "-rf", `${repoDir}-new-layout`]).exited;
+		await cleanupRepo(repoDir);
+	}
+});
+
+// ### Test: worktrees-parent-dir-layout
+// The layout is a contract with worktrunk, not just an internal detail: it
+// is chosen so one `wt` worktree-path template,
+// "{{ repo_path }}/../worktrees/{{ repo }}/{{ branch | sanitize }}", puts
+// worktrunk's worktrees in the same directory scoder binds read-write, with
+// no hardcoded path segments and at any repository depth. Verified against
+// `wt step eval` when it was chosen; pinned here because the live worktree
+// tests cannot run inside a sandbox (the nesting guard refuses), so this is
+// the only check of the rule that runs everywhere.
+test("worktrees-parent-dir-layout: the parent is <dirname>/worktrees/<basename>, matching worktrunk's template", () => {
+	const home = "/home/u";
+
+	expect(getWorktreesParentDir(home, "Git/scoder")).toBe(
+		"/home/u/Git/worktrees/scoder",
+	);
+	// Any depth, not just repositories one level down.
+	expect(getWorktreesParentDir(home, "Git/sub/proj")).toBe(
+		"/home/u/Git/sub/worktrees/proj",
+	);
+	// A repository outside $HOME keeps its path under $HOME (leading slash
+	// stripped by getProjDir) so the sandbox can still bind it.
+	expect(getWorktreesParentDir(home, "srv/code/proj")).toBe(
+		"/home/u/srv/code/worktrees/proj",
+	);
+	// Never the project's own real location, which the sandbox maps at its
+	// real path — that collision is the whole reason for the detour.
+	expect(getWorktreesParentDir(home, "Git/scoder")).not.toBe(
+		"/home/u/Git/scoder",
+	);
+});
+
+test("worktrunk-user-config-bound-readonly: ~/.config/worktrunk/config.toml is bound read-only when it exists", async () => {
+	const repoDir = await createTempRepo();
+	tempRepos.push(repoDir);
+	const wtConfigDir = `${process.env.HOME}/.config/worktrunk`;
+	const wtConfigPath = `${wtConfigDir}/config.toml`;
+	const preexisted = await fileExists(wtConfigPath);
+
+	try {
+		if (!preexisted) {
+			await Bun.spawn(["mkdir", "-p", wtConfigDir]).exited;
+			await Bun.write(wtConfigPath, "# test\n");
+		}
+
+		const output = await runScoder(repoDir, [
+			"--dry-run",
+			"--no-worktree",
+			"/bin/bash",
+		]);
+
+		expect(output).toContain(`--ro-bind ${wtConfigPath} ${wtConfigPath}`);
+		// Never writable: a sandboxed session must not be able to change
+		// where the host puts its worktrees.
+		expect(output).not.toContain(`--bind ${wtConfigPath}`);
+	} finally {
+		if (!preexisted) {
+			await Bun.spawn(["rm", "-rf", wtConfigDir]).exited;
 		}
 		await cleanupRepo(repoDir);
 	}
@@ -2680,6 +2895,34 @@ test.skipIf(!ideE2eToolsAvailable)(
 	},
 );
 
+// ### spawnWithDelayedEnter
+// Spawns cmd with "\n" written to stdin after a short delay, rather than
+// pre-supplied as a Blob. wrapWithIdeBackground's own IDE spawn line now
+// runs the IDE under `setsid` (see its own comment in
+// src/sandbox/builder.ts), which adds real fork/exec latency before the
+// IDE's own script starts running at all — a pre-buffered stdin Blob can
+// be consumed by the wrapper's `read -r -t 1` loop before that finishes,
+// racing the IDE's own startup. Confirmed directly: this raced a real test
+// flaky (`ide-shutdown-process-first-leaves-children-alone`), and a delay
+// here matches how a real user behaves anyway — nobody presses ENTER
+// within milliseconds of the IDE launching.
+function spawnWithDelayedEnter(
+	cmd: string[],
+	delayMs = 300,
+): ReturnType<typeof Bun.spawn> {
+	const proc = Bun.spawn(cmd, {
+		stdin: "pipe",
+		stdout: "pipe",
+		stderr: "pipe",
+	});
+	(async () => {
+		await Bun.sleep(delayMs);
+		proc.stdin.write("\n");
+		await proc.stdin.end();
+	})();
+	return proc;
+}
+
 // ### Test: ide-companion-enter-requests-ide-shutdown
 // EM: Reported directly: when the primary tool exits first, the terminal is
 // EM: left showing whatever the agent's full-screen TUI last rendered, and
@@ -2703,11 +2946,7 @@ test("ide-companion-enter-requests-ide-shutdown: ENTER closes the IDE and its ch
 		);
 
 		const start = Date.now();
-		const proc = Bun.spawn(cmd, {
-			stdin: new Blob(["\n"]),
-			stdout: "pipe",
-			stderr: "pipe",
-		});
+		const proc = spawnWithDelayedEnter(cmd);
 		await proc.exited;
 		const elapsedMs = Date.now() - start;
 		const stderr = await new Response(proc.stderr).text();
@@ -2778,6 +3017,34 @@ test("ide-companion-clears-screen-not-scrollback: the wrapper clears the screen,
 	expect(script).toContain("Press ENTER");
 });
 
+// ### Test: ide-companion-detached-from-controlling-terminal
+// Reported directly: error output from the IDE appeared on the console
+// mid-session despite the existing >"$IDE_LOG" 2>&1 redirect — a JVM's
+// native crash handler or a GTK/X11 error dialog can write straight to
+// /dev/tty (the controlling terminal) rather than its own inherited
+// stdout/stderr, which redirecting fds 1 and 2 alone does not catch.
+// setsid makes the IDE its own session leader with no controlling
+// terminal at all, so a direct /dev/tty open from inside it fails
+// instead of reaching the visible console — and stdin is also
+// redirected from /dev/null, not left shared with the primary tool's
+// own inherited stdin.
+test("ide-companion-detached-from-controlling-terminal: the IDE is spawned under setsid with stdin from /dev/null", () => {
+	const script = wrapWithIdeBackground(
+		"/bin/bash",
+		[],
+		"/usr/bin/eclipse",
+		[],
+	)[2];
+
+	// biome-ignore-start lint/suspicious/noTemplateCurlyInString: this is a
+	// literal bash "${...}" reference from the generated shell script, not
+	// a forgotten JS template placeholder — a plain string, never interpolated.
+	expect(script).toContain(
+		'setsid "${IDE_ARGV[@]}" </dev/null >"$IDE_LOG" 2>&1 &',
+	);
+	// biome-ignore-end lint/suspicious/noTemplateCurlyInString: see above
+});
+
 // ### Test: ide-shutdown-process-first-leaves-children-alone
 // EM: Measured directly against the real IDEs, and the two want opposite
 // EM: things. Eclipse's /opt/eclipse/eclipse is a thin launcher around the JVM
@@ -2785,6 +3052,12 @@ test("ide-companion-clears-screen-not-scrollback: the wrapper clears the screen,
 // EM: JVM is orphaned and the window stays up. RStudio's own rsession is a
 // EM: direct child, so signalling children first killed the user's R session
 // EM: and left the IDE standing. Hence process-first must not touch children.
+// EM: Uses spawnWithDelayedEnter, not a pre-buffered stdin Blob — see its
+// EM: own comment: confirmed directly that a Blob races
+// EM: wrapWithIdeBackground's setsid fork/exec latency and flakes this
+// EM: specific test (signal arrives before the fake IDE script has even
+// EM: started, so the pid file it writes as its first statement never
+// EM: gets there).
 test("ide-shutdown-process-first-leaves-children-alone: a process-first preset signals only the IDE itself", async () => {
 	const pidFile = `/tmp/scoder-ide-child-${Date.now()}-pf.pid`;
 	let childPid = "";
@@ -2794,15 +3067,11 @@ test("ide-shutdown-process-first-leaves-children-alone: a process-first preset s
 			"/bin/bash",
 			["-c", "exit 4"],
 			"/bin/bash",
-			["-c", `trap 'exit 0' HUP; sleep 120 & echo $! > ${pidFile}; wait`],
+			["-c", `sleep 120 & echo $! > ${pidFile}; trap 'exit 0' HUP; wait`],
 			{ signal: "HUP", order: "process-first" },
 		);
 
-		const proc = Bun.spawn(cmd, {
-			stdin: new Blob(["\n"]),
-			stdout: "pipe",
-			stderr: "pipe",
-		});
+		const proc = spawnWithDelayedEnter(cmd);
 		await proc.exited;
 		const stderr = await new Response(proc.stderr).text();
 

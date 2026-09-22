@@ -78,7 +78,7 @@ rather than spending effort installing it inside the sandbox.
   "undo" via worktree removal.
 - **Worktree mode (`--worktree`)**: your working directory is a git
   worktree, not the user's real checkout — it lives under
-  `$HOME/<parent-of-repo>/worktrees/<repo-path>/scoder`, on branch
+  `$HOME/<parent-of-repo>/worktrees/<repo-name>/scoder`, on branch
   `scoder/<repo-name>`, started from whatever `HEAD` the user launched from
   (not necessarily `main`). Uncommitted edits are invisible to the user's own checkout
   and to `git log`/`git diff` run elsewhere — commit at meaningful
@@ -90,6 +90,58 @@ rather than spending effort installing it inside the sandbox.
   for that. If a rebase/merge conflicts on a file `.agentreadonly` protects,
   you can't resolve it yourself (the sandbox copy is read-only) — tell the
   user.
+
+## Where worktrees live, and making your own
+
+Every session — worktree mode *or* direct mode — binds one directory
+read-write for worktrees:
+
+```
+$HOME/<parent-of-repo>/worktrees/<repo-name>/
+```
+
+So a repo at `~/Git/scoder` gets `~/Git/worktrees/scoder/`, and scoder's own
+worktree is the `scoder` leaf inside it: `~/Git/worktrees/scoder/scoder`.
+It is a sibling of the real checkout, never nested under it, because the
+sandbox maps the project at its real path and the two would collide.
+
+**This is the only place a new worktree can go.** Anywhere else — including
+git's own default of a sibling directory next to the repo — is outside every
+bind, so the worktree is unwritable or invisible from inside the sandbox, and
+gone entirely from the next session. Check with `mount` if unsure.
+
+### Creating one with worktrunk (`wt`)
+
+If `wt` is on `PATH`, `wt switch --create <branch>` already puts worktrees in
+the right place: scoder sets `WORKTRUNK_WORKTREE_PATH` for the sandbox to
+that bound parent plus `{{ branch | sanitize }}`, which overrides whatever
+the user's own `~/.config/worktrunk/config.toml` says (that file is bound
+read-only, so a host-side template still applies outside the sandbox). Check
+with `echo $WORKTRUNK_WORKTREE_PATH`. Branch `feature/auth` therefore lands
+at `<parent>/feature-auth` — `sanitize` turns `/` into `-`.
+
+Plain `git worktree add` works too; just give it a path under that parent
+yourself.
+
+### Caveats worth knowing before you create one
+
+- **Don't name a branch `scoder`.** Its worktree directory would be
+  `<parent>/scoder` — exactly where scoder's own worktree lives. Same for a
+  branch that sanitizes to `scoder`.
+- **Only repos under `$HOME` line up on both sides.** For a repository
+  outside `$HOME` (`/srv/code/proj`, say) scoder relocates the worktrees
+  parent under `$HOME` anyway (`$HOME/srv/code/worktrees/proj/`) so the
+  sandbox can bind it, while the host's own worktrunk config would resolve
+  somewhere else entirely. Inside the sandbox
+  `WORKTRUNK_WORKTREE_PATH` still points at the bound parent, so `wt` is
+  correct here — but a worktree you create will not be where the user's
+  host-side `wt list` expects it. Say so rather than assuming.
+- **A worktree you create is yours, not the user's.** It is on a branch the
+  user did not ask for, in a directory they may not look at. Tell them the
+  path and branch, and don't leave work only there.
+- **Removing one**: `wt remove` or `git worktree remove <path>`. Don't
+  `rm -rf` it — that leaves a stale registration in the repo's git metadata,
+  which the user then has to `git worktree prune` themselves.
 
 ## Troubleshooting
 

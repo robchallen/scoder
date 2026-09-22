@@ -13,7 +13,8 @@ sandbox's own `$HOME` (the real host `$HOME` — see `path-mirroring`) for
 development tools and configuration that the sandboxed process needs:
 `.gitconfig`, `.local/bin`, `.cargo/bin`, `.rustup`, mise shims and config,
 R packages and profile, `.m2` (Maven), `.npmrc`, `.pypirc`, `.config/gh`,
-`.local/share/fonts`, `.config/mimeapps.list`.
+`.local/share/fonts`, `.config/mimeapps.list`,
+`.config/worktrunk/config.toml`.
 
 ## Motivation
 
@@ -22,7 +23,21 @@ AI tool relies on (git identity, language runtimes via mise/rustup, package
 registries) must be available inside the sandbox. `.local/share/fonts` and
 `.config/mimeapps.list` serve a different need — GUI presets (`rstudio`,
 `eclipse`) need real fonts to render text at all, and desktop apps commonly
-consult `mimeapps.list` for file-type "open with" associations — but the
+consult `mimeapps.list` for file-type "open with" associations — and
+`worktrunk/config.toml` another again: worktrunk (`wt`) reads
+`worktree-path` from it to decide where a new worktree goes, and without it
+inside the sandbox `wt switch --create` falls back to worktrunk's own
+default (a sibling of the repository), which is outside every bind scoder
+sets up. It is the only host-level path worktrunk needs — everything else it
+writes (caches, logs, branch markers, trash) lives in the repository's own
+`.git/wt/`, already bound read-write, confirmed directly by tracing
+`wt config state get`. Bound only when the file exists, which is a better
+gate than the `wt` binary: a host with the binary and no config has nothing
+to bind. Note that `~/.config/worktrunk/approvals.toml` is deliberately not
+bound, so an approval granted inside a sandbox stays in that session. The
+config's own `worktree-path` is separately overridden for the sandbox via
+`WORKTRUNK_WORKTREE_PATH` — see
+[design/features/git-worktree-isolation.md](/design/features/git-worktree-isolation.md). But the
 same reasoning applies: read-only, host-provided, and otherwise
 unavailable in a fresh tmpfs `$HOME`.
 

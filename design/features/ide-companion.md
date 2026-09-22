@@ -50,13 +50,23 @@ companion, following the same pattern.
   as the existing `wrapWithFdShim`: arguments passed as positional
   parameters, never interpolated into the script string, so a tool
   argument containing shell metacharacters is never reparsed as syntax).
-  Backgrounds the IDE (stdout/stderr redirected to a log file rather than
-  left attached to the terminal — an Electron/GUI app's own console
-  chatter would otherwise interleave with the primary tool's interactive
-  session), runs the primary tool in the foreground, then `wait`s for the
-  IDE before exiting with the primary tool's own exit status — so scoder
-  reports the primary tool's exit code, not the IDE's, regardless of
-  which one finishes first.
+  Backgrounds the IDE under `setsid`, with stdin from `/dev/null` and
+  stdout/stderr redirected to `/tmp/scoder-ide.log` rather than left
+  attached to the terminal. Redirecting the fds alone is not enough on its
+  own — reported directly, IDE error output still reached the console
+  mid-session despite it: a JVM's native crash handler or a GTK/X11 error
+  dialog can write straight to `/dev/tty` (the controlling terminal)
+  rather than its own inherited stdout/stderr, which `>"$IDE_LOG" 2>&1`
+  does not catch. `setsid` makes the IDE its own session leader with no
+  controlling terminal at all, so a direct `/dev/tty` open from inside it
+  fails instead of reaching the visible console — confirmed directly that
+  it still leaves `$!` as the IDE's own real pid under bwrap's own
+  `--new-session` (no extra fork layer to account for), so this needed no
+  change to the kill/wait logic elsewhere in the same script. Runs the
+  primary tool in the foreground, then `wait`s for the IDE before exiting
+  with the primary tool's own exit status — so scoder reports the primary
+  tool's exit code, not the IDE's, regardless of which one finishes
+  first.
 - **A notice, a clear screen, and an ENTER prompt when the primary tool
   finishes first.** If the primary tool (e.g. `pi`) exits while the IDE is
   still running, the `wait` above can block for a while with nothing on

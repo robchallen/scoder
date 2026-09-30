@@ -1,3 +1,4 @@
+import { stat } from "node:fs/promises";
 import { error, info, warning } from "../utils/logger.ts";
 import { terminateProcess } from "../utils/process.ts";
 import { sessionPath, stageDir } from "../utils/session.ts";
@@ -80,11 +81,23 @@ export async function stageXpraSocketDir(): Promise<string> {
 // ### waitForXpraSocket
 // Poll for the socket the in-sandbox server creates, bounded. Returns false
 // having explained why.
+//
+// EM: stat(), not Bun.file(path).exists(). Verified directly: `exists()`
+// EM: reports **false** for a unix socket — it answers "is there a regular
+// EM: file here", not "does this path exist" — so the version of this that
+// EM: used it could never succeed, on any machine, and every GUI session
+// EM: spent 30s timing out before reporting a socket that was sitting right
+// EM: there. Reported from a real Eclipse session whose xpra log said
+// EM: `created unix domain sockets: '/tmp/scoder-xpra/xpra.sock'` while
+// EM: scoder was still waiting for it.
+// EM:
+// EM: isSocket() rather than a bare stat, so a leftover regular file at this
+// EM: path cannot be mistaken for a live server.
 export async function waitForXpraSocket(socketPath: string): Promise<boolean> {
 	const deadline = Date.now() + SOCKET_WAIT_MS;
 
 	while (Date.now() < deadline) {
-		if (await Bun.file(socketPath).exists()) {
+		if (await isSocket(socketPath)) {
 			return true;
 		}
 		await Bun.sleep(SOCKET_POLL_MS);
@@ -96,6 +109,14 @@ export async function waitForXpraSocket(socketPath: string): Promise<boolean> {
 	error(`expected it at ${socketPath}`);
 	error("the GUI will not appear; see /tmp/scoder-xpra.log inside the sandbox");
 	return false;
+}
+
+async function isSocket(path: string): Promise<boolean> {
+	try {
+		return (await stat(path)).isSocket();
+	} catch {
+		return false;
+	}
 }
 
 // ### buildXpraClientArgs

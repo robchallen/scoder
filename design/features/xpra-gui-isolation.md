@@ -82,6 +82,14 @@ started from outside, so it always loses that race. `waitForXpraSocket`
 polls with a 30s bound — bounded for the reason `waitForChildPid` is, that
 an unbounded wait turns a failed launch into a silent hang.
 
+It polls with `stat().isSocket()`, **not** `Bun.file(path).exists()`, which
+answers "is there a regular file here" and returns **false** for a unix
+socket. The first version used `exists()` and could therefore never
+succeed, on any machine: every GUI session burned the full 30s and then
+reported a socket that was sitting right there. Reported from a real
+Eclipse session whose xpra log read `created unix domain sockets:
+'/tmp/scoder-xpra/xpra.sock'` while scoder was still waiting for it.
+
 `xpraClientEnv` sets `GDK_BACKEND` from what is actually reachable rather
 than inheriting it. xpra's client otherwise refuses to start with
 `'client' failed to initialize Gtk, no display?` even with a working
@@ -156,9 +164,21 @@ five years stale on Ubuntu 24.04 and absent on 26.04. See
   namespace boundary; pointing `--mmap` inside the shared socket directory
   would fix that. Whether it matters at IDE window sizes is unmeasured —
   `xclock` proves correctness, not throughput.
-- **`XDG_RUNTIME_DIR` is passed through but `/run` is read-only**, so the
-  server logs errors saving session files under `/run/user/<uid>/xpra/`.
-  Non-fatal, observed during the end-to-end test, untidied.
+- **`XDG_RUNTIME_DIR` is passed through but `/run` is read-only**, so both
+  sides log a steady stream of failures writing under `/run/user/<uid>/`:
+  xpra's own session files and pid files, the client's mmap file, and —
+  loudest — `dconf`, which emits a `dconf-CRITICAL` per attempt and warns
+  that "dconf will not work properly". All non-fatal; Eclipse starts and
+  runs through it. Pointing `XDG_RUNTIME_DIR` at a writable path inside the
+  sandbox would clear most of it, but it is the same variable the RStudio
+  greyed-out-menus fix relies on, so that is a change to make deliberately
+  rather than in passing.
+- **mmap is confirmed unavailable in practice, not just unwired.** The
+  client reports `cannot access mmap file
+  '/run/user/<uid>/xpra/xpra.*.mmap': Read-only file system`, which is the
+  same root cause as above. Transport falls back to the socket.
+- **DPI is mis-detected** (`DPI set to 12 x 19 (wanted 100 x 100)`), which
+  xpra itself warns may cause scaling problems. Unaddressed.
 
 [HAS_FEATURE](./tool-presets.md)
 [HAS_FEATURE](./ide-companion.md)

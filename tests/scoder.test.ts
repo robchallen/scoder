@@ -2669,11 +2669,23 @@ test.skipIf(!xpraTestToolsAvailable)(
 					// The host's display, explicitly — the thing that must fail.
 					`DISPLAY=${display} xdpyinfo > ${repoDir}/host-display.txt 2>&1`,
 					`echo $? > ${repoDir}/host-display.status`,
+					// EM: Stays up briefly so the host-side client has a live
+					// EM: server to attach to. Without this the program exits
+					// EM: in milliseconds, --exit-with-children tears the
+					// EM: server down and the socket is removed before
+					// EM: attachXpraClient gets there — which looks exactly
+					// EM: like the bug this test now guards against. A real
+					// EM: IDE does not have that problem.
+					"sleep 6",
 				].join("\n"),
 			);
 			await Bun.spawn(["chmod", "+x", fakeRstudioPath]).exited;
 
-			const proc = Bun.spawn([SCODER_PATH, "-q", "--no-worktree", "rstudio"], {
+			const started = Date.now();
+			// EM: Not -q, unlike the other end-to-end cases: the assertion
+			// EM: below is on scoder's own "GUI attached" line, which is an
+			// EM: info() and so is exactly what -q suppresses.
+			const proc = Bun.spawn([SCODER_PATH, "--no-worktree", "rstudio"], {
 				cwd: repoDir,
 				env: {
 					...process.env,
@@ -2684,6 +2696,8 @@ test.skipIf(!xpraTestToolsAvailable)(
 				stderr: "pipe",
 			});
 			await proc.exited;
+			const elapsedMs = Date.now() - started;
+			const stderr = await new Response(proc.stderr).text();
 
 			// EM: Surfaced on failure rather than swallowed: everything this
 			// EM: test depends on (bwrap, the pasta shim, xpra's own startup)
@@ -2691,11 +2705,26 @@ test.skipIf(!xpraTestToolsAvailable)(
 			// EM: shows up only as a missing output file.
 			if (!(await fileExists(`${repoDir}/xpra-display.txt`))) {
 				throw new Error(
-					`GUI program produced no output; scoder said:\n${await new Response(
-						proc.stderr,
-					).text()}`,
+					`GUI program produced no output; scoder said:\n${stderr}`,
 				);
 			}
+
+			// EM: The host-side half, and the reason this assertion exists at
+			// EM: all: the first version of this test checked only the GUI
+			// EM: program's own output, which is produced inside the sandbox
+			// EM: and says nothing about whether the client ever attached. It
+			// EM: passed for a fortnight against a waitForXpraSocket that
+			// EM: could never succeed — Bun.file().exists() is false for a
+			// EM: unix socket — so every run silently burned the full 30s
+			// EM: timeout and forwarded no windows at all. Reported from a
+			// EM: real Eclipse session, not caught here.
+			// EM:
+			// EM: The elapsed-time bound is the other half of that lesson. The
+			// EM: symptom visible in this suite was a 32s runtime that nobody
+			// EM: questioned, so the timeout is now something the test fails
+			// EM: on rather than something it waits through.
+			expect(stderr).toContain("GUI attached");
+			expect(elapsedMs).toBeLessThan(25_000);
 
 			// The GUI program got a display, and it is xpra's own virtual one
 			// inside the sandbox — not the host's :89.

@@ -166,9 +166,9 @@ export async function launchSandbox(
 		} else {
 			await stopPasta(sidecar);
 		}
-		// EM: The rendezvous fifos are left for cleanupSession along with the
-		// EM: rest of the session root; nothing outlives the process that
-		// EM: would care about them in between.
+		// EM: The rendezvous fifos go with the rest of the session root when
+		// EM: the process exits; nothing outlives it that would care about
+		// EM: them in between.
 	}
 }
 

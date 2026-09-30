@@ -63,7 +63,8 @@ export async function setupSandboxIdentity(
 ): Promise<SandboxIdentity> {
 	// EM: Staged under the session temp root at the paths they are bound at
 	// EM: (/etc/passwd, /etc/group), so they are self-describing on disk and
-	// EM: are removed with everything else by cleanupSession. The property
+	// EM: are removed with everything else when the process exits. The
+	// EM: property
 	// EM: that mattered about the previous per-session mkdtemp still holds:
 	// EM: the root is unique per run, where the fixed /tmp/bwrap_passwd_<uid>
 	// EM: this replaced years ago collided between concurrent sessions and

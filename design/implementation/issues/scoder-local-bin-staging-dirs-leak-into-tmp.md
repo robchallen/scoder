@@ -10,8 +10,11 @@ tags: [issue, sandbox, tmp, cleanup, local-bin]
 > **Fixed in 2.5.0** by `session-temp-root`, which replaced the seven
 > independent `/tmp/scoder-<concern>.XXXXXX` prefixes with one
 > `/tmp/scoder-<id>` root per run, removed on every exit path including
-> `--dry-run`'s. Covered by `session-temp-root-cleaned`, which asserts the
-> root count is unchanged after both a normal run and a `--dry-run`.
+> `--dry-run`'s — cleanup is a single process `exit` handler rather than a
+> teardown step, since scoder leaves through `process.exit()` in about
+> twenty-five places and none of them run a `finally`. Covered by
+> `session-temp-root-cleaned`, which asserts the root count is unchanged
+> after both a normal run and a `--dry-run`.
 >
 > Fixed as suggested below, but not in the shape suggested: the fix is
 > structural rather than one teardown added for this one directory.

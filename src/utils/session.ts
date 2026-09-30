@@ -1,4 +1,5 @@
-import { mkdir, rm } from "node:fs/promises";
+import { rmSync } from "node:fs";
+import { mkdir } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { info } from "./logger.ts";
 
@@ -87,13 +88,30 @@ export async function stageHostScratchDir(
 }
 
 // ### cleanupSession
-// Remove everything this run staged. Safe to call more than once, and safe
-// to call when nothing was ever staged — the root may not exist.
+// Remove everything this run staged, synchronously, from a process exit
+// handler. Registered once here rather than called from each exit path.
 //
-// EM: `force` matters beyond convenience: --dry-run exits before most of a
-// EM: session happens, so the root is frequently partial or absent, and a
-// EM: cleanup that threw on that would reintroduce the leak it exists to
-// EM: fix on exactly the path the original issue called out.
+// EM: scoder exits through process.exit() in about twenty-five places —
+// argument errors, every protection-config rejection, an unreachable exec
+// target, a failed ssh master, --dry-run, and the normal end of a session —
+// and process.exit() terminates synchronously, so pending `finally` blocks
+// and any awaited teardown do not run. Adding a cleanup call to each of
+// those sites would reproduce exactly the per-site fragility this module
+// exists to remove: the leak it fixes happened because two call sites out of
+// seven never got their teardown written. One 'exit' handler covers all of
+// them, and covers the ones added later for free.
+//
+// EM: Hence rmSync rather than rm: 'exit' handlers run synchronously and
+// anything awaited inside one is simply dropped.
+//
+// EM: `force` matters beyond convenience — most of these exits happen long
+// before a full session has staged anything, so the root is usually partial
+// or absent, and a cleanup that threw on that would be a cleanup that fired
+// on almost no exit path at all.
+//
+// EM: Not covered: SIGKILL, which cannot be handled, and anything else that
+// stops the process without an exit. Those leave a root behind; the
+// `scoder-` prefix is what makes a future reaper for them possible.
 //
 // EM: SCODER_KEEP_SESSION_TMP suppresses the removal. Staging is the part of
 // EM: a session with no trace left afterwards — what scoder decided to put
@@ -101,10 +119,10 @@ export async function stageHostScratchDir(
 // EM: and --dry-run in particular now clears up behind itself, so "run it
 // EM: and look at what it built" stopped working without an opt-out. The
 // EM: validation suite uses it for exactly that.
-export async function cleanupSession(): Promise<void> {
+process.on("exit", () => {
 	if (process.env.SCODER_KEEP_SESSION_TMP) {
 		info(`Keeping session temp root ${SESSION_ROOT} (SCODER_KEEP_SESSION_TMP)`);
 		return;
 	}
-	await rm(SESSION_ROOT, { recursive: true, force: true });
-}
+	rmSync(SESSION_ROOT, { recursive: true, force: true });
+});

@@ -5,7 +5,7 @@ import type { BindMount } from "../types.ts";
 import { error, warning } from "../utils/logger.ts";
 import { getRealHome } from "../utils/paths.ts";
 import { terminateProcess } from "../utils/process.ts";
-import { cleanupSession, stageDir, stageFile } from "../utils/session.ts";
+import { stageDir, stageFile } from "../utils/session.ts";
 
 // EM: The ssh ControlMaster tunnel sidecar
 // EM: Implements ssh-tunnel-access via a single pre-authenticated ssh
@@ -106,11 +106,8 @@ export async function startSshTunnel(raw: string): Promise<SshAccess | null> {
 			proc.kill();
 			await proc.exited;
 		}
-		// EM: Returning null is fatal and the caller exits immediately, above
-		// EM: the finally that normally clears the session root — so clear it
-		// EM: here. Discarding the whole root, not just what ssh staged, is
-		// EM: what we want: this run is over.
-		await cleanupSession();
+		// EM: Nothing to unstage here: returning null is fatal, the caller
+		// EM: exits, and the session root goes with the process.
 
 		error(`--allow-ssh ${raw} failed to establish a connection`);
 		if (stderrText.trim()) {
@@ -190,9 +187,10 @@ export async function stopSshTunnel(tunnel: SshTunnel | null): Promise<void> {
 		warning(`ssh tunnel ${tunnel.pid} survived SIGKILL and is still running`);
 	}
 	// EM: No temp teardown here any more — the control socket and config sit
-	// EM: under the session root, which cleanupSession removes. That ordering
-	// EM: is load-bearing and asserted by the caller: `ssh -O exit` above
-	// EM: needs the control socket to still exist.
+	// EM: under the session root, which the exit handler in utils/session.ts
+	// EM: removes. That it runs at process exit rather than in a teardown
+	// EM: step is load-bearing here: `ssh -O exit` above needs the control
+	// EM: socket to still exist when it runs.
 }
 
 function controlSocketName(target: SshTarget): string {

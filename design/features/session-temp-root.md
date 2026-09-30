@@ -56,8 +56,8 @@ place, shaped like the sandbox it feeds.
 - `hostScratchPath(...)` / `stageHostScratchDir(...)` — a reserved `.host/`
   subtree for artifacts with **no** sandbox-side path to mirror, because they
   are never bound in: the `--info-fd`/`--block-fd` fifos and pasta's pid file
-- `cleanupSession()` — one `rm -rf` of the root, `force: true`, safe to call
-  when nothing was staged or the root is partial
+- a process `exit` handler that `rmSync`s the root, `force: true` — see
+  below
 
 Call sites: `setupSandboxIdentity` (`identity.ts`), the AGENTS.md overlay and
 the `~/.local/bin`, `~/.agents` and `resolv.conf` staging
@@ -78,23 +78,43 @@ The `scoder-` prefix is kept so the root stays identifiable among everything
 else in `/tmp` — greppable when debugging, and the precondition for any future
 reaper of roots left behind by killed sessions.
 
-### Cleanup ordering
+### Cleanup is one exit handler, not a teardown step
 
-Two exit paths bypass the `finally` in `main()` that normally calls
-`cleanupSession`, because `process.exit()` terminates synchronously and
-pending `finally` blocks do not run. Both clean up explicitly:
+`utils/session.ts` registers a single `process.on("exit")` handler and no
+call site unstages anything.
 
-- `--dry-run`, which stages real files before deciding not to run, and is the
-  path the leak issue measured its ~40 abandoned directories on
-- `startSshTunnel` returning null, which the caller treats as fatal
+scoder exits through `process.exit()` in about twenty-five places — argument
+errors, every protection-config rejection, an unreachable exec target, a
+failed ssh master, `--dry-run`, and the normal end of a session — and
+`process.exit()` terminates synchronously, so pending `finally` blocks and
+anything awaited in them do not run. A teardown step in `main()`'s `finally`
+would therefore miss most exits, and adding a call to each site would
+reproduce exactly the per-site fragility this feature removes: the leak it
+fixes happened because two staging call sites out of seven never had their
+teardown written.
 
-Within the `finally`, `stopSshTunnel` must precede `cleanupSession`: closing
-the master politely is `ssh -O exit -S <controlPath>`, and that control socket
-is under the root.
+It follows that cleanup is `rmSync`, not `rm` — an `exit` handler runs
+synchronously and anything awaited inside one is dropped — and that `force`
+is load-bearing rather than convenient, since most of these exits happen long
+before a full session has staged anything and the root is usually partial or
+absent.
+
+Running at process exit also fixes an ordering constraint rather than
+creating one: closing the ssh master politely is `ssh -O exit -S
+<controlPath>`, and that control socket is under the root, so the root must
+outlive `stopSshTunnel`. It now always does.
+
+**Not covered:** `SIGKILL`, which cannot be handled, and anything else that
+stops the process without an exit — those leave a root behind. Measured on a
+full `bun test` run of the validation suite: 14 roots survived before the
+handler was introduced, 1 after, that one containing a bare empty `etc/` from
+a session killed mid-staging. The `scoder-` prefix on the root is what makes
+a future reaper for these possible.
 
 ### SCODER_KEEP_SESSION_TMP
 
-Set to any value, this suppresses the removal and logs where the root is.
+Set to any value, this makes the exit handler log where the root is and leave
+it in place.
 Staging is the part of a session that otherwise leaves no trace: what scoder
 decided to put in front of the sandbox was only visible while it ran, and
 `--dry-run` cleaning up behind itself means "run it and look at what it built"

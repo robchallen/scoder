@@ -60,7 +60,6 @@ import {
 const GIT_DIR = ".git";
 
 import { error, info, infoBlue, setQuiet, warning } from "./utils/logger.ts";
-import { cleanupSession } from "./utils/session.ts";
 
 async function main(): Promise<void> {
 	// EM: Parse command line arguments into ScoderOptions
@@ -582,12 +581,6 @@ async function main(): Promise<void> {
 		info("2. network sidecar, attached to the sandbox's netns:");
 		printBwrapCommand(stages.pasta);
 		console.log("");
-		// EM: --dry-run stages real files (identity, snapshots) before deciding
-		// EM: not to run, and exits above the finally that would otherwise
-		// EM: clear them — process.exit() terminates synchronously and pending
-		// EM: finally blocks do not run. Without this, the leak issue's own
-		// EM: headline case (~40 snapshot dirs from one test run) survives.
-		await cleanupSession();
 		process.exit(0);
 	}
 
@@ -631,20 +624,12 @@ async function main(): Promise<void> {
 
 		// EM: ssh runs outside the sandbox, like pasta — nothing in the
 		// EM: sandbox's own lifecycle reaps it.
-		//
-		// EM: Must precede cleanupSession: closing the master politely is
-		// EM: `ssh -O exit -S <controlPath>`, and that control socket now
-		// EM: lives under the session root. Clearing the root first would
-		// EM: leave only the SIGTERM/SIGKILL fallback.
 		await stopSshTunnel(sshTunnel);
 
-		// EM: Remove everything this run staged under /tmp/scoder-<id> — the
-		// EM: passwd/group overlay, the AGENTS.md overlay, the ~/.local/bin
-		// EM: and ~/.agents snapshots, resolv.conf, ssh's control dir and
-		// EM: config, and the launch fifos. One call covers all of them, and
-		// EM: covers whatever is staged there in future without a matching
-		// EM: teardown being added here each time.
-		await cleanupSession();
+		// EM: Nothing unstages /tmp/scoder-<id> here. utils/session.ts
+		// EM: registers a process 'exit' handler for it, which covers this
+		// EM: path and the two dozen process.exit() calls that never reach
+		// EM: this finally at all.
 	}
 
 	process.exit(exitCode);

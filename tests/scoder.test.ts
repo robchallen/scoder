@@ -2399,10 +2399,14 @@ test("gui-preset-binds-xpra-socket-not-host-x11: a GUI preset gets the xpra sock
 
 		// The one channel the GUI gets across the boundary, read-write so the
 		// in-sandbox server can create its socket in it.
+		// EM: Source and dest identical — the mirroring mmap depends on.
+		expect(output).toMatch(/--bind (\/tmp\/scoder-[0-9a-f]{8}\/xpra) \1(?= )/);
 		expect(output).toMatch(
-			/--bind \/tmp\/scoder-[0-9a-f]{8}\/tmp\/scoder-xpra \/tmp\/scoder-xpra/,
+			/--setenv XPRA_SOCKET \/tmp\/scoder-[0-9a-f]{8}\/xpra\/xpra\.sock/,
 		);
-		expect(output).toContain("--setenv XPRA_SOCKET /tmp/scoder-xpra/xpra.sock");
+		expect(output).toMatch(
+			/--setenv XPRA_MMAP \/tmp\/scoder-[0-9a-f]{8}\/xpra\/mmap/,
+		);
 
 		// None of what ADR 0002 accepted and 0003 withdrew.
 		expect(output).not.toContain("/tmp/.X11-unix");
@@ -2726,6 +2730,23 @@ test.skipIf(!xpraTestToolsAvailable)(
 			expect(stderr).toContain("GUI attached");
 			expect(elapsedMs).toBeLessThan(25_000);
 
+			// EM: mmap is what makes the GUI usable rather than merely
+			// EM: correct, and it is invisible when it silently stops working
+			// EM: — reported directly as both IDEs being "too laggy to be
+			// EM: useable", with everything else looking fine. It only
+			// EM: negotiates because the shared directory is bound at the same
+			// EM: absolute path on both sides, which is a property a later
+			// EM: change could easily undo while everything still ran. The
+			// EM: server logs this line to its own output, which in
+			// EM: XPRA_TARGET=harness mode is scoder's.
+			expect(stderr).toContain("mmap transfers");
+
+			// EM: And the two things that keep this session's inotify
+			// EM: footprint at 1 instance instead of 8, out of the 128 the
+			// EM: kernel allows per *user* — the budget RStudio exhausted with
+			// EM: `system error 24 (Too many open files)`.
+			expect(stderr).not.toContain("watching for applications menu");
+
 			// The GUI program got a display, and it is xpra's own virtual one
 			// inside the sandbox — not the host's :89.
 			const xpraDisplay = await Bun.file(`${repoDir}/xpra-display.txt`).text();
@@ -2779,7 +2800,7 @@ test("ide-flag-merges-companion-binds: --ide merges the companion's binds into t
 
 		// The companion is a GUI preset, so its display bind is one of the
 		// things that has to make it into the merged sandbox.
-		expect(output).toContain("--setenv XPRA_SOCKET /tmp/scoder-xpra/xpra.sock");
+		expect(output).toContain("--setenv XPRA_SOCKET ");
 
 		const piDataBind = `--bind ${process.env.HOME}/.local/share/pi ${SANDBOX_HOME}/.local/share/pi`;
 		expect(output).toContain(piDataBind);
@@ -2820,9 +2841,7 @@ test("ide-flag-works-before-or-after-tool-name: --ide is recognised whether it c
 		// the companion's own binds and the background/foreground wrapper
 		// are present at all.
 		for (const output of [idAfter, idBefore]) {
-			expect(output).toContain(
-				"--setenv XPRA_SOCKET /tmp/scoder-xpra/xpra.sock",
-			);
+			expect(output).toContain("--setenv XPRA_SOCKET ");
 			expect(output).toContain("--setenv XPRA_TARGET ide");
 			expect(output).toContain("/tmp/scoder-entrypoint.sh");
 		}

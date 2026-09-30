@@ -1,7 +1,7 @@
 import { readdir, realpath } from "node:fs/promises";
 import { dirname } from "node:path";
 import { getProjDir } from "../git/worktree.ts";
-import { stageXpraSocketDir, XPRA_SOCKET_DIR_DEST } from "../sandbox/xpra.ts";
+import { stageXpraDir } from "../sandbox/xpra.ts";
 import type { BindMount, ToolBindSpec, ToolPreset } from "../types.ts";
 import { error, info, warning } from "../utils/logger.ts";
 import {
@@ -65,12 +65,16 @@ async function guiDisplayBinds(
 	const env: Record<string, string> = {};
 
 	// EM: The whole surface the GUI gets across the sandbox boundary: one
-	// EM: directory, read-write because the server inside has to create the
-	// EM: socket in it, which the host-side client then connects to.
+	// EM: directory, read-write because the server inside creates the socket
+	// EM: and the client outside creates the mmap file. Source and dest are
+	// EM: the same path deliberately — see xpraDir in src/sandbox/xpra.ts;
+	// EM: mmap does not work otherwise, and without mmap the GUI is too laggy
+	// EM: to use.
+	const xpraDirPath = await stageXpraDir();
 	binds.push({
 		type: "bind",
-		source: await stageXpraSocketDir(),
-		dest: XPRA_SOCKET_DIR_DEST,
+		source: xpraDirPath,
+		dest: xpraDirPath,
 	});
 
 	// EM: XDG_RUNTIME_DIR and DBUS_SESSION_BUS_ADDRESS are still passed

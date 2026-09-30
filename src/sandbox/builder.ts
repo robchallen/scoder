@@ -613,8 +613,10 @@ export async function stageEntrypointScript(): Promise<string> {
 // Which program in the sandbox gets an xpra server, and the socket its
 // windows are forwarded over. Absent for a non-GUI session.
 export interface XpraWrap {
-	/** Sandbox-side path of the unix socket the server binds. */
+	/** Path of the unix socket the server binds — identical on both sides. */
 	socket: string;
+	/** Path of the shared-memory file — identical on both sides, see xpraDir. */
+	mmap: string;
 	/** `scoder rstudio` wraps the primary tool; `--ide rstudio` the companion. */
 	target: "harness" | "ide";
 }
@@ -664,6 +666,7 @@ export function buildEntrypointInvocation(
 	// EM: --dry-run output honest about which path a session will take.
 	if (xpra) {
 		env.XPRA_SOCKET = xpra.socket;
+		env.XPRA_MMAP = xpra.mmap;
 		env.XPRA_TARGET = xpra.target;
 		env.XPRA_LOG = XPRA_LOG_PATH;
 	}

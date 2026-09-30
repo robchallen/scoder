@@ -22,7 +22,7 @@ virtual display.
    scoder                               │
      ├─ bwrap ───────────────────────────┼─→ entrypoint.sh
      │                                   │     └─→ xpra start
-     │                                   │           --bind=/tmp/scoder-xpra/xpra.sock
+     │                                   │           --bind=/tmp/scoder-<id>/xpra/xpra.sock
      │                                   │           --start-child=<ide>
      │                                   │           --exit-with-children=yes
      │                                   │             └─→ rstudio / eclipse
@@ -57,9 +57,11 @@ Three moving parts, only one new in kind:
    (takes a value; bare `--exit-with-children` is invalid), and
    `--start-child=` carrying the program's argv, `%q`-quoted because xpra
    hands it to a shell.
-2. **A unix socket** at `/tmp/scoder-xpra/xpra.sock`, in a directory bound
-   read-write — the only thing crossing the boundary. Read-write because the
-   server inside has to create the socket; the host side only ever connects.
+2. **One shared directory** at `/tmp/scoder-<id>/xpra`, bound read-write —
+   the only thing crossing the boundary. It holds the unix socket and the
+   mmap file, and is bound at **the same absolute path on both sides** (see
+   below). Read-write because the server inside creates the socket and the
+   client outside creates the mmap file.
 3. **Host-side `xpra attach` sidecar** (`attachXpraClient`). The same family
    as the pasta sidecar and the `--allow-ssh` tunnel: it lives outside the
    sandbox, starts once the sandbox exists, and is not covered by bwrap's
@@ -100,9 +102,60 @@ listening, and the resulting error blames the display rather than the
 backend choice. `attachXpraClient` reports which backend was tried when the
 client fails, because upstream's message will not.
 
-### Paths are in the sandbox's own /tmp
+### The shared directory is bound at the same path on both sides
 
-Both the socket directory and `entrypoint.sh` are bound under `/tmp`, which
+Host `/tmp/scoder-<id>/xpra` is sandbox `/tmp/scoder-<id>/xpra`. Not
+tidiness — it is what makes mmap work, and mmap is what makes the GUI
+usable.
+
+xpra's shared-memory transport has the client create the mmap file and send
+the server its *path*. Across a namespace boundary where the two sides know
+the same file by different names, the server cannot open what the client
+names, the negotiation fails, and every pixel update is encoded (h264/vp9/
+webp) and decoded instead of written to shared memory. Reported directly:
+both IDEs worked but were "too laggy to be useable", with scroll events
+visibly trailing the UI, and the client logging `cannot access mmap file
+'/run/user/<uid>/xpra/xpra.*.mmap': Read-only file system`.
+
+Verified directly that mirroring fixes it — the same session then logs
+`enabled fast write mmap transfers using 2GB shared memory area` on the
+server and `enabled fast read ...` on the client. The end-to-end test
+asserts it, because this is a property a later change could undo while
+everything still visibly worked.
+
+Self-mirroring is the degenerate case of the `session-temp-root` rule (host
+path mirrors the sandbox path it is bound at) and of `path-mirroring`,
+which this project is built on everywhere else. Under the session root
+rather than a fixed path so two concurrent sessions cannot collide.
+
+### inotify instances are a per-user budget, and xpra was spending 8
+
+Reported directly: RStudio's file monitors failing repeatedly with
+`system error 24 (Too many open files)`. That is `EMFILE` from
+`inotify_init()`, which means `fs.inotify.max_user_instances` — **128 by
+default, and per *user*, not per namespace**. The sandbox shares the user's
+uid, so everything inside it competes with their whole desktop for the same
+128. It is not a file-descriptor limit and raising `ulimit -n` does nothing.
+
+Measured: an xpra session held **8** instances by default, **1** with two
+things turned off, both of which the sandbox wanted off anyway.
+
+- `--input-method=none` stops xpra starting an ibus stack — `ibus-daemon`,
+  `-memconf`, `-extension-gtk3`, `-x11`, `-portal`, 8 processes. Nothing in
+  a sandbox is using an input method editor.
+- `XPRA_MENU_WATCHER=0` and `XPRA_EXPORT_MENU_DATA=0` stop the menu
+  provider, which creates one inotify instance per watched directory to
+  export the *host's* application menu into the session. That is host data
+  the sandbox has no use for, it took 3.3s to scan on a real machine, and
+  it is a small channel in its own right.
+
+This reduces scoder's own share; it cannot raise the ceiling. A user whose
+desktop is already near 128 needs
+`sysctl fs.inotify.max_user_instances=<larger>` on the host.
+
+### Both binds are mountpoints inside the sandbox's own /tmp
+
+Both the shared directory and `entrypoint.sh` are bound under `/tmp`, which
 is the sandbox's own tmpfs. Not a preference — a bind's mountpoint has to be
 created, and it cannot be created inside a read-only bind, so `/run` (where
 an earlier version put both) fails outright with `bwrap: Can't mkdir
@@ -116,9 +169,8 @@ namespace cannot remove or replace it, and `--ro-bind` makes the contents
 unwritable.
 
 The socket path also has a hard length limit — 107 bytes usable, 108 fails.
-`/tmp/scoder-xpra/xpra.sock` puts the host side at 49 bytes including the
-session root (see `session-temp-root`); a `$HOME`-based destination would
-have spent much of that on the username.
+`/tmp/scoder-<8 hex>/xpra/xpra.sock` is 35 bytes; a `$HOME`-based
+destination would have spent much of that on the username.
 
 ### Capabilities
 
@@ -149,6 +201,9 @@ five years stale on Ubuntu 24.04 and absent on 26.04. See
 
 ## Known Gaps
 
+- **Throughput after enabling mmap is unmeasured.** mmap demonstrably
+  negotiates now, and it was the documented cause of the lag, but nobody has
+  confirmed the IDEs are actually comfortable to use afterwards.
 - **Eclipse starts and runs under xpra** — reported directly from a real
   session: the server came up, `--start-child` launched
   `/opt/eclipse/eclipse` with its full `-data`/`-importProject` argv, m2e
@@ -165,11 +220,6 @@ five years stale on Ubuntu 24.04 and absent on 26.04. See
 - **D-Bus is untouched**, and is a real capability channel. ADR 0003 says so
   plainly rather than letting "we moved to xpra" imply more than it
   delivers. Separate work.
-- **mmap is not wired up**, so transport is plain socket. xpra's default
-  mmap file lands in a directory that is not the same on both sides of the
-  namespace boundary; pointing `--mmap` inside the shared socket directory
-  would fix that. Whether it matters at IDE window sizes is unmeasured —
-  `xclock` proves correctness, not throughput.
 - **`XDG_RUNTIME_DIR` is passed through but `/run` is read-only**, so both
   sides log a steady stream of failures writing under `/run/user/<uid>/`:
   xpra's own session files and pid files, the client's mmap file, and —
@@ -179,10 +229,6 @@ five years stale on Ubuntu 24.04 and absent on 26.04. See
   sandbox would clear most of it, but it is the same variable the RStudio
   greyed-out-menus fix relies on, so that is a change to make deliberately
   rather than in passing.
-- **mmap is confirmed unavailable in practice, not just unwired.** The
-  client reports `cannot access mmap file
-  '/run/user/<uid>/xpra/xpra.*.mmap': Read-only file system`, which is the
-  same root cause as above. Transport falls back to the socket.
 - **DPI is mis-detected** (`DPI set to 12 x 19 (wanted 100 x 100)`), which
   xpra itself warns may cause scaling problems. Unaddressed.
 

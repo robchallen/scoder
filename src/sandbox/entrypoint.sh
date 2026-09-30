@@ -32,6 +32,8 @@
 #   IDE_ORDER=children-first|process-first   who gets signalled first.
 #   XPRA_SOCKET=<path> when set, a GUI program runs under an xpra server bound
 #                      to this unix socket. Unset for a non-GUI session.
+#   XPRA_MMAP=<path>   shared-memory file for the fast transport. Must be the
+#                      same path the host-side client uses.
 #   XPRA_TARGET=ide|harness   which of the two the server wraps. Only read
 #                      when XPRA_SOCKET is set; defaults to ide.
 #   XPRA_LOG=<path>    where the xpra server's own log goes.
@@ -86,6 +88,7 @@ IDE_LOG="${IDE_LOG:-/tmp/scoder-ide.log}"
 IDE_SIG="${IDE_SIG:-TERM}"
 IDE_ORDER="${IDE_ORDER:-children-first}"
 XPRA_SOCKET="${XPRA_SOCKET:-}"
+XPRA_MMAP="${XPRA_MMAP:-}"
 XPRA_TARGET="${XPRA_TARGET:-ide}"
 XPRA_LOG="${XPRA_LOG:-/tmp/scoder-xpra.log}"
 
@@ -135,6 +138,18 @@ xpra_wrap() {
 	# handing those back is the opposite of the point of this layer. Observed
 	# directly during the end-to-end test: the client tried to enumerate
 	# printers over the system bus unprompted.
+	#
+	# --mmap is the performance fix, and it only works because the directory
+	# holding it is bound at the same absolute path on both sides: xpra sends
+	# the *path* across, so a file the two sides know by different names
+	# cannot be negotiated. Without it every pixel update is encoded and
+	# decoded rather than shared, which was reported as both IDEs being "too
+	# laggy to be useable". See xpraDir in src/sandbox/xpra.ts.
+	#
+	# --input-method=none stops xpra starting an ibus stack — ibus-daemon,
+	# -memconf, -extension-gtk3, -x11, -portal, 8 processes in all, measured.
+	# Nothing in a sandbox is using an input method editor, and they are not
+	# free: see the inotify note below.
 	XPRA_WRAPPED=(
 		xpra start
 		"--bind=$XPRA_SOCKET"
@@ -143,6 +158,8 @@ xpra_wrap() {
 		"--start-child=$(printf '%q ' "$@")"
 		--notifications=no
 		--printing=no
+		--input-method=none
+		"--mmap=${XPRA_MMAP:-yes}"
 		--audio=no
 		--speaker=no
 		--microphone=no
@@ -153,6 +170,22 @@ xpra_wrap() {
 
 if [ -n "$XPRA_SOCKET" ]; then
 	command -v xpra >/dev/null || die "xpra not found inside the sandbox"
+
+	# inotify instances are a per-*user* kernel resource, not a per-namespace
+	# one: fs.inotify.max_user_instances defaults to 128 and the sandbox shares
+	# the user's uid, so everything in here competes with the user's whole
+	# desktop for the same 128. RStudio noticed first — reported directly,
+	# rsession's file monitors failing repeatedly with
+	# `system error 24 (Too many open files)`, which is what inotify_init()
+	# returns when that limit is reached, not a file-descriptor problem.
+	#
+	# Measured: an xpra session held 8 of them by default and 1 with these two
+	# off. The menu watcher is one instance per watched directory, and it
+	# exists to export the *host's* application menu into the session — which
+	# is host data this sandbox has no use for, took 3.3s to scan, and is a
+	# small channel in its own right. Both reasons point the same way.
+	export XPRA_MENU_WATCHER=0
+	export XPRA_EXPORT_MENU_DATA=0
 
 	if [ "$XPRA_TARGET" = harness ]; then
 		xpra_wrap "${HARNESS_ARGV[@]}"

@@ -44,7 +44,7 @@ import {
 	startSshTunnel,
 	stopSshTunnel,
 } from "./sandbox/ssh.ts";
-import { XPRA_SOCKET_DEST, xpraSocketHostPath } from "./sandbox/xpra.ts";
+import { xpraMmapPath, xpraSocketPath } from "./sandbox/xpra.ts";
 import { TOOL_PRESETS } from "./tools/presets.ts";
 import type { BindMount, GitWorktreeInfo } from "./types.ts";
 import {
@@ -505,9 +505,9 @@ async function main(): Promise<void> {
 	// EM: session: a second would need a second socket and a second client, and
 	// EM: nothing wants two GUI programs in one sandbox today.
 	const xpra: XpraWrap | undefined = idePreset?.gui
-		? { socket: XPRA_SOCKET_DEST, target: "ide" }
+		? { socket: xpraSocketPath(), mmap: xpraMmapPath(), target: "ide" }
 		: preset?.gui
-			? { socket: XPRA_SOCKET_DEST, target: "harness" }
+			? { socket: xpraSocketPath(), mmap: xpraMmapPath(), target: "harness" }
 			: undefined;
 
 	const config = {
@@ -637,7 +637,7 @@ async function main(): Promise<void> {
 			toolDescription,
 			repoRoot,
 			resolvConfSnapshotPath,
-			xpra ? xpraSocketHostPath() : null,
+			xpra ? xpraSocketPath() : null,
 		);
 		exitCode = result.exitCode;
 

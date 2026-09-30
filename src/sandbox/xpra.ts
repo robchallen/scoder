@@ -1,7 +1,7 @@
-import { stat } from "node:fs/promises";
+import { mkdir, stat } from "node:fs/promises";
 import { error, info, warning } from "../utils/logger.ts";
 import { terminateProcess } from "../utils/process.ts";
-import { sessionPath, stageDir } from "../utils/session.ts";
+import { sessionRoot } from "../utils/session.ts";
 
 // EM: The xpra display sidecar
 // EM: Implements xpra-gui-isolation: a GUI program in the sandbox draws on a
@@ -27,23 +27,43 @@ import { sessionPath, stageDir } from "../utils/session.ts";
 const TERM_GRACE_MS = 500;
 const KILL_GRACE_MS = 500;
 
-// EM: Sandbox-side paths, in the sandbox's own /tmp tmpfs. A bind's
-// EM: mountpoint has to be created, and it cannot be created inside a
-// EM: read-only bind, so /run — where an earlier version of this put the
-// EM: socket — does not work: `bwrap: Can't mkdir /run/xpra: Read-only file
-// EM: system`. That it appeared to work during development was an accident
-// EM: worth recording: the xpra package itself ships /run/xpra (root:xpra,
-// EM: drwxrwxr-t), so the mountpoint already existed on the machine it was
-// EM: tried on, and would have existed on most machines with xpra installed
-// EM: — failing only on the ones where systemd-tmpfiles had not run yet.
-//
-// EM: Short, and deliberately not under $HOME. A unix socket path is usable
-// EM: to 107 bytes and fails at 108, and the host side is this path with the
-// EM: session root prefixed: /tmp/scoder-<8 hex>/tmp/scoder-xpra/xpra.sock,
-// EM: 49 bytes. A $HOME-based destination would have spent much of that
-// EM: budget on the username.
-export const XPRA_SOCKET_DIR_DEST = "/tmp/scoder-xpra";
-export const XPRA_SOCKET_DEST = `${XPRA_SOCKET_DIR_DEST}/xpra.sock`;
+// EM: The one directory that crosses the boundary, bound at *the same
+// EM: absolute path on both sides* — host `/tmp/scoder-<id>/xpra` is sandbox
+// EM: `/tmp/scoder-<id>/xpra`. That is not tidiness, it is what makes mmap
+// EM: work, and mmap is what makes the GUI usable:
+// EM:
+// EM: xpra's shared-memory transport has the client create the mmap file and
+// EM: send the server its *path*. Across a namespace boundary where the two
+// EM: sides see the same file under different names, the server cannot open
+// EM: what the client names, so the negotiation fails and every pixel update
+// EM: is encoded (h264/vp9/webp) and decoded instead of written to shared
+// EM: memory. Reported directly: both IDEs worked but were "too laggy to be
+// EM: useable", with scroll events visibly trailing. Verified directly that a
+// EM: mirrored path fixes it — `enabled fast read mmap transfers using 2GB
+// EM: shared memory area`, where the same session on a non-mirrored path said
+// EM: `cannot access mmap file ... Read-only file system`.
+// EM:
+// EM: Self-mirroring is the degenerate case of the session-temp-root rule
+// EM: (host path mirrors the sandbox path it is bound at) and of
+// EM: path-mirroring, which this project is built on everywhere else. Under
+// EM: the session root rather than a fixed path so two concurrent sessions
+// EM: cannot collide on one socket.
+// EM:
+// EM: Still short: a unix socket path is usable to 107 bytes and fails at
+// EM: 108, and `/tmp/scoder-<8 hex>/xpra/xpra.sock` is 35.
+export function xpraDir(): string {
+	return `${sessionRoot()}/xpra`;
+}
+
+// ### xpraSocketPath / xpraMmapPath
+// Identical on the host and inside the sandbox — see xpraDir.
+export function xpraSocketPath(): string {
+	return `${xpraDir()}/xpra.sock`;
+}
+
+export function xpraMmapPath(): string {
+	return `${xpraDir()}/mmap`;
+}
 
 // EM: How long to wait for the in-sandbox server to create its socket. The
 // EM: spike measured ~3s on a warm machine, so this is not a formality: the
@@ -59,23 +79,17 @@ export interface XpraSidecar {
 	socketPath: string;
 }
 
-// ### xpraSocketHostPath
-// The host side of the socket the in-sandbox server binds. Mirrors the
-// sandbox path under the session root, like every other staged artifact.
-export function xpraSocketHostPath(): string {
-	return sessionPath(XPRA_SOCKET_DEST);
-}
-
-// ### stageXpraSocketDir
-// Create the directory the socket will appear in, for binding read-write at
-// XPRA_SOCKET_DIR_DEST.
+// ### stageXpraDir
+// Create the shared directory, for binding read-write at the same path.
 //
 // EM: Read-write, unlike almost every other bind scoder makes: the server
-// EM: inside the sandbox has to create the socket, and a socket is created by
-// EM: the process that binds it. This is the entire surface the GUI gets —
-// EM: one directory, which the host side only ever connects to.
-export async function stageXpraSocketDir(): Promise<string> {
-	return stageDir(XPRA_SOCKET_DIR_DEST);
+// EM: inside the sandbox creates the socket, and the client outside creates
+// EM: the mmap file, so both sides write here. This is the entire surface the
+// EM: GUI gets across the boundary — one directory.
+export async function stageXpraDir(): Promise<string> {
+	const path = xpraDir();
+	await mkdir(path, { recursive: true });
+	return path;
 }
 
 // ### waitForXpraSocket
@@ -148,6 +162,10 @@ export function buildXpraClientArgs(socketPath: string): string[] {
 		// EM: switch, so defaulting it on is not a regression. Worth exposing
 		// EM: as a flag later.
 		"--clipboard=yes",
+		// EM: The performance fix. Both sides name the same path, which is
+		// EM: only possible because the directory is bound at the same path on
+		// EM: both sides — see xpraDir.
+		`--mmap=${xpraMmapPath()}`,
 	];
 }
 

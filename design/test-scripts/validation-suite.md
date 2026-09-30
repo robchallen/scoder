@@ -500,12 +500,26 @@ LDAP-backed system) — it describes the real identity now, not a synthetic
 `scoder` one, since the sandbox no longer remaps `$HOME` to a separate
 namespace (see path-mirroring).
 
-### 55. sandbox-identity-files-cleaned
-[TESTED_BY](/tests/scoder.test.ts#testSandboxIdentityFilesCleaned)
+### 55. session-temp-root-cleaned
+[TESTED_BY](/tests/scoder.test.ts#testSessionTempRootCleaned)
 
-No `scoder-identity-*` temp directory survives a session. The implementation
-these replaced wrote a fixed `/tmp/bwrap_passwd_<uid>` that was never removed and
+No `/tmp/scoder-<id>` session temp root survives a session — checked after a
+normal run and again after a `--dry-run`, which stages real files and then
+exits through `process.exit()`, above the `finally` that would clear them.
+
+Counts roots rather than the `scoder-identity-*` directories this replaced:
+there is no per-concern temp directory left to count, which is the point of
+`session-temp-root`. The invariant is correspondingly stronger, covering
+every staged artifact at once — including the `~/.local/bin` snapshot that
+was never cleaned up at all and reached 374 MB a time
+(`scoder-local-bin-staging-dirs-leak-into-tmp`), and the fixed
+`/tmp/bwrap_passwd_<uid>` two generations back, which was never removed and
 collided between concurrent sessions.
+
+The glob is anchored to exactly 8 hex characters so it matches session roots
+only: `/tmp` holds plenty of other `scoder`-prefixed things, this suite's own
+`/tmp/scoder-test-repos` among them, and a bare `scoder-*` count would fold
+them in and never change.
 
 ### 56. ssh-tunnel-established-with-flag
 [TESTED_BY](/tests/scoder.test.ts#testSshTunnelEstablishedWithFlag)

@@ -1,10 +1,37 @@
 ---
 target-version: 2.5.0
-status: open
+resolved-in: 2.5.0
+status: resolved
 tags: [issue, sandbox, tmp, cleanup, local-bin]
 ---
 
 # `scoder-local-bin` Staging Directories Are Never Cleaned Up
+
+> **Fixed in 2.5.0** by `session-temp-root`, which replaced the seven
+> independent `/tmp/scoder-<concern>.XXXXXX` prefixes with one
+> `/tmp/scoder-<id>` root per run, removed on every exit path including
+> `--dry-run`'s. Covered by `session-temp-root-cleaned`, which asserts the
+> root count is unchanged after both a normal run and a `--dry-run`.
+>
+> Fixed as suggested below, but not in the shape suggested: the fix is
+> structural rather than one teardown added for this one directory.
+> Per-concern cleanup was the cause — each staged artifact needed someone to
+> remember a matching teardown, and `~/.local/bin` and the AGENTS.md overlay
+> were the two nobody did. Taking the suggested part 1 alone would have left
+> the next staged artifact in the same position.
+>
+> Suggested part 2 (skip the snapshot entirely under `--dry-run`) was **not**
+> done. `--dry-run` is worth keeping honest about what a real run would stage,
+> and the snapshot is also what the `local-bin-symlink-target-mapped` test
+> inspects; cleanup afterwards gets the same result without making `--dry-run`
+> a different code path. Suggested part 3 (a startup sweep of stale
+> directories) was also not done, and is now cheap to add if it is ever wanted
+> — the `scoder-` prefix on the root exists partly to keep that option open.
+> Note that it will not drain the accumulations that already exist under the
+> *old* prefixes; those need a manual `rm -rf /tmp/scoder-local-bin.*` once.
+>
+> On the host this was fixed on: 6,919 abandoned `scoder-local-bin.*`
+> directories and 6,044 `scoder-agents-md.*` ones.
 
 ## Summary
 
@@ -62,4 +89,5 @@ asserting `--dry-run` does not populate it in the first place, both fit
 the existing `tests/scoder.test.ts` shape.
 
 [HAS_FEATURE](/design/features/local-bin-resolution.md)
+[HAS_FEATURE](/design/features/session-temp-root.md)
 [IMPACTS](/src/git/protection.ts)

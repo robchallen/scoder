@@ -43,6 +43,8 @@ localhost services by default.
 
 [HAS_FEATURE](./features/local-bin-resolution.md) - Startup-time snapshot of ~/.local/bin with broken symlinks replaced by forwarding shims.
 
+[HAS_FEATURE](./features/session-temp-root.md) - One `/tmp/scoder-<id>` root per run holds everything staged for the sandbox, laid out to mirror the sandbox paths it is bound at, and removed on every exit path.
+
 [HAS_FEATURE](./features/nested-sandbox-detection.md) - Refuses to start when it would nest a sandbox or create a worktree from a worktree (`SCODER_SANDBOX=1`, `.git` file detection).
 
 [HAS_FEATURE](./features/ssh-tunnel-access.md) - Opt-in `--allow-ssh user@host` opens a single pre-authenticated ssh connection outside the sandbox and multiplexes only that one connection in, with no key material or agent socket exposed.

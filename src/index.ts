@@ -4,7 +4,6 @@
 // EM: Implements dry-run-mode, sandbox-isolation, and git-worktree-isolation features
 // EM: Coordinates CLI parsing, tool preset selection, sandbox construction, and session management
 
-import { rm } from "node:fs/promises";
 import { configureAppArmor } from "./cli/apparmor.ts";
 import { parseArgs, printUsage, printVersion } from "./cli/parse-args.ts";
 import {
@@ -61,6 +60,7 @@ import {
 const GIT_DIR = ".git";
 
 import { error, info, infoBlue, setQuiet, warning } from "./utils/logger.ts";
+import { cleanupSession } from "./utils/session.ts";
 
 async function main(): Promise<void> {
 	// EM: Parse command line arguments into ScoderOptions
@@ -582,6 +582,12 @@ async function main(): Promise<void> {
 		info("2. network sidecar, attached to the sandbox's netns:");
 		printBwrapCommand(stages.pasta);
 		console.log("");
+		// EM: --dry-run stages real files (identity, snapshots) before deciding
+		// EM: not to run, and exits above the finally that would otherwise
+		// EM: clear them — process.exit() terminates synchronously and pending
+		// EM: finally blocks do not run. Without this, the leak issue's own
+		// EM: headline case (~40 snapshot dirs from one test run) survives.
+		await cleanupSession();
 		process.exit(0);
 	}
 
@@ -623,14 +629,22 @@ async function main(): Promise<void> {
 		// EM: process synchronously and pending finally blocks do not run.
 		await removeGitExclude(repoRoot, "AGENTS.md");
 
-		// EM: Remove the passwd/group overlay files
-		if (identity) {
-			await rm(identity.dir, { recursive: true, force: true });
-		}
-
 		// EM: ssh runs outside the sandbox, like pasta — nothing in the
 		// EM: sandbox's own lifecycle reaps it.
+		//
+		// EM: Must precede cleanupSession: closing the master politely is
+		// EM: `ssh -O exit -S <controlPath>`, and that control socket now
+		// EM: lives under the session root. Clearing the root first would
+		// EM: leave only the SIGTERM/SIGKILL fallback.
 		await stopSshTunnel(sshTunnel);
+
+		// EM: Remove everything this run staged under /tmp/scoder-<id> — the
+		// EM: passwd/group overlay, the AGENTS.md overlay, the ~/.local/bin
+		// EM: and ~/.agents snapshots, resolv.conf, ssh's control dir and
+		// EM: config, and the launch fifos. One call covers all of them, and
+		// EM: covers whatever is staged there in future without a matching
+		// EM: teardown being added here each time.
+		await cleanupSession();
 	}
 
 	process.exit(exitCode);

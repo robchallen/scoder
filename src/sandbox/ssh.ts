@@ -1,11 +1,11 @@
 import { lookup } from "node:dns/promises";
-import { mkdir, mkdtemp, rm } from "node:fs/promises";
-import { hostname, networkInterfaces, tmpdir } from "node:os";
+import { hostname, networkInterfaces } from "node:os";
 import { join } from "node:path";
 import type { BindMount } from "../types.ts";
 import { error, warning } from "../utils/logger.ts";
 import { getRealHome } from "../utils/paths.ts";
 import { terminateProcess } from "../utils/process.ts";
+import { cleanupSession, stageDir, stageFile } from "../utils/session.ts";
 
 // EM: The ssh ControlMaster tunnel sidecar
 // EM: Implements ssh-tunnel-access via a single pre-authenticated ssh
@@ -42,7 +42,6 @@ export interface SshTarget {
 /** A running ssh master connection, host-side. */
 export interface SshTunnel {
 	pid: number;
-	tempDir: string;
 	controlPath: string;
 	target: SshTarget;
 }
@@ -71,14 +70,16 @@ export async function startSshTunnel(raw: string): Promise<SshAccess | null> {
 	const target = parseSshTarget(raw);
 	await warnIfLoopback(target);
 
-	const tempDir = await mkdtemp(join(tmpdir(), "scoder-ssh-"));
-	const socketDir = join(tempDir, "socket");
-	const configDir = join(tempDir, "config");
-	await mkdir(socketDir);
-	await mkdir(configDir);
+	// EM: Staged under the session temp root at the sandbox paths they are
+	// EM: bound at, which keeps the control socket's *host* path close in
+	// EM: length to the sandbox path ssh inside the sandbox will use — worth
+	// EM: caring about here specifically, because a unix socket path is
+	// EM: usable to 107 bytes and fails at 108, and this is the one staged
+	// EM: artifact that is a socket rather than a file.
+	const socketDir = await stageDir(CONTROL_DIR_DEST);
+	const configPath = await stageFile(SSH_CONFIG_DEST);
 
 	const controlPath = join(socketDir, controlSocketName(target));
-	const configPath = join(configDir, "config");
 	await Bun.write(configPath, buildSshConfig(target));
 
 	const proc = Bun.spawn(
@@ -105,7 +106,11 @@ export async function startSshTunnel(raw: string): Promise<SshAccess | null> {
 			proc.kill();
 			await proc.exited;
 		}
-		await rm(tempDir, { recursive: true, force: true });
+		// EM: Returning null is fatal and the caller exits immediately, above
+		// EM: the finally that normally clears the session root — so clear it
+		// EM: here. Discarding the whole root, not just what ssh staged, is
+		// EM: what we want: this run is over.
+		await cleanupSession();
 
 		error(`--allow-ssh ${raw} failed to establish a connection`);
 		if (stderrText.trim()) {
@@ -121,7 +126,7 @@ export async function startSshTunnel(raw: string): Promise<SshAccess | null> {
 			{ type: "ro-bind", source: configPath, dest: SSH_CONFIG_DEST },
 		],
 		dirs: [SSH_DIR_DEST],
-		tunnel: { pid: proc.pid, tempDir, controlPath, target },
+		tunnel: { pid: proc.pid, controlPath, target },
 	};
 }
 
@@ -184,8 +189,10 @@ export async function stopSshTunnel(tunnel: SshTunnel | null): Promise<void> {
 	if (!exited) {
 		warning(`ssh tunnel ${tunnel.pid} survived SIGKILL and is still running`);
 	}
-
-	await rm(tunnel.tempDir, { recursive: true, force: true });
+	// EM: No temp teardown here any more — the control socket and config sit
+	// EM: under the session root, which cleanupSession removes. That ordering
+	// EM: is load-bearing and asserted by the caller: `ssh -O exit` above
+	// EM: needs the control socket to still exist.
 }
 
 function controlSocketName(target: SshTarget): string {

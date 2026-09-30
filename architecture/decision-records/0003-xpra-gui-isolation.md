@@ -120,9 +120,13 @@ this project's history with these two IDEs is that their process trees do
 not behave as predicted, so they should be re-measured rather than reasoned
 about.
 
-**RStudio and Eclipse themselves are still unverified under xpra.** The
-spike and the end-to-end test use `xclock` and `xdpyinfo`. Electron
-(RStudio) is the likelier of the two to need coaxing.
+**Eclipse has since been confirmed to start and run under xpra**, reported
+directly from a real session — server up, `--start-child` launching
+`/opt/eclipse/eclipse` with its full argv, m2e refreshing projects, its
+embedded Tomcat starting. That session did not confirm the window reaching
+the screen, because it hit a socket-detection bug that stopped any client
+attaching. **RStudio is still unverified**; Electron is the likelier of the
+two to need coaxing.
 
 [IMPACTS](/src/tools/presets.ts)
 [IMPACTS](/src/sandbox/xpra.ts)

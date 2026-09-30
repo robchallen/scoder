@@ -149,9 +149,15 @@ five years stale on Ubuntu 24.04 and absent on 26.04. See
 
 ## Known Gaps
 
-- **RStudio and Eclipse are unverified under xpra.** The spike and the
-  end-to-end test use `xclock` and `xdpyinfo`. Electron (RStudio) is the
-  likelier of the two to need coaxing.
+- **Eclipse starts and runs under xpra** — reported directly from a real
+  session: the server came up, `--start-child` launched
+  `/opt/eclipse/eclipse` with its full `-data`/`-importProject` argv, m2e
+  queued its project refreshes and the embedded Tomcat started. What that
+  session did *not* confirm is the window reaching the screen, because it
+  hit the `Bun.file().exists()` socket bug above and no client ever
+  attached. Worth re-confirming once.
+- **RStudio is unverified under xpra.** Electron is the likelier of the two
+  to need coaxing.
 - **`ideShutdown` is unverified under xpra.** Both presets' recorded values
   were measured against a directly-exec'd IDE; the signalled process is now
   the xpra server. Unchanged, and should be re-measured rather than reasoned

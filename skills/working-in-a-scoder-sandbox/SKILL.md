@@ -71,6 +71,27 @@ rather than spending effort installing it inside the sandbox.
 - Host loopback (`127.0.0.1`) is blocked by default. Only ports listed in
   `.agentports` are reachable — see above if you need one added.
 
+## The display, if there is one
+
+Only relevant when a GUI IDE is running alongside you (`--ide rstudio`,
+`--ide eclipse`, or the IDE as the primary tool).
+
+- **`$DISPLAY` is not the user's desktop.** It points at a virtual X server
+  running inside this sandbox. Its windows are forwarded to the user's real
+  screen by xpra, but the display itself is private: you cannot see, screenshot
+  or send input to anything the user has open outside the sandbox, and nothing
+  you run on it can. That is deliberate.
+- **X clients you start will work**, and their windows will appear on the
+  user's screen alongside the IDE's. Worth knowing before you launch one by
+  accident.
+- **The IDE's own output is not on the terminal.** It goes to
+  `/tmp/scoder-ide.log`, and the xpra server's to `/tmp/scoder-xpra.log`. If
+  the user reports the IDE misbehaving, read those rather than asking them to
+  re-run it.
+- **No window appeared at all?** The xpra server log is the place to look.
+  The most common cause is the IDE binary not being reachable inside the
+  sandbox — see "If a tool or dependency is missing" above.
+
 ## Worktree vs. direct mode
 
 - **Direct mode (`--no-worktree`, default)**: you're in the user's actual checkout.

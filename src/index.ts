@@ -5,6 +5,7 @@
 // EM: Coordinates CLI parsing, tool preset selection, sandbox construction, and session management
 
 import { configureAppArmor } from "./cli/apparmor.ts";
+import { installDependencies } from "./cli/dependencies.ts";
 import { parseArgs, printUsage, printVersion } from "./cli/parse-args.ts";
 import {
 	addGitExclude,
@@ -28,6 +29,7 @@ import {
 	isInGitRepo,
 	setupGitWorktree,
 } from "./git/worktree.ts";
+import type { XpraWrap } from "./sandbox/builder.ts";
 import { buildBwrapCommand, collectBindDests } from "./sandbox/builder.ts";
 import {
 	getSandboxGid,
@@ -42,6 +44,7 @@ import {
 	startSshTunnel,
 	stopSshTunnel,
 } from "./sandbox/ssh.ts";
+import { XPRA_SOCKET_DEST, xpraSocketHostPath } from "./sandbox/xpra.ts";
 import { TOOL_PRESETS } from "./tools/presets.ts";
 import type { BindMount, GitWorktreeInfo } from "./types.ts";
 import {
@@ -119,21 +122,7 @@ async function main(): Promise<void> {
 	setQuiet(options.quiet);
 
 	if (options.installDependencies) {
-		if (process.getuid?.() !== 0) {
-			error("--install-dependencies must be run as root");
-			error("Usage: sudo scoder --install-dependencies");
-			process.exit(1);
-		}
-
-		const installProc = await Bun.spawn([
-			"apt",
-			"install",
-			"bubblewrap",
-			"passt",
-		]);
-
-		await installProc.exited;
-		process.exit(installProc.exitCode);
+		await installDependencies();
 	}
 
 	if (!(await commandExists("bwrap"))) {
@@ -508,6 +497,19 @@ async function main(): Promise<void> {
 		);
 	}
 
+	// EM: Which program, if any, runs under an xpra server inside the sandbox.
+	// EM: A GUI preset is a GUI preset whether it was named as the primary tool
+	// EM: (`scoder rstudio`) or as the companion (`--ide rstudio`), so both are
+	// EM: checked; the companion wins if somehow both are GUI, since that is
+	// EM: the arrangement --ide exists for. Exactly one xpra server per
+	// EM: session: a second would need a second socket and a second client, and
+	// EM: nothing wants two GUI programs in one sandbox today.
+	const xpra: XpraWrap | undefined = idePreset?.gui
+		? { socket: XPRA_SOCKET_DEST, target: "ide" }
+		: preset?.gui
+			? { socket: XPRA_SOCKET_DEST, target: "harness" }
+			: undefined;
+
 	const config = {
 		worktreeInfo,
 		sandboxProjDir,
@@ -520,6 +522,7 @@ async function main(): Promise<void> {
 		ideBin,
 		ideArgs,
 		ideShutdown: idePreset?.ideShutdown,
+		xpra,
 		protectionConfig,
 	};
 
@@ -554,6 +557,38 @@ async function main(): Promise<void> {
 		);
 		if (!ideReachable && !options.dryRun) {
 			process.exit(1);
+		}
+	}
+
+	// EM: xpra is checked as well as, never instead of, the two above. The IDE
+	// EM: is still exec'd inside the sandbox — all that changed is which layer
+	// EM: execs it — and it remains by far the likelier of the two to fail
+	// EM: this test, since it can live in /opt or under ~/.local. xpra comes
+	// EM: from the upstream repo at /usr/bin/xpra, under the wholesale
+	// EM: --ro-bind /usr, so checking it is cheap insurance rather than the
+	// EM: interesting case.
+	// EM:
+	// EM: Worth more than a footnote because the failure mode gets *quieter*
+	// EM: under xpra. An unreachable IDE used to mean bwrap could not exec it
+	// EM: and said so on the console; now the server starts cleanly and fails
+	// EM: to spawn its child, and that lands in the xpra log, which is
+	// EM: deliberately redirected away from the console. This check stops
+	// EM: being a nicer diagnostic than the eventual failure and becomes close
+	// EM: to the only thing that will tell the user what went wrong.
+	if (xpra) {
+		const hostXpraBin = await which("xpra");
+		if (hostXpraBin) {
+			const xpraReachable = checkExecTargetReachable(
+				"xpra",
+				hostXpraBin,
+				hostXpraBin,
+				bindDests,
+				realHome,
+				options.dryRun,
+			);
+			if (!xpraReachable && !options.dryRun) {
+				process.exit(1);
+			}
 		}
 	}
 
@@ -602,6 +637,7 @@ async function main(): Promise<void> {
 			toolDescription,
 			repoRoot,
 			resolvConfSnapshotPath,
+			xpra ? xpraSocketHostPath() : null,
 		);
 		exitCode = result.exitCode;
 

@@ -60,6 +60,13 @@ export interface ToolPreset {
 	// Only meaningful for a preset used as an --ide companion. Omitted means
 	// the default (SIGTERM, children-first) in src/sandbox/builder.ts.
 	ideShutdown?: IdeShutdown;
+	// True for a preset that opens windows. Such a preset runs under an xpra
+	// server inside the sandbox, which forwards its windows to the host over a
+	// unix socket rather than letting it reach the host's X server — see
+	// design/features/xpra-gui-isolation.md. Read whether the preset is the
+	// primary tool (`scoder rstudio`) or the companion (`--ide rstudio`),
+	// which is why it lives here rather than alongside ideShutdown.
+	gui?: boolean;
 }
 
 export interface ToolBindSpec {

@@ -14,6 +14,8 @@ import {
 	type PastaSidecar,
 	stopPasta,
 } from "./pasta.ts";
+import type { XpraSidecar } from "./xpra.ts";
+import { attachXpraClient, stopXpraClient } from "./xpra.ts";
 
 // EM: Two-stage sandbox launch
 // EM: Implements network-isolation and sandbox-isolation
@@ -76,6 +78,10 @@ export async function launchSandbox(
 	toolDescription: string,
 	projectRoot: string,
 	resolvConfSnapshotPath: string | null,
+	// EM: Set for a GUI session, meaning a program inside the sandbox will
+	// EM: start an xpra server and this is where its socket will appear. null
+	// EM: for every non-GUI session, which is most of them.
+	xpraSocketPath: string | null = null,
 ): Promise<LaunchResult> {
 	// EM: The one set of temp artifacts with no sandbox-side path to mirror:
 	// EM: the --info-fd/--block-fd fifos and pasta's pid file are read by
@@ -88,6 +94,7 @@ export async function launchSandbox(
 	const pidFile = join(rendezvous, "pasta-0.pid");
 
 	let sidecar: PastaSidecar | null = null;
+	let xpraSidecar: XpraSidecar | null = null;
 	let signalForwarder: SignalForwarder | null = null;
 	let portsWatcher: AgentPortsWatcher | null = null;
 	let resolvConfWatcher: ResolvConfWatcher | null = null;
@@ -150,6 +157,19 @@ export async function launchSandbox(
 			resolvConfWatcher = startResolvConfWatcher(resolvConfSnapshotPath);
 		}
 
+		// EM: After the sandbox is released, never before: the socket cannot
+		// EM: exist until bwrap has finished setting the sandbox up and the
+		// EM: server inside has started its virtual display. Measured at ~3s
+		// EM: in the spike, so attachXpraClient waits rather than assuming.
+		// EM:
+		// EM: A failure here is deliberately NOT fatal. The sandbox is already
+		// EM: running with the user's tool in it; tearing that down because a
+		// EM: window did not appear would lose their session over the
+		// EM: companion. attachXpraClient has already said what went wrong.
+		if (xpraSocketPath) {
+			xpraSidecar = await attachXpraClient(xpraSocketPath);
+		}
+
 		const exitCode = await proc.exited;
 		return { exitCode };
 	} finally {
@@ -158,6 +178,13 @@ export async function launchSandbox(
 		// arriving mid-cleanup would just hit an already-gone process group.
 		signalForwarder?.stop();
 		resolvConfWatcher?.stop();
+
+		// EM: Before pasta and before the sandbox finishes dying. The client
+		// EM: renders the sandbox's windows, so leaving it up while the server
+		// EM: inside goes away shows the user a frozen window for as long as
+		// EM: shutdown takes. Same family as pasta and the ssh tunnel: it lives
+		// EM: outside the sandbox, so --die-with-parent does not reap it.
+		await stopXpraClient(xpraSidecar);
 
 		// pasta lives outside the sandbox, so bwrap's --die-with-parent does not
 		// reap it. Every exit path has to come through here.

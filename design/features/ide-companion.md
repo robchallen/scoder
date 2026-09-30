@@ -43,7 +43,7 @@ companion, following the same pattern.
   repeated bind is a no-op), but not worth leaving in the built command.
 - **A `--ide` naming a tool with no registered preset is a hard error**,
   not a silent generic-sandbox launch. An unregistered tool has no way to
-  get the binds it would need (X11 access, for a GUI IDE) and would just
+  get the binds it would need (a display, for a GUI IDE) and would just
   fail silently in its own background job with no diagnostic at all.
 - **The exec target becomes a shell wrapper, not the primary tool's own
   binary, when `--ide` is set** (`wrapWithIdeBackground`, same convention

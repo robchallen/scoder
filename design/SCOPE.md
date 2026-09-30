@@ -53,6 +53,8 @@ localhost services by default.
 
 [HAS_FEATURE](./features/ide-companion.md) - `--ide NAME` launches NAME (must have a registered preset) as a companion in the same sandbox: NAME in the background, the primary tool in the foreground, both must exit before scoder shuts down.
 
+[HAS_FEATURE](./features/xpra-gui-isolation.md) - GUI presets run under an xpra server inside the sandbox, which forwards their windows to the host over a unix socket; the host's X11 socket, XAUTHORITY and DISPLAY are no longer exposed.
+
 From [ROADMAP.md](./legacy/ROADMAP.md), not yet in development:
 
 - **Additional AI tool presets** — as new coding assistants emerge, add presets following the existing convention.

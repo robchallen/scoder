@@ -29,9 +29,9 @@ of concerns about size and permission restoration.
 
 ## Approach
 
-At startup, `~/.local/bin` is scanned entry-by-entry and copied to a
-temporary directory under `/tmp`. Each entry is handled according to
-its type:
+At startup, `~/.local/bin` is scanned entry-by-entry and copied into the
+session temp root, at the host path mirroring `~/.local/bin` itself (see
+`session-temp-root`). Each entry is handled according to its type:
 
 1. **Regular file** → copied as-is with executable permission preserved
 2. **Symlink** → resolved to its real target, and the target canonicalized
@@ -42,7 +42,10 @@ its type:
    binary itself is copied into the snapshot.
 3. **Broken/missing symlink** → skipped silently (same as
    `setupAgentsSnapshot` handling of unreadable entries)
-4. **Directory** → skipped silently
+4. **Directory** → copied recursively, with symlinks inside dereferenced.
+   These usually hold libraries belonging to a tool in `~/.local/bin`
+   alongside them, so skipping them (as an earlier version did) left the
+   tool present but unable to load what it needs.
 
 The result is bind-mounted read-only at `$HOME/.local/bin`.
 
@@ -105,12 +108,15 @@ has) rather than a per-launch copy.
 - Relative parent-path symlinks (`../`) → kept as-is; may or may not resolve
   inside the sandbox depending on what is bind-mounted
 - Regular files → copied as-is with exec bits
+- Directories → copied recursively and dereferenced, so a tool's adjacent
+  library directory survives into the snapshot
 
 ## Implementation
 
 [IMPLEMENTED_BY](/src/git/protection.ts#setupLocalBinSnapshot)
 [HAS_FEATURE](./host-tool-binding.md)
 [HAS_FEATURE](./agents-skills-snapshot.md)
+[HAS_FEATURE](./session-temp-root.md)
 [HAS_FEATURE](./path-mirroring.md)
 
 ## Design Decisions

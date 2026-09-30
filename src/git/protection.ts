@@ -1,4 +1,5 @@
 import {
+	cp,
 	realpath as fsRealpath,
 	mkdir,
 	readdir,
@@ -13,6 +14,7 @@ import {
 	resolveHomePrefixes,
 	toSandboxPath,
 } from "../utils/paths.ts";
+import { stageDir, stageFile } from "../utils/session.ts";
 
 // EM: Infrastructure protection via .agentreadonly and AGENTS.md overlay
 // EM: Implements infrastructure-protection, agents-md-overlay, and agents-skills-snapshot features
@@ -611,12 +613,12 @@ async function findProtectedPaths(
 
 async function _setupAgentsMdOverlay(
 	sourceDir: string,
-	_sandboxProjDir: string,
+	sandboxProjDir: string,
 ): Promise<string | undefined> {
 	const agentsSrc = `${sourceDir}/AGENTS.md`;
 	const agentsMdExists = await fileExists(agentsSrc);
 
-	const overlayFile = await createTempFile("scoder-agents-md");
+	const overlayFile = await stageFile(`${sandboxProjDir}/AGENTS.md`);
 
 	if (agentsMdExists) {
 		const content = await Bun.file(agentsSrc).text();
@@ -652,22 +654,6 @@ This section is injected by scoder inside the sandbox and is not part of the rep
 	info("Overlaying sandbox AGENTS.md");
 
 	return overlayFile;
-}
-
-async function createTempFile(prefix: string): Promise<string> {
-	const proc = await Bun.spawn(["mktemp", `/tmp/${prefix}.XXXXXX`], {
-		stdout: "pipe",
-		stderr: "pipe",
-	});
-
-	await proc.exited;
-
-	if (proc.exitCode !== 0) {
-		throw new Error("Failed to create temp file");
-	}
-
-	const stdoutBytes = await new Response(proc.stdout).arrayBuffer();
-	return new TextDecoder().decode(stdoutBytes).trim();
 }
 
 // ### getAgentsMdOverlayBind
@@ -773,7 +759,7 @@ export async function setupLocalBinSnapshot(
 		return null;
 	}
 
-	const snapshotDir = await createTempDir("scoder-local-bin");
+	const snapshotDir = await stageDir(`${realHome}/.local/bin`);
 	const sandboxPrefixes = [
 		...sandboxMountPrefixes(realHome),
 		...extraSandboxPrefixes,
@@ -835,8 +821,13 @@ async function resolveLocalBinEntries(
 				);
 			} else if (entry.isFile()) {
 				await copyExecutable(src, dest);
+			} else {
+				await cp(src, dest, {
+					recursive: true,
+					dereference: true,
+				});
 			}
-			// Directories inside ~/.local/bin are silently skipped
+			// Directories inside ~/.local/bin are copied (usually contain libraries)
 		} catch {
 			// Broken symlink or unreadable file — skip silently
 		}
@@ -934,7 +925,7 @@ export async function setupAgentsSnapshot(): Promise<BindMount | null> {
 		return null;
 	}
 
-	const snapshotDir = await createTempDir("scoder-agents");
+	const snapshotDir = await stageDir(`${realHome}/.agents`);
 
 	try {
 		await safeCopyDirRecursive(agentsSrc, snapshotDir);
@@ -953,22 +944,6 @@ export async function setupAgentsSnapshot(): Promise<BindMount | null> {
 		source: snapshotDir,
 		dest: `${realHome}/.agents`,
 	};
-}
-
-async function createTempDir(prefix: string): Promise<string> {
-	const proc = await Bun.spawn(["mktemp", "-d", `/tmp/${prefix}.XXXXXX`], {
-		stdout: "pipe",
-		stderr: "pipe",
-	});
-
-	await proc.exited;
-
-	if (proc.exitCode !== 0) {
-		throw new Error("Failed to create temp dir");
-	}
-
-	const stdoutBytes = await new Response(proc.stdout).arrayBuffer();
-	return new TextDecoder().decode(stdoutBytes).trim();
 }
 
 // ### resolveResolvConfSource
@@ -1005,7 +980,7 @@ export async function setupResolvConf(): Promise<BindMount | null> {
 		return null;
 	}
 
-	const snapshotFile = await createTempFile("scoder-resolv");
+	const snapshotFile = await stageFile("/etc/resolv.conf");
 
 	try {
 		const content = await Bun.file(resolvSrc).text();

@@ -1,8 +1,6 @@
-import { mkdtemp } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import type { BindMount } from "../types.ts";
 import { getRealHome } from "../utils/paths.ts";
+import { stageFile } from "../utils/session.ts";
 
 // EM: Sandbox user identity
 // EM: Implements the NSS half of path-mirroring's home handling
@@ -36,8 +34,6 @@ export function getSandboxUsername(): string {
 
 export interface SandboxIdentity {
 	binds: BindMount[];
-	/** Temp directory holding the files; remove it at session end. */
-	dir: string;
 }
 
 // ### getSandboxUid / getSandboxGid
@@ -65,13 +61,16 @@ export async function setupSandboxIdentity(
 	uid: string,
 	gid: string,
 ): Promise<SandboxIdentity> {
-	// A unique directory per session: the previous fixed /tmp/bwrap_passwd_<uid>
-	// collided between concurrent sessions and could be pre-created by another
-	// user on a shared machine.
-	const dir = await mkdtemp(join(tmpdir(), "scoder-identity-"));
-
-	const passwdPath = join(dir, "passwd");
-	const groupPath = join(dir, "group");
+	// EM: Staged under the session temp root at the paths they are bound at
+	// EM: (/etc/passwd, /etc/group), so they are self-describing on disk and
+	// EM: are removed with everything else when the process exits. The
+	// EM: property
+	// EM: that mattered about the previous per-session mkdtemp still holds:
+	// EM: the root is unique per run, where the fixed /tmp/bwrap_passwd_<uid>
+	// EM: this replaced years ago collided between concurrent sessions and
+	// EM: could be pre-created by another user on a shared machine.
+	const passwdPath = await stageFile("/etc/passwd");
+	const groupPath = await stageFile("/etc/group");
 	const username = getSandboxUsername();
 	const home = getRealHome();
 
@@ -85,7 +84,6 @@ export async function setupSandboxIdentity(
 	await Bun.write(groupPath, `${username}:x:${gid}:\n`);
 
 	return {
-		dir,
 		binds: [
 			{ type: "ro-bind", source: passwdPath, dest: "/etc/passwd" },
 			{ type: "ro-bind", source: groupPath, dest: "/etc/group" },

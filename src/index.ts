@@ -4,7 +4,6 @@
 // EM: Implements dry-run-mode, sandbox-isolation, and git-worktree-isolation features
 // EM: Coordinates CLI parsing, tool preset selection, sandbox construction, and session management
 
-import { rm } from "node:fs/promises";
 import { configureAppArmor } from "./cli/apparmor.ts";
 import { parseArgs, printUsage, printVersion } from "./cli/parse-args.ts";
 import {
@@ -623,14 +622,14 @@ async function main(): Promise<void> {
 		// EM: process synchronously and pending finally blocks do not run.
 		await removeGitExclude(repoRoot, "AGENTS.md");
 
-		// EM: Remove the passwd/group overlay files
-		if (identity) {
-			await rm(identity.dir, { recursive: true, force: true });
-		}
-
 		// EM: ssh runs outside the sandbox, like pasta — nothing in the
 		// EM: sandbox's own lifecycle reaps it.
 		await stopSshTunnel(sshTunnel);
+
+		// EM: Nothing unstages /tmp/scoder-<id> here. utils/session.ts
+		// EM: registers a process 'exit' handler for it, which covers this
+		// EM: path and the two dozen process.exit() calls that never reach
+		// EM: this finally at all.
 	}
 
 	process.exit(exitCode);

@@ -86,6 +86,18 @@ async function runScoder(
 	return stdout;
 }
 
+// ### removeSessionRoot
+// Tests that pass SCODER_KEEP_SESSION_TMP so they can inspect staged files
+// after scoder has exited own the cleanup scoder skipped for them. Takes any
+// path under the root and removes the root itself, so a caller can hand over
+// whatever path it happened to match.
+async function removeSessionRoot(pathUnderRoot: string): Promise<void> {
+	const root = pathUnderRoot.match(/^\/tmp\/scoder-[0-9a-f]{8}/)?.[0];
+	if (root) {
+		await Bun.spawn(["rm", "-rf", root]).exited;
+	}
+}
+
 async function runScoderInDir(runDir: string, args: string[]): Promise<string> {
 	const proc = await Bun.spawn([SCODER_PATH, ...args], {
 		cwd: runDir,
@@ -408,27 +420,52 @@ test("sandbox-identity-consistent: passwd and group describe the real sandbox id
 	}
 });
 
-// ### Test: sandbox-identity-files-cleaned
-// The overlay files live in a per-session temp directory. The implementation
-// they replaced used a fixed /tmp/bwrap_passwd_<uid> that was never removed and
-// collided between concurrent sessions.
-test("sandbox-identity-files-cleaned: no identity temp directory survives a session", async () => {
+// ### Test: session-temp-root-cleaned
+// Everything a session stages — the passwd/group overlay, the AGENTS.md
+// overlay, the ~/.local/bin and ~/.agents snapshots, resolv.conf, ssh's
+// control dir and config, the launch fifos — lives under one
+// /tmp/scoder-<id> root that must not survive the run.
+//
+// EM: This counts session roots rather than the /tmp/scoder-identity-* dirs
+// EM: it used to, because there is no longer a per-concern temp dir to count:
+// EM: that is the point of the refactor. The invariant is stronger than
+// EM: before — it now covers every staged artifact at once, including the
+// EM: ~/.local/bin snapshot that was never cleaned up at all and reached
+// EM: 374 MB a time (scoder-local-bin-staging-dirs-leak-into-tmp).
+//
+// EM: The glob is anchored to exactly 8 hex characters so it matches session
+// EM: roots only. /tmp is full of other scoder-prefixed things, including
+// EM: this suite's own /tmp/scoder-test-repos, and a bare scoder-* count
+// EM: would fold them in and never change.
+test("session-temp-root-cleaned: no session temp root survives a session", async () => {
 	const repoDir = await createTempRepo();
 	tempRepos.push(repoDir);
 
-	const countIdentityDirs = async (): Promise<number> => {
+	const countSessionRoots = async (): Promise<number> => {
 		const proc = Bun.spawn(
-			["bash", "-c", "ls -d /tmp/scoder-identity-* 2>/dev/null | wc -l"],
+			[
+				"bash",
+				"-c",
+				"ls -d /tmp/scoder-* 2>/dev/null | grep -cE '/scoder-[0-9a-f]{8}$'",
+			],
 			{ stdout: "pipe", stderr: "pipe" },
 		);
 		await proc.exited;
+		// grep -c exits 1 with a count of 0 when nothing matches.
 		return Number.parseInt((await new Response(proc.stdout).text()).trim(), 10);
 	};
 
 	try {
-		const before = await countIdentityDirs();
+		const before = await countSessionRoots();
 		await runScoder(repoDir, ["-q", "/bin/bash", "-c", "true"]);
-		expect(await countIdentityDirs()).toBe(before);
+		expect(await countSessionRoots()).toBe(before);
+
+		// EM: --dry-run is checked explicitly, not incidentally: it stages
+		// EM: real files and then exits through process.exit(), above the
+		// EM: finally that clears them, and it is the path the leak issue
+		// EM: measured ~40 abandoned snapshot dirs from in one test run.
+		await runScoder(repoDir, ["--dry-run", "/bin/bash", "-c", "true"]);
+		expect(await countSessionRoots()).toBe(before);
 	} finally {
 		await cleanupRepo(repoDir);
 	}
@@ -1635,14 +1672,17 @@ test("agents-md-overlay-states-real-home: overlay states $HOME is the real host 
 	let overlayPath: string | undefined;
 
 	try {
-		const output = await runScoder(repoDir, [
-			"--dry-run",
-			"--no-worktree",
-			"/bin/bash",
-		]);
+		// EM: SCODER_KEEP_SESSION_TMP because this test reads the staged
+		// EM: overlay back off disk after scoder has exited, and --dry-run
+		// EM: now clears its session root on the way out.
+		const output = await runScoder(
+			repoDir,
+			["--dry-run", "--no-worktree", "/bin/bash"],
+			{ SCODER_KEEP_SESSION_TMP: "1" },
+		);
 
 		const match = output.match(
-			/--ro-bind (\/tmp\/scoder-agents-md\.\S+) \S+\/AGENTS\.md/,
+			/--ro-bind (\/tmp\/scoder-[0-9a-f]{8}\/\S+) \S+\/AGENTS\.md/,
 		);
 		overlayPath = match?.[1];
 		expect(overlayPath).toBeDefined();
@@ -1666,7 +1706,7 @@ test("agents-md-overlay-states-real-home: overlay states $HOME is the real host 
 		expect(content.toLowerCase()).toContain("localhost");
 	} finally {
 		if (overlayPath) {
-			await Bun.spawn(["rm", "-f", overlayPath]).exited;
+			await removeSessionRoot(overlayPath);
 		}
 		await cleanupRepo(repoDir);
 	}
@@ -3495,9 +3535,16 @@ test("local-bin-symlink-target-mapped: an unresolvable symlink target is copied 
 	tempRepos.push(repoDir);
 
 	try {
-		const output = await runScoder(repoDir, ["--dry-run", name]);
+		// EM: As above — the snapshot is inspected after scoder exits, so the
+		// EM: session root has to outlive the run.
+		const output = await runScoder(repoDir, ["--dry-run", name], {
+			SCODER_KEEP_SESSION_TMP: "1",
+		});
 
-		const match = output.match(/\/tmp\/scoder-local-bin\.[A-Za-z0-9]+/);
+		// EM: The snapshot now mirrors its sandbox destination under the
+		// EM: session root, so it is matched by that shape rather than by the
+		// EM: old flat /tmp/scoder-local-bin.XXXXXX prefix.
+		const match = output.match(/\/tmp\/scoder-[0-9a-f]{8}\/\S*\/\.local\/bin/);
 		if (!match) {
 			throw new Error("scoder did not report a ~/.local/bin snapshot dir");
 		}
@@ -3506,6 +3553,8 @@ test("local-bin-symlink-target-mapped: an unresolvable symlink target is copied 
 		// The tool under test is small and unbound, so it is copied in whole
 		const copied = await fileExists(`${snapshotDir}/${name}`);
 		expect(copied).toBe(true);
+
+		await removeSessionRoot(snapshotDir);
 	} finally {
 		await cleanupRepo(repoDir);
 		await Bun.spawn(["rm", "-rf", tool.shareDir]).exited;

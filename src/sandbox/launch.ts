@@ -1,5 +1,3 @@
-import { mkdtemp, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
 	readAgentPorts,
@@ -8,6 +6,7 @@ import {
 import type { ScoderOptions } from "../types.ts";
 import { error, info, warning } from "../utils/logger.ts";
 import { terminateProcess } from "../utils/process.ts";
+import { stageHostScratchDir } from "../utils/session.ts";
 import { wrapWithFdShim } from "./builder.ts";
 import {
 	attachPasta,
@@ -78,7 +77,12 @@ export async function launchSandbox(
 	projectRoot: string,
 	resolvConfSnapshotPath: string | null,
 ): Promise<LaunchResult> {
-	const rendezvous = await mkdtemp(join(tmpdir(), "scoder-launch-"));
+	// EM: The one set of temp artifacts with no sandbox-side path to mirror:
+	// EM: the --info-fd/--block-fd fifos and pasta's pid file are read by
+	// EM: scoder and pasta on the host and are never bound in. They go under
+	// EM: the session root's reserved .host/ subtree rather than being given
+	// EM: an invented sandbox path they do not have.
+	const rendezvous = await stageHostScratchDir("launch");
 	const infoPath = join(rendezvous, "info");
 	const blockPath = join(rendezvous, "block");
 	const pidFile = join(rendezvous, "pasta-0.pid");
@@ -162,7 +166,9 @@ export async function launchSandbox(
 		} else {
 			await stopPasta(sidecar);
 		}
-		await rm(rendezvous, { recursive: true, force: true });
+		// EM: The rendezvous fifos go with the rest of the session root when
+		// EM: the process exits; nothing outlives it that would care about
+		// EM: them in between.
 	}
 }
 

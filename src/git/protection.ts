@@ -1,4 +1,5 @@
 import {
+	cp,
 	realpath as fsRealpath,
 	mkdir,
 	readdir,
@@ -820,8 +821,13 @@ async function resolveLocalBinEntries(
 				);
 			} else if (entry.isFile()) {
 				await copyExecutable(src, dest);
+			} else {
+				await cp(src, dest, {
+					recursive: true,
+					dereference: true,
+				});
 			}
-			// Directories inside ~/.local/bin are silently skipped
+			// Directories inside ~/.local/bin are copied (usually contain libraries)
 		} catch {
 			// Broken symlink or unreadable file — skip silently
 		}

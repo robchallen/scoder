@@ -502,6 +502,32 @@ five years stale on Ubuntu 24.04 and absent on 26.04. See
 
 ## Known Gaps
 
+- **A killed session leaves the whole IDE stack running.** scoder does not
+  unshare the PID namespace (pasta attaches to the network namespace from
+  outside — ADR 0001), so bwrap's `--die-with-parent` only reaches its own
+  immediate child, and the IDE is deliberately started under `setsid` so it
+  cannot write to the agent's terminal. A setsid process is reparented to
+  init when its parent dies. Verified directly: a setsid child outlived
+  bwrap.
+
+  So any session that does not end cleanly leaves Electron, its zygotes and
+  renderers, `rsession`, a Tomcat and a language server behind — reported
+  from a real machine with **seven** RStudio instances accumulated. Every
+  xpra session also leaks a `dbus-daemon`; 35 were found on the development
+  machine for this work.
+
+  This is a plausible confounder for every "the GUI feels laggy"
+  measurement taken during this investigation, since each test added more
+  resident workload, which would make things progressively worse and would
+  be immune to every configuration change tried. `design/prototype/scoder-cleanup.sh`
+  finds and removes them; it tells an orphan from a legitimately running
+  application by requiring *both* that it has been reparented to init and
+  that it is still in a mount namespace that is not the caller's.
+
+  Not yet fixed. A `trap` in `entrypoint.sh` would cover SIGTERM and SIGHUP
+  but not SIGKILL, which is what `--die-with-parent` delivers, so the real
+  fix probably has to track the IDE's pid on the host side and reap it in
+  `launchSandbox`'s `finally` alongside pasta and the ssh tunnel.
 - **RStudio's mousewheel scrolling stalls** for seconds on the configuration
   Eclipse is happy with. Eliminated: the transport (`--mmap=no` is worse),
   the wheel event rate (`--mousewheel=coarse` does not help), and inotify

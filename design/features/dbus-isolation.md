@@ -55,6 +55,28 @@ stream of failures xpra, its Xvfb and `dconf` used to log against a read-only
 one — a Known Gap in `xpra-gui-isolation` that this closes rather than
 carries.
 
+### resolv.conf comes with a catch
+
+On a systemd host `/etc/resolv.conf` is a symlink to
+`/run/systemd/resolve/stub-resolv.conf`, and `/etc` is bound from the host so
+the symlink comes too. With `/run` newly empty that target dangles, and the
+DNS snapshot bind fails outright:
+
+```
+bwrap: Can't create file at /etc/resolv.conf: No such file or directory
+```
+
+**bwrap will not create a mountpoint through a symlink** — verified,
+including with the target's parent directory scaffolded first, which is the
+obvious fix and does not work. The snapshot is therefore bound at the
+*resolved* path (`resolvConfDest`), so the host's own symlink leads to it and
+nothing has to know whether this machine runs systemd-resolved.
+
+It had never arisen before because the symlink used to resolve into the
+host's `/run`, which was bound. Missed in development because this container
+has a plain file at that path — the single most likely difference between a
+container and a real desktop, and not something `--dry-run` can show.
+
 ### The proxy
 
 A fourth sidecar, alongside pasta, the ssh tunnel and the xpra client: a

@@ -1,4 +1,5 @@
-import { mkdir } from "node:fs/promises";
+import { mkdir, realpath } from "node:fs/promises";
+import { dirname } from "node:path";
 import type { ProtectionConfig } from "../git/protection.ts";
 import {
 	getGitCommonDir,
@@ -171,6 +172,7 @@ export async function buildBwrapCommand(
 	// EM: read-only one.
 	cmd.push("--tmpfs", "/run");
 	cmd.push("--dir", `/run/user/${uid}`);
+	cmd.push(...(await runSymlinkDirs()));
 
 	// EM: /opt is the FHS location for manually-installed, self-contained
 	// EM: software (IDEs, JDKs, browsers, most vendor-shipped dev tools) —
@@ -508,6 +510,44 @@ export async function buildBwrapCommand(
 	// EM: decision in this function keeps applying to the sandbox the tool
 	// EM: actually runs in.
 	return [...buildDevLayer(uid, gid, cmd), "--", ...cmd];
+}
+
+// ### resolvConfDest
+// Where a bind of the DNS snapshot has to land inside the sandbox.
+//
+// EM: Not always `/etc/resolv.conf`. On a systemd host that path is a symlink
+// EM: to `/run/systemd/resolve/stub-resolv.conf`, and `/etc` is bound from
+// EM: the host so the symlink comes with it. bwrap will not create a
+// EM: mountpoint *through* a symlink — verified, including with the target's
+// EM: parent directory scaffolded first, which was the obvious fix and does
+// EM: not work. Binding at the resolved path instead means the host's own
+// EM: symlink resolves to the snapshot, so nothing has to know whether this
+// EM: machine uses systemd-resolved.
+//
+// EM: Reported immediately after `/run` became a tmpfs:
+// EM: `bwrap: Can't create file at /etc/resolv.conf: No such file or
+// EM: directory`. It had never arisen before because the symlink used to
+// EM: resolve into the host's own `/run`, which was bound. Missed here
+// EM: because this development container has a plain file at that path — the
+// EM: single most likely difference between a container and a real desktop,
+// EM: and not something `--dry-run` can show.
+export async function resolvConfDest(): Promise<string> {
+	try {
+		const target = await realpath("/etc/resolv.conf");
+		return target.startsWith("/run/") ? target : "/etc/resolv.conf";
+	} catch {
+		// Absent or dangling on the host; the plain path is the best guess and
+		// the bind simply will not be added if there is nothing to snapshot.
+		return "/etc/resolv.conf";
+	}
+}
+
+// ### runSymlinkDirs
+// `--dir` scaffolding for the resolv.conf destination when it lands in the
+// new `/run` tmpfs, since a bind needs its parent to exist.
+async function runSymlinkDirs(): Promise<string[]> {
+	const dest = await resolvConfDest();
+	return dest.startsWith("/run/") ? ["--dir", dirname(dest)] : [];
 }
 
 // ### buildDevLayer

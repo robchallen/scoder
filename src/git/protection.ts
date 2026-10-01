@@ -6,6 +6,7 @@ import {
 	readlink,
 	stat,
 } from "node:fs/promises";
+import { resolvConfDest } from "../sandbox/builder.ts";
 import type { LiveOverlay } from "../sandbox/overlays.ts";
 import { renderOverlay } from "../sandbox/overlays.ts";
 import type { BindMount } from "../types.ts";
@@ -1091,7 +1092,11 @@ export async function setupResolvConf(): Promise<BindMount | null> {
 		return null;
 	}
 
-	const snapshotFile = await stageFile("/etc/resolv.conf");
+	// EM: The snapshot is staged at its sandbox destination, which on a
+	// EM: systemd host is the symlink's target under /run rather than
+	// EM: /etc/resolv.conf itself — see resolvConfDest.
+	const dest = await resolvConfDest();
+	const snapshotFile = await stageFile(dest);
 
 	try {
 		const content = await Bun.file(resolvSrc).text();
@@ -1103,7 +1108,7 @@ export async function setupResolvConf(): Promise<BindMount | null> {
 	return {
 		type: "ro-bind",
 		source: snapshotFile,
-		dest: "/etc/resolv.conf",
+		dest,
 	};
 }
 

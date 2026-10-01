@@ -528,22 +528,16 @@ five years stale on Ubuntu 24.04 and absent on 26.04. See
   but not SIGKILL, which is what `--die-with-parent` delivers, so the real
   fix probably has to track the IDE's pid on the host side and reap it in
   `launchSandbox`'s `finally` alongside pasta and the ssh tunnel.
-- **RStudio's mousewheel scrolling stalls** for seconds on the configuration
-  Eclipse is happy with. Eliminated: the transport (`--mmap=no` is worse),
-  the wheel event rate (`--mousewheel=coarse` does not help), and inotify
-  exhaustion (raised to 512, errors stopped, scrolling unchanged). The GPU
-  is **not** eliminated — the test that appeared to do so could not
-  distinguish "disabled" from "never working", and the server log shows the
-  virtual display's GL is `llvmpipe`, i.e. software. Current direction is to
-  *enable* GPU rendering rather than disable it further; see above for the
-  two routes and the check that tells you whether it took. Eclipse is fine.
-- **DPI is mis-reported and `--dpi` does not fix it.** xpra warns
-  `DPI set to 31 x 35 (wanted 96 x 96)` and suggests "the dpi switch", but
-  measured directly: `--dpi=96` changes nothing — `xdpyinfo` inside the
-  sandbox reports the same value with and without it, because the number
-  derives from the virtual screen's physical dimensions. The flag was
-  removed rather than shipped as an inert setting that looks like a fix.
-  xpra's other suggestion is a patched Xorg dummy driver.
+- **Mousewheel scrolling stalls — root cause found, and it is an xpra bug.**
+  Every *discrete* scroll event raises an `AttributeError` inside xpra's own
+  client, which calls a `get_subsystem` method that does not exist in 6.5.4.
+  Each raise prints a traceback on the client's UI thread, which is what
+  produces seconds of unresponsiveness followed by a jump to the final
+  position. Reproduced with no sandbox at all, and fixed by a one-line
+  change. See
+  [xpra-client-crashes-on-every-discrete-scroll-event](/design/implementation/issues/xpra-client-crashes-on-every-discrete-scroll-event.md),
+  which also records why the transport, GPU, event-rate and inotify
+  hypotheses each tested negative: nothing was wrong with rendering.
 - **Eclipse starts and runs under xpra** — reported directly from a real
   session: the server came up, `--start-child` launched
   `/opt/eclipse/eclipse` with its full `-data`/`-importProject` argv, m2e

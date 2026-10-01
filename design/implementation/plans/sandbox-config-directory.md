@@ -93,27 +93,33 @@ is the worst outcome available: `.agentreadonly` ignored means protections
 quietly stop applying, which is a security regression presented as an
 upgrade.
 
-Three options, in increasing order of how much I like them:
+**Decided: automatic, one-shot, no prompt.** The user base is small enough
+that the cost of being clever outweighs the cost of being wrong, and the
+alternatives are worse in ways that matter:
 
-1. **Hard fail** on finding a legacy file. Safe, and hostile — it breaks
-   every existing project on upgrade with no path forward except manual work.
-2. **Auto-migrate**: create `.sandbox/`, move the files, tell the user. One
-   step, but scoder would be rewriting the layout of someone's repository
-   without being asked. scoder creates files today; moving and deleting them
-   is a different category.
-3. **Read both, prefer `.sandbox/`, warn on legacy, and offer
-   `scoder --migrate-config`** to do the move when the user chooses. Nothing
-   breaks, nothing is lost, the warning names the command, and the compat
-   shim can be deleted after a release or two.
+- *Hard fail* breaks every existing project on upgrade with no path forward.
+- *Read both with a deprecation warning* leaves a compat shim that outlives
+  everyone, and a window where two sources of truth disagree.
+- *A `--migrate-config` command* is a step the user has to know about, and
+  silently ignoring the legacy files until they run it means protections
+  quietly stop applying — a security regression presented as an upgrade.
 
-**Recommend 3.** It is the only one where a user who upgrades mid-task
-notices nothing until they read the warning. The deprecation needs a stated
-removal version in the warning text, or it will still be there in 2028.
+So: on finding legacy files and no `.sandbox/`, scoder creates the directory,
+moves them, and says what it did. No flag, no prompt.
 
-One wrinkle for option 3: if a project has *both* (say, a half-finished
-migration), `.sandbox/` should win and the legacy file should be reported as
-ignored — stating which file was used matters more than being clever about
-merging them.
+What that obliges, since scoder is now rewriting part of someone's
+repository:
+
+- **Say so, per file**, at `info` level. A silent `git status` full of
+  renames is alarming.
+- **Move, never copy-and-delete.** A failed copy that still unlinks the
+  original loses a user's protection list.
+- **Never overwrite.** If both `.agentreadonly` and `.sandbox/readonly`
+  exist, the new one wins and the legacy file is left alone and reported, not
+  merged. Merging two configs that disagree is how you get a protection list
+  nobody wrote.
+- **Migrate before anything reads configuration**, so the rest of startup
+  sees only the new layout and no code path needs to know both.
 
 ### `.sandbox` is a generic name
 
@@ -145,22 +151,23 @@ went. `.agent/` keeps the existing prefix and reads oddly as a directory.
 5. **Then `dbus-proxy`**, which assumes `.sandbox/` exists and adds
    `.sandbox/dbus` to it.
 
-## Open Questions
+## Open Questions — all now decided
 
-- **Does the read-only directory bind need the project bind to come first?**
-  Almost certainly yes — ordering is how every other nested bind in this
-  project works — but it is one `--dry-run` away from being confirmed rather
-  than assumed, and the parent here is writable, unlike the `/run` case that
-  failed during the xpra work.
-- **Should `.sandbox/` be created when a project has none?** Today scoder
-  writes three dotfiles into every project it touches. A directory is tidier
-  but no less intrusive, and "scoder created a directory in my repo" is a
-  more noticeable event than "scoder created a dotfile". Worth deciding
-  deliberately rather than inheriting the current behaviour by default.
-- **Is anything inside `.sandbox/` ever agent-writable?** Binding the whole
-  directory read-only forecloses that. Nothing wants it today; it is a
-  constraint being chosen rather than discovered.
-- **Does `--migrate-config` use `git mv`?** It would keep history for a
-  tracked file, but means failing or falling back in a repo where the files
-  are untracked. Probably plain moves with a note, but it should be a
-  decision.
+- **Does the read-only directory bind need the project bind first?** Yes.
+  Ordering is how every other nested bind in this project works, and the
+  parent here is writable, unlike the `/run` case that failed during the xpra
+  work.
+- **Should `.sandbox/` be created when a project has none?** Yes,
+  automatically, as a documented feature rather than a side effect.
+- **Is anything inside `.sandbox/` ever agent-writable?** No. Always
+  read-only, which is what makes the whole directory self-protecting and
+  removes the "missing file is writable" class outright.
+- **Does the migration use `git mv`?** No, and no separate command either —
+  plain moves, done automatically on first run.
+- **Test names.** Renamed to match, scripted, in a commit of their own. The
+  names are the validation suite's index and are cross-referenced by
+  `[TESTED_BY]` links, so leaving 30 of them calling a file by a name it no
+  longer has would be a lasting papercut in the one place a reader goes to
+  find out how something is verified. Safe to do mechanically because
+  `em doc`'s broken-link check and the failure-count baseline both catch a
+  mistake immediately.

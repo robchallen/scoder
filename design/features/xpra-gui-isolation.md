@@ -588,18 +588,17 @@ contents and why priority 1001.
 - **D-Bus is untouched**, and is a real capability channel. ADR 0003 says so
   plainly rather than letting "we moved to xpra" imply more than it
   delivers. Separate work.
-- **`XDG_RUNTIME_DIR` is passed through but `/run` is read-only**, so both
-  sides log a steady stream of failures writing under `/run/user/<uid>/`:
-  xpra's own session files and pid files, the client's mmap file, and —
-  loudest — `dconf`, which emits a `dconf-CRITICAL` per attempt and warns
-  that "dconf will not work properly". All non-fatal; Eclipse starts and
-  runs through it. Pointing `XDG_RUNTIME_DIR` at a writable path inside the
-  sandbox would clear most of it, but it is the same variable the RStudio
-  greyed-out-menus fix relies on, so that is a change to make deliberately
-  rather than in passing.
+- ~~**`/run/user/<uid>` write failures**~~ — **fixed**, as a side effect of
+  `dbus-isolation`. `/run` is now a tmpfs rather than a read-only bind of the
+  host's, so that directory is writable and xpra's session files, its pid
+  files, the client's mmap file and `dconf` all stop failing against it.
+  `XDG_RUNTIME_DIR` still points there, so the RStudio greyed-out-menus fix
+  that depends on it is unaffected — it is the same path, now writable and
+  empty rather than read-only and shared.
 
 [HAS_FEATURE](./tool-presets.md)
 [HAS_FEATURE](./ide-companion.md)
 [HAS_FEATURE](./sandbox-isolation.md)
 [HAS_FEATURE](./session-temp-root.md)
+[HAS_FEATURE](./dbus-isolation.md)
 [HAS_TEST](../test-scripts/validation-suite.md)

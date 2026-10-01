@@ -32,6 +32,8 @@ import {
 } from "./git/worktree.ts";
 import type { XpraWrap } from "./sandbox/builder.ts";
 import { buildBwrapCommand, collectBindDests } from "./sandbox/builder.ts";
+import type { DbusProxy } from "./sandbox/dbus.ts";
+import { setupDbus, stopDbusProxy } from "./sandbox/dbus.ts";
 import {
 	getSandboxGid,
 	getSandboxUid,
@@ -245,6 +247,7 @@ async function main(): Promise<void> {
 	let sandboxProjDir = "";
 	let identity: SandboxIdentity | undefined;
 	let sshTunnel: SshTunnel | null = null;
+	let dbusProxy: DbusProxy | null = null;
 	let resolvConfSnapshotPath: string | null = null;
 
 	const uid = getSandboxUid();
@@ -540,6 +543,25 @@ async function main(): Promise<void> {
 			? { socket: xpraSocketPath(), mmap: xpraMmapPath(), target: "harness" }
 			: undefined;
 
+	// EM: The filtered session bus. Started before bwrap, unlike every other
+	// EM: sidecar, because the socket has to exist for the bind.
+	//
+	// EM: Three ways this ends up absent, all of them normal rather than
+	// EM: degraded: no session bus on the host (a build machine), no
+	// EM: xdg-dbus-proxy installed, or an empty allowlist. In each case the
+	// EM: sandbox simply has no bus — which is the safe direction, and the
+	// EM: reason a missing proxy does not fall back to passing the raw socket
+	// EM: through the way a missing xpra must not fall back to host X11.
+	let dbusSocket: string | undefined;
+	if (!options.dryRun) {
+		const hostProjectRoot =
+			options.worktree && worktreeInfo
+				? worktreeInfo.worktreeDir
+				: process.cwd();
+		dbusProxy = await setupDbus(hostProjectRoot, uid);
+		dbusSocket = dbusProxy?.socketPath;
+	}
+
 	const config = {
 		worktreeInfo,
 		sandboxProjDir,
@@ -553,6 +575,7 @@ async function main(): Promise<void> {
 		ideArgs,
 		ideShutdown: idePreset?.ideShutdown,
 		xpra,
+		dbusSocket,
 		protectionConfig,
 	};
 
@@ -692,6 +715,10 @@ async function main(): Promise<void> {
 		// EM: ssh runs outside the sandbox, like pasta — nothing in the
 		// EM: sandbox's own lifecycle reaps it.
 		await stopSshTunnel(sshTunnel);
+
+		// EM: Same family, same reason: it runs on the host, so nothing in the
+		// EM: sandbox's own lifecycle reaps it.
+		await stopDbusProxy(dbusProxy);
 
 		// EM: Nothing unstages /tmp/scoder-<id> here. utils/session.ts
 		// EM: registers a process 'exit' handler for it, which covers this

@@ -14,6 +14,7 @@ import type {
 } from "../types.ts";
 import { getRealHome } from "../utils/paths.ts";
 import { stageFile } from "../utils/session.ts";
+import { dbusSocketDest } from "./dbus.ts";
 import entrypointScript from "./entrypoint.sh" with { type: "text" };
 import {
 	getSandboxGid,
@@ -57,6 +58,9 @@ export interface SandboxConfig {
 	ideBin?: string;
 	ideArgs?: string[];
 	ideShutdown?: IdeShutdown;
+	// EM: Host path of the filtered D-Bus socket, when there is a session bus
+	// EM: to proxy and a proxy to do it with.
+	dbusSocket?: string;
 	// EM: Set when this session runs a GUI preset, as either the primary tool
 	// EM: or the --ide companion. See design/features/xpra-gui-isolation.md.
 	xpra?: XpraWrap;
@@ -87,6 +91,7 @@ export async function buildBwrapCommand(
 		ideArgs,
 		ideShutdown,
 		xpra,
+		dbusSocket,
 		protectionConfig,
 	} = config;
 
@@ -149,9 +154,23 @@ export async function buildBwrapCommand(
 		cmd.push("--ro-bind", "/sys", "/sys");
 	}
 
-	if (await dirExists("/run")) {
-		cmd.push("--ro-bind", "/run", "/run");
-	}
+	// EM: A tmpfs, not the host's /run. Binding it read-only handed the
+	// EM: sandbox every socket under it, and permission was no obstacle:
+	// EM: entering a user namespace changes how ids are *rendered*, not the
+	// EM: credentials the kernel checks, so a sandbox reaches whatever its
+	// EM: user can reach. Verified on a real host — /run/docker.sock
+	// EM: (root:docker, and connect() succeeded) and /run/ssh-agent.sock
+	// EM: (world-writable). A reachable Docker socket is root on the host by
+	// EM: design; a reachable ssh-agent is the user's keys, which is exactly
+	// EM: what --allow-ssh goes to the trouble of not handing over.
+	// EM:
+	// EM: Two things come back the other way. The session bus returns through
+	// EM: xdg-dbus-proxy, filtered (see src/sandbox/dbus.ts). And
+	// EM: /run/user/<uid> becomes *writable*, which silences the steady
+	// EM: stream of failures xpra, its Xvfb and dconf used to log against a
+	// EM: read-only one.
+	cmd.push("--tmpfs", "/run");
+	cmd.push("--dir", `/run/user/${uid}`);
 
 	// EM: /opt is the FHS location for manually-installed, self-contained
 	// EM: software (IDEs, JDKs, browsers, most vendor-shipped dev tools) —
@@ -436,6 +455,20 @@ export async function buildBwrapCommand(
 		if (process.env[envVar]) {
 			cmd.push("--setenv", envVar, process.env[envVar] || "");
 		}
+	}
+
+	// EM: The filtered session bus, at the path everything expects. Bound
+	// EM: read-write: connecting to a unix socket needs write permission on
+	// EM: the socket inode, and while a --ro-bind happens to permit connect()
+	// EM: (verified), there is nothing to gain from relying on that here —
+	// EM: the only thing reachable through it is the proxy.
+	if (dbusSocket) {
+		cmd.push("--bind", dbusSocket, dbusSocketDest(uid));
+		cmd.push(
+			"--setenv",
+			"DBUS_SESSION_BUS_ADDRESS",
+			`unix:path=${dbusSocketDest(uid)}`,
+		);
 	}
 
 	// EM: `--` marks end-of-options, so a tool path beginning with `-` cannot be

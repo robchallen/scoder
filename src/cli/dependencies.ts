@@ -34,7 +34,10 @@ const SOURCES_BASE =
 // EM: files live, this breaks and their script would not. Hence naming the
 // EM: exact URLs as constants above, and reporting the failing step rather
 // EM: than a bare non-zero exit.
-const DISTRO_PACKAGES = ["bubblewrap", "passt"];
+// EM: xdg-dbus-proxy filters the session bus; without it a sandbox gets no
+// EM: D-Bus at all, which is safe but means a GUI preset loses notifications
+// EM: and the file picker. Distro-packaged and current, unlike xpra.
+const DISTRO_PACKAGES = ["bubblewrap", "passt", "xdg-dbus-proxy"];
 
 // EM: Pinned, not merely installed, and to an older release than the one the
 // EM: repository offers. xpra 6.5.4 added a duplicate-scroll-suppression block

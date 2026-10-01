@@ -456,6 +456,79 @@ async function registerReadWriteHomeBind(
 const AGENT_PORTS_FILE = CONFIG_FILES.ports.path;
 const AGENT_PORTS_HEADER = `# ${CONFIG_FILES.ports.path} — ports forwarded from host loopback into the sandbox, one per line\n`;
 
+const DBUS_FILE = CONFIG_FILES.dbus.path;
+
+// EM: Provisional, and labelled as such in the file it writes. The plan calls
+// EM: for deriving this by observation — run the proxy with --log, use both
+// EM: IDEs, read off what they actually ask for — because the cost of
+// EM: guessing wrong is specific: D-Bus passthrough exists in scoder at all
+// EM: because RStudio's menus came up greyed out without it, so a list that
+// EM: does not restore that reintroduces the original bug while claiming to
+// EM: improve security.
+// EM:
+// EM: Deliberately absent: org.freedesktop.secrets (the keyring, i.e. every
+// EM: stored credential) and org.freedesktop.systemd1 (starting units outside
+// EM: the sandbox, i.e. an escape). Neither should ever be added by default;
+// EM: a project that genuinely needs one can say so in its own file.
+const DEFAULT_DBUS_ALLOW = [
+	"org.freedesktop.Notifications",
+	"org.freedesktop.portal.Desktop",
+	"org.freedesktop.portal.Documents",
+];
+
+const DBUS_HEADER = `# ${DBUS_FILE} — D-Bus services the sandbox may talk to, one per line
+#
+# Everything not listed here is refused: the sandbox sees those services as
+# simply absent. A refused call has no symptom of its own, so if something in
+# a GUI quietly does nothing, look at /tmp/scoder-dbus.log inside the sandbox
+# for a *HIDDEN* line naming what was asked for, and add it here.
+#
+# Read once at startup. The proxy cannot reload its filter, so an edit takes
+# effect on the next session, not this one.
+#
+# Two names are deliberately not here and should not be added lightly:
+#   org.freedesktop.secrets   — the keyring: every credential you have stored
+#   org.freedesktop.systemd1  — starting units outside the sandbox: an escape
+`;
+
+// ### readDbusAllowlist
+// [IMPLEMENTS](/design/features/dbus-isolation.md)
+// Bus names the sandbox may talk to. Writes the default on first run.
+export async function readDbusAllowlist(
+	projectRoot: string,
+	dryRun: boolean,
+): Promise<string[]> {
+	const path = `${projectRoot}/${DBUS_FILE}`;
+
+	if (!(await fileExists(path))) {
+		if (!dryRun) {
+			await Bun.write(path, `${DBUS_HEADER}${DEFAULT_DBUS_ALLOW.join("\n")}\n`);
+		}
+		return [...DEFAULT_DBUS_ALLOW];
+	}
+
+	const names: string[] = [];
+	for (const raw of (await Bun.file(path).text()).split("\n")) {
+		const line = raw.trim();
+		if (line === "" || line.startsWith("#")) {
+			continue;
+		}
+		// EM: Validated rather than passed through, because a malformed name
+		// EM: becomes a --talk= argument and xdg-dbus-proxy's own complaint
+		// EM: about it would surface as a proxy that failed to start, with the
+		// EM: real cause two layers away.
+		if (!/^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_-]*)+$/.test(line)) {
+			error(`${DBUS_FILE} has an invalid bus name: "${line}"`);
+			error(
+				"Each line must be a D-Bus well-known name, e.g. org.example.Service",
+			);
+			process.exit(1);
+		}
+		names.push(line);
+	}
+	return names;
+}
+
 // ### readAgentPorts
 // [IMPLEMENTS](/design/features/network-isolation.md)
 // Reads and validates .sandbox/ports: one port per line, blank lines and #

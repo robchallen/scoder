@@ -9,6 +9,7 @@ import { afterAll, expect, test } from "bun:test";
 import { readdirSync, readlinkSync, statSync } from "node:fs";
 import {
 	addGitExclude,
+	readDbusAllowlist,
 	refreshResolvConfSnapshot,
 	removeGitExclude,
 	setupResolvConf,
@@ -1663,6 +1664,73 @@ test("sandbox-agents-md-overlay-visible: AGENTS.md overlay is visible in sandbox
 
 		const output = await new Response(proc.stdout).text();
 		expect(parseInt(output.trim(), 10)).toBeGreaterThan(0);
+	} finally {
+		await cleanupRepo(repoDir);
+	}
+});
+
+// ### Test: run-is-a-tmpfs-not-the-host
+// EM: The security claim of dbus-isolation, asserted as a negative, which is
+// EM: the half that matters. --ro-bind /run /run handed the sandbox every
+// EM: socket under it, and permission was no obstacle: entering a user
+// EM: namespace changes how ids are *rendered*, not the credentials the
+// EM: kernel checks, so a sandbox reaches whatever its user can reach.
+// EM: Verified on a real host that /run/docker.sock (root:docker) and
+// EM: /run/ssh-agent.sock (world-writable) both accepted connect() through
+// EM: that bind. A Docker socket is root on the host by design; an ssh-agent
+// EM: is the user's keys, which is what --allow-ssh exists to avoid handing
+// EM: over.
+// EM:
+// EM: A future change could reinstate that bind for a plausible-sounding
+// EM: reason — something under /run appears to be missing — and nothing would
+// EM: look different from outside. Hence asserting it here.
+test("run-is-a-tmpfs-not-the-host: the host's /run is never bound into the sandbox", async () => {
+	const repoDir = await createTempRepo();
+	tempRepos.push(repoDir);
+
+	try {
+		const output = await runScoder(repoDir, [
+			"--dry-run",
+			"--no-worktree",
+			"/bin/bash",
+		]);
+
+		expect(output).toContain("--tmpfs /run");
+		expect(output).not.toContain("--ro-bind /run /run");
+		expect(output).not.toContain("--bind /run /run");
+
+		// XDG_RUNTIME_DIR has to exist for the bus mountpoint and for the
+		// applications that expect it; it is now a writable tmpfs path rather
+		// than the host's directory.
+		expect(output).toMatch(/--dir \/run\/user\/\d+/);
+	} finally {
+		await cleanupRepo(repoDir);
+	}
+});
+
+// ### Test: dbus-allowlist-defaults-exclude-the-dangerous-names
+// EM: The two names that must never be defaults. org.freedesktop.secrets is
+// EM: the keyring — every credential the user has stored — and
+// EM: org.freedesktop.systemd1 starts units outside the sandbox, which is an
+// EM: escape. A project that genuinely needs one can say so in its own file;
+// EM: neither should ever arrive by default, and a well-meaning "make the
+// EM: portals work" commit is exactly how one would.
+test("dbus-allowlist-defaults-exclude-the-dangerous-names: the default allowlist admits no keyring or systemd", async () => {
+	const repoDir = await createTempRepo();
+	tempRepos.push(repoDir);
+
+	try {
+		const allowed = await readDbusAllowlist(repoDir, false);
+
+		expect(allowed).not.toContain("org.freedesktop.secrets");
+		expect(allowed).not.toContain("org.freedesktop.systemd1");
+		expect(allowed.length).toBeGreaterThan(0);
+
+		// Written on first run, so the file documents itself and a user has
+		// something to edit rather than something to discover.
+		const written = await Bun.file(`${repoDir}/.sandbox/dbus`).text();
+		expect(written).toContain("org.freedesktop.secrets");
+		expect(written).toContain("# ");
 	} finally {
 		await cleanupRepo(repoDir);
 	}

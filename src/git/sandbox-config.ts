@@ -20,11 +20,17 @@ export const CONFIG_DIR = ".sandbox";
  * Project-relative paths of each configuration file, and the legacy dotfile
  * each one replaces.
  */
-export const CONFIG_FILES = {
+export const CONFIG_FILES: Record<
+	string,
+	{ path: string; legacy: string | null }
+> = {
 	readonly: { path: `${CONFIG_DIR}/readonly`, legacy: ".agentreadonly" },
 	readwrite: { path: `${CONFIG_DIR}/readwrite`, legacy: ".agentreadwrite" },
 	ports: { path: `${CONFIG_DIR}/ports`, legacy: ".agentports" },
-} as const;
+	// EM: No legacy counterpart — this one is born in the new layout, which is
+	// EM: why the migration landed first.
+	dbus: { path: `${CONFIG_DIR}/dbus`, legacy: null },
+};
 
 const README = `# .sandbox
 
@@ -37,6 +43,7 @@ do. Edit them from outside.
 - \`readonly\`  — paths kept read-only inside the sandbox
 - \`readwrite\` — \`$HOME\` directories opened read-write
 - \`ports\`     — localhost ports forwarded into the sandbox
+- \`dbus\`      — D-Bus services the sandbox may talk to
 
 scoder creates this directory and these files with sane defaults the first
 time it runs in a project. Each file documents itself in its own comments.
@@ -82,9 +89,12 @@ export async function prepareConfigDir(projectRoot: string): Promise<void> {
 	await mkdir(dir, { recursive: true });
 
 	for (const [name, { path, legacy }] of Object.entries(CONFIG_FILES)) {
-		const from = `${projectRoot}/${legacy}`;
 		const to = `${projectRoot}/${path}`;
 
+		if (!legacy) {
+			continue;
+		}
+		const from = `${projectRoot}/${legacy}`;
 		if (!(await fileExists(from))) {
 			continue;
 		}

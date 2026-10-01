@@ -6,9 +6,11 @@ tags: [issue, xpra, upstream, ide, rstudio]
 
 # xpra's Client Raises on Every Discrete Scroll Event
 
-> **Not a scoder bug.** Reproduced with `design/prototype/xpra-no-sandbox.sh`,
-> which runs the application under xpra with no bwrap, no namespaces and no
-> binds. The fix is a one-line change to xpra 6.5.4 and belongs upstream.
+> **Not a scoder bug, and a regression.** Introduced in xpra **6.5.4**;
+> 6.5.3 and every earlier version checked are unaffected. Reproduced with
+> `design/prototype/xpra-no-sandbox.sh`, which runs the application under
+> xpra with no bwrap, no namespaces and no binds. Fixable by a one-line
+> patch, or by downgrading to 6.5.3 — both below.
 
 ## Summary
 
@@ -61,6 +63,40 @@ delayed region timeout
      ...
 ```
 
+## It is a regression, introduced in 6.5.4
+
+Bisected by downloading each package from the xpra.org repository and
+inspecting the file — no installation needed:
+
+| version | `get_subsystem(` calls in the scroll handler |
+|---|---|
+| 6.4.4-r0-1 | 0 |
+| 6.5-r0-1 | 0 |
+| 6.5.1-r0-1 | 0 |
+| 6.5.2-r0-1 | 0 |
+| 6.5.3-r0-1 | 0 |
+| **6.5.4-r0-1** | **1** |
+
+Diffing the handler between 6.5.3 and 6.5.4 shows the whole block is new —
+it is not a line that changed, it is a feature added in 6.5.4 that cannot
+ever have worked:
+
+```diff
++        pointer_sub = self.get_subsystem("pointer")
++        if SKIP_DUPLICATE_SCROLL_EVENTS and pointer_sub and pointer_sub.wheel_smooth and event.get_pointer_emulated():
++            log("ignoring emulated scroll event: direction=%i", event.direction)
++            return True
+```
+
+`SKIP_DUPLICATE_SCROLL_EVENTS` defaults to `True`
+(`XPRA_SKIP_DUPLICATE_SCROLL_EVENTS`), but that makes no difference here: the
+`get_subsystem` call is on its own line and runs before the condition is
+evaluated, so no environment variable avoids it.
+
+That also means 6.5.3 and earlier do not merely lack the bug — they lack the
+suppression entirely, and forward emulated duplicates as ordinary button
+events.
+
 ## Fix
 
 One line, consistent with how the same file reaches the same object twice
@@ -83,6 +119,27 @@ sudo sed -i 's/pointer_sub = self\.get_subsystem("pointer")/pointer_sub = self._
 Reverted by restoring the `.orig`, or by reinstalling `xpra-client-gtk3`.
 Verified that the patched file parses and that no `get_subsystem(` call
 remains.
+
+This enables the suppression for the first time rather than restoring 6.5.3's
+behaviour, since 6.5.3 had no such block. That is what the author intended,
+and should be an improvement — 6.5.3 forwards the emulated duplicates as
+extra button events — but it is newly exercised code.
+
+### Or downgrade, which carries no such uncertainty
+
+6.5.3 is still in the repository, and all the xpra packages must be pinned
+together or apt will refuse:
+
+```bash
+sudo apt install --allow-downgrades \
+    xpra=6.5.3-r0-1 xpra-client=6.5.3-r0-1 xpra-client-gtk3=6.5.3-r0-1 \
+    xpra-server=6.5.3-r0-1 xpra-x11=6.5.3-r0-1 xpra-codecs=6.5.3-r0-1 \
+    xpra-common=6.5.3-r0-1
+```
+
+Add `xpra-audio`, `xpra-audio-server` and `xpra-codecs-extras` at the same
+version if they are installed. `xpra-html5` versions independently and does
+not need pinning.
 
 ## What this explains about the investigation
 
@@ -110,9 +167,11 @@ several plausible hypotheses each tested negative:
 no sandbox involved, and is the right reproducer to send upstream — it is far
 more useful to xpra than one that requires bwrap.
 
-Whether scoder should detect an affected xpra and warn is open. The version
-range is not established: only 6.5.4-r0 from the xpra.org repository has been
-checked.
+Whether scoder should detect an affected xpra and warn is open, and now
+cheap: the affected range is known to start at 6.5.4, so a version check
+against `xpra --version` would be a two-line test with an accurate message.
+Worth doing if upstream is slow, since the symptom is baffling and nothing
+about it points at xpra.
 
 [IMPACTS](/design/features/xpra-gui-isolation.md)
 [HAS_FEATURE](/design/features/xpra-gui-isolation.md)

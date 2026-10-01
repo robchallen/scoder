@@ -170,6 +170,19 @@ export function buildXpraClientArgs(socketPath: string): string[] {
 		// EM: switch, so defaulting it on is not a regression. Worth exposing
 		// EM: as a flag later.
 		"--clipboard=yes",
+		// EM: xpra otherwise injects its own title bar, carrying an xpra menu
+		// EM: ("Information > About Xpra"), into every *decorated* window —
+		// EM: which is why it appears on RStudio and not on Eclipse, rather
+		// EM: than for any reason to do with either IDE. The default is
+		// EM: `auto` on Linux and `no` on macOS and Windows.
+		// EM:
+		// EM: Off here because the window should look like the application the
+		// EM: user asked for, and because that menu offers session controls
+		// EM: (disconnect, quality) for a connection scoder owns the lifecycle
+		// EM: of — acting on them would desync scoder from its own sidecar.
+		// EM: Overridable: SCODER_XPRA_CLIENT_ARGS is appended after this, and
+		// EM: the last occurrence of an option wins.
+		"--headerbar=no",
 		// EM: The performance fix. Both sides name the same path, which is
 		// EM: only possible because the directory is bound at the same path on
 		// EM: both sides — see xpraDir.

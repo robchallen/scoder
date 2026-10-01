@@ -929,6 +929,50 @@ async function buildExtraBinds(
 		});
 	}
 
+	// EM: GTK appearance. Reported: a GUI preset renders in the default white
+	// EM: theme rather than the user's, which under a dark desktop is not a
+	// EM: small difference. Themes come from several places and a GTK app
+	// EM: needs both halves — the setting that names a theme, and the theme
+	// EM: itself — so missing either leaves it on the default.
+	// EM:
+	// EM: The settings files matter most on KDE specifically, which is where
+	// EM: this was reported: kde-gtk-config writes the chosen GTK theme into
+	// EM: .config/gtk-3.0/settings.ini and .gtkrc-2.0, so without those the
+	// EM: sandbox has no idea a theme was ever chosen. The theme and icon
+	// EM: directories are then what those settings point at, for anything the
+	// EM: user installed themselves; system-wide themes under /usr/share
+	// EM: already arrive with the wholesale read-only /usr bind.
+	// EM:
+	// EM: .fonts and .icons are the pre-XDG locations, still used by plenty of
+	// EM: installers, and cost nothing to include when absent.
+	for (const relative of [
+		".themes",
+		".icons",
+		".fonts",
+		".local/share/themes",
+		".local/share/icons",
+		".config/gtk-3.0",
+		".config/gtk-4.0",
+	]) {
+		const dir = `${realHome}/${relative}`;
+		if (await dirExists(dir)) {
+			binds.push({
+				type: "ro-bind",
+				source: dir,
+				dest: `${sandboxHome}/${relative}`,
+			});
+		}
+	}
+
+	const gtkrcPath = `${realHome}/.gtkrc-2.0`;
+	if (await fileExists(gtkrcPath)) {
+		binds.push({
+			type: "ro-bind",
+			source: gtkrcPath,
+			dest: `${sandboxHome}/.gtkrc-2.0`,
+		});
+	}
+
 	// EM: worktrunk (`wt`) keeps its user config here — most importantly
 	// EM: worktree-path, which decides where `wt switch --create` puts a new
 	// EM: worktree. Without it the sandbox would use worktrunk's own default

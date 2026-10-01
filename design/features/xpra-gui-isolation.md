@@ -487,6 +487,39 @@ XPRA_SCROLL_ENCODING=1 SCODER_XPRA_CLIENT_ARGS="--encoding=rgb" \
   scoder pi --ide eclipse
 ```
 
+### Appearance
+
+Two things a forwarded window gets wrong by default, both reported directly.
+
+**xpra's own title bar.** `--headerbar` defaults to `auto` on Linux, which
+adds an xpra title bar and menu ("Information > About Xpra") to every
+*decorated* window. That is why it appeared on RStudio and not Eclipse —
+nothing to do with either IDE. Turned off (`--headerbar=no`), because the
+window should look like the application the user asked for, and because that
+menu offers session controls for a connection scoder owns the lifecycle of.
+
+**GTK theming.** A GUI preset otherwise renders in the default white theme
+rather than the user's, which under a dark desktop is not a small
+difference. A GTK app needs both halves — the setting naming a theme, and the
+theme itself — so `buildExtraBinds` binds, read-only and each only when
+present:
+
+| path | why |
+|---|---|
+| `.config/gtk-3.0`, `.config/gtk-4.0` | the settings that name the theme |
+| `.gtkrc-2.0` | the same, for GTK2 |
+| `.themes`, `.local/share/themes` | user-installed themes |
+| `.icons`, `.local/share/icons` | user-installed icon themes |
+| `.fonts` | pre-XDG font location, alongside the existing `.local/share/fonts` |
+
+The settings files matter most on KDE, which is where this was reported:
+`kde-gtk-config` writes the chosen GTK theme into `.config/gtk-3.0/settings.ini`
+and `.gtkrc-2.0`, so without them the sandbox has no idea a theme was ever
+chosen. System-wide themes under `/usr/share` already arrive with the
+wholesale read-only `/usr` bind. Verified inside a real sandbox that all three
+kinds resolve: `$HOME` is a tmpfs, so these depend on the `--dir` scaffolding
+for `.config` and `.local/share` that `buildBwrapCommand` already emits.
+
 ### Hard dependency, never a fallback
 
 `requireXpra` (`src/tools/presets.ts`), shared by every GUI preset's

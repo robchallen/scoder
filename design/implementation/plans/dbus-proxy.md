@@ -38,6 +38,32 @@ its blast radius is every session rather than two presets.
 bind. It is a different bus with different services, and nothing in scoder
 has ever needed it.
 
+**And rather more than D-Bus.** `--ro-bind /run /run` hands over every socket
+under `/run`, and on the machine this was written on that included:
+
+| socket | mode | reachable from the sandbox? |
+|---|---|---|
+| `/run/docker.sock` | `srw-rw---- root:docker` | **yes**, verified by `connect()` |
+| `/run/ssh-agent.sock` | `srw-rw-rw-` | **yes**, world-writable |
+
+A reachable Docker socket is root on the host, by design — it is an API for
+creating privileged containers. A reachable ssh-agent is the user's keys,
+which is precisely what `--allow-ssh` exists to avoid handing over: that
+feature goes to the trouble of multiplexing one pre-authenticated connection
+in, while `/run` quietly offers the agent to anything that asks.
+
+The group-gated one is worth dwelling on, because the obvious reason to think
+it is safe is wrong. Inside the sandbox `id -G` reports `1000 65534 65534`
+and the socket shows as `nobody nogroup`, which looks like the `docker` group
+membership has been dropped. It has not. Entering a user namespace changes
+how ids are *rendered*, not the credentials the kernel checks — verified
+directly with a `root:docker` file at mode 640, which the sandbox read while
+reporting no such group. **A sandbox reaches whatever its user can reach.**
+
+This moves `--tmpfs /run` from "part of the D-Bus fix" to the main event, and
+is the strongest argument in this document. It also means the work is worth
+doing even if the D-Bus allowlist turns out to be fiddly.
+
 **What actually depends on `/run` inside the sandbox** is narrow, which is
 what makes this tractable. Checked directly: the only in-sandbox uses are the
 GUI presets' `XDG_RUNTIME_DIR` passthrough, and no test in the suite
@@ -58,6 +84,9 @@ Checked before writing this, rather than assumed:
 | Filter verbs available | `--filter`, `--talk=`, `--see=`, `--own=`, `--call=`, `--broadcast=`, plus `--sloppy-names`. |
 | `/run` is bound for every sandbox, not only GUI ones | **Yes** — `buildBwrapCommand`, unconditional on `dirExists("/run")`. |
 | Anything in the test suite depends on `/run` | **No** — zero references. |
+| `/run/docker.sock` is reachable from a sandbox | **Yes** — `connect()` succeeded, despite the socket being `root:docker` and `id -G` reporting no such group. |
+| `/run/ssh-agent.sock` is reachable | **Yes** — it is `srw-rw-rw-`. |
+| Supplementary groups are really dropped in the namespace | **No.** They are only *unmapped*, so they display as `nogroup` while still passing permission checks. Verified with a `root:docker` file at mode 640. |
 
 Not verified, and needing a real desktop: whether the session bus genuinely
 offers an escape on the reporting machine (`org.freedesktop.systemd1`'s

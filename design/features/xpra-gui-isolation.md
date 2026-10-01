@@ -289,16 +289,20 @@ host:    id -G -> 1000 27 1001   (user, sudo, docker)
 sandbox: id -G -> 1000 65534 65534
 ```
 
-DRM render nodes are commonly `crw-rw---- root:render`, so a user who can
-open `/dev/dri/renderD128` on the host *by virtue of being in `render` or
-`video`* cannot open it inside the sandbox. The bind carries the inode,
-permissions included; it cannot carry a group membership the namespace has
-thrown away.
+**That display is misleading, and an earlier version of this document drew
+the wrong conclusion from it.** Entering a user namespace changes how ids are
+*rendered*, not the credentials the kernel checks against. Verified directly:
+a file owned `root:docker` with mode 640 is readable from inside the sandbox
+by a process whose `id -G` reports only `1000 65534 65534`. The supplementary
+group is still there as far as permission checks are concerned — it simply
+has no name inside the namespace.
 
-**On a systemd desktop this turns out not to bite**, which was checked rather
-than assumed after being written up as the likely cause. `logind` sets a
-POSIX ACL on `/dev/dri/*` granting the active user access *by uid*, and a uid
-ACL survives exactly where a group does not:
+So a group-gated device *is* reachable from the sandbox, and this was never
+what blocked the GPU.
+
+Separately, `logind` sets a POSIX ACL on `/dev/dri/*` granting the active
+user access by uid, so on a systemd desktop the node is reachable by that
+route as well:
 
 ```
 crw-rw----+ 1 nobody nogroup 226, 128 renderD128     <- note the ACL "+"
@@ -308,13 +312,12 @@ writable: yes                                         <- ACL still grants it
 
 The owner reads as `nobody nogroup` only because root and `render` are
 outside the namespace's uid/gid map. The node is accessible, and RStudio's
-Chromium zygote was in fact holding `/dev/dri/renderD128` open. So this is
-not what blocks the GPU here.
+Chromium zygote was in fact holding `/dev/dri/renderD128` open.
 
-It remains a real constraint on hosts without such an ACL, and it is not
-fixable from inside scoder: adding a supplementary group needs a gid mapping
-the user namespace may not make without a setuid helper. There the options
-would be a udev rule, or software rendering.
+The wider consequence is a security one rather than a GPU one, and it is
+followed up in `dbus-proxy`: because group membership keeps working, a
+sandbox reaches anything on the host that its user can reach, including
+group-gated sockets under `/run`.
 
 It is also worth noting beyond the GPU: **any group-gated device or file is
 invisible to a sandboxed tool in the same way.** That is arguably correct

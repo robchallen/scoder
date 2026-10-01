@@ -68,7 +68,7 @@ src/
 │   └── apparmor.ts       # AppArmor profile installation
 ├── git/
 │   ├── worktree.ts       # Git worktree lifecycle management
-│   └── protection.ts     # .agentreadonly, AGENTS.md overlay, ~/.agents snapshot
+│   └── protection.ts     # .sandbox/readonly, AGENTS.md overlay, ~/.agents snapshot
 ├── tools/
 │   └── presets.ts        # Tool presets (opencode, claude, copilot, pi)
 ├── sandbox/
@@ -89,7 +89,7 @@ Option parsing (--help, --version, --worktree/--no-worktree, etc.)
   → Special modes exit early (--configure-apparmor, --install-dependencies)
   → Tool preset selection and validation
   → If worktree mode: Git worktree creation (branch + /tmp directory)
-  → Infrastructure protection setup (.agentreadonly parsing, AGENTS.md overlay)
+  → Infrastructure protection setup (.sandbox/readonly parsing, AGENTS.md overlay)
   → Agent skills snapshot (~/.agents copied to /tmp)
   → Resolver config snapshot (/etc/resolv.conf)
   → bwrap command construction with all bind mounts
@@ -219,9 +219,9 @@ This keeps the repository copy untouched while giving the sandboxed agent
 environment-specific instructions. The overlay must be applied after the main
 worktree bind, just like the protected infrastructure read-only overlays.
 
-### `.agentreadonly` HOME binds
+### `.sandbox/readonly` HOME binds
 
-In addition to repository-relative protected paths, `.agentreadonly` also
+In addition to repository-relative protected paths, `.sandbox/readonly` also
 accepts bare entries beginning with literal `$HOME/`. These are interpreted as
 read-only reference directory binds from the host home into the sandbox's home,
 preserving the same relative path under `/home/scoder/`.
@@ -289,7 +289,7 @@ Sometimes you want sandboxing without git branch management:
 - No git worktree created
 - No branch created
 - Sandboxed execution in current directory
-- `.agentreadonly` protection still applies
+- `.sandbox/readonly` protection still applies
 - AGENTS.md overlay still created
 - No commit on exit
 - Changes are immediate in working directory
@@ -399,15 +399,15 @@ Certain files should not be modified by sandboxed tools:
 ### Default Protection
 
 By default, these paths are protected (read-only). The list can be customized
-via `.agentreadonly` in the repository root.
+via `.sandbox/readonly` in the repository root.
 
-### `.agentreadonly` File
+### `.sandbox/readonly` File
 
 Format: similar to `.gitignore`
 
 - One path per line
 - Comments start with `#`
-- Empty file = all paths writable (except `.agentreadonly` itself)
+- Empty file = all paths writable (except `.sandbox/readonly` itself)
 - `$HOME/...` entries bind host home directories read-only
 
 Example:
@@ -425,7 +425,7 @@ $HOME/Git/other-project
 Protected paths are overlaid with `--ro-bind` **after** the worktree bind,
 which makes them read-only even though the worktree itself is writable.
 
-The `.agentreadonly` file itself is always protected (cannot be modified).
+The `.sandbox/readonly` file itself is always protected (cannot be modified).
 
 ---
 

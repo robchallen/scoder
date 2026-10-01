@@ -62,7 +62,7 @@ const DOUBLE_SIGINT_WINDOW_MS =
 	Number.parseInt(process.env.SCODER_DOUBLE_SIGINT_WINDOW_MS || "", 10) || 2000;
 
 /**
- * How often to re-read .agentports during a live session. Overridable so
+ * How often to re-read .sandbox/ports during a live session. Overridable so
  * tests don't have to wait out a multi-second interval to observe a reload.
  */
 const AGENT_PORTS_POLL_MS =
@@ -178,7 +178,7 @@ export async function launchSandbox(
 		await Bun.write(blockPath, "go\n");
 
 		// From here on the ports watcher owns the sidecar's lifetime — it may
-		// swap it out for a fresh one if .agentports changes mid-session.
+		// swap it out for a fresh one if .sandbox/ports changes mid-session.
 		portsWatcher = startAgentPortsWatcher(
 			projectRoot,
 			options,
@@ -549,7 +549,7 @@ interface AgentPortsWatcher {
 
 // ### startAgentPortsWatcher
 // [IMPLEMENTS](/design/features/network-isolation.md)
-// Polls .agentports for the rest of the session and reloads pasta when it
+// Polls .sandbox/ports for the rest of the session and reloads pasta when it
 // changes — the netns belongs to bwrap, not pasta (see ADR 0001), so a swap
 // never touches the sandbox itself, only which ports are forwarded into it.
 //
@@ -589,7 +589,7 @@ function startAgentPortsWatcher(
 			try {
 				latestPorts = await readAgentPorts(projectRoot);
 			} catch (err) {
-				warning(`Failed to re-read .agentports: ${err}`);
+				warning(`Failed to re-read .sandbox/ports: ${err}`);
 				continue;
 			}
 
@@ -598,7 +598,7 @@ function startAgentPortsWatcher(
 			}
 
 			info(
-				`.agentports changed — reloading pasta with ports: ${latestPorts.join(", ") || "none"}`,
+				`.sandbox/ports changed — reloading pasta with ports: ${latestPorts.join(", ") || "none"}`,
 			);
 
 			await stopPasta(current);
@@ -616,7 +616,7 @@ function startAgentPortsWatcher(
 			}
 
 			warning(
-				".agentports reload failed to attach — restoring the previous port configuration",
+				".sandbox/ports reload failed to attach — restoring the previous port configuration",
 			);
 			swapCount++;
 			const restored = await attachPasta(
@@ -627,11 +627,11 @@ function startAgentPortsWatcher(
 
 			if (restored) {
 				current = restored;
-				warning("restored the previous .agentports configuration");
+				warning("restored the previous .sandbox/ports configuration");
 			} else {
 				current = null;
 				error(
-					"failed to restore the previous .agentports configuration — the sandbox has no forwarded ports",
+					"failed to restore the previous .sandbox/ports configuration — the sandbox has no forwarded ports",
 				);
 			}
 		}

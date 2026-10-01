@@ -4,7 +4,7 @@ status: complete
 tags: [plan, sandbox, network, pasta, filesystem]
 ---
 
-# `.agentports`: Persistent Host-Loopback Port Access, Live-Reloaded
+# `.sandbox/ports`: Persistent Host-Loopback Port Access, Live-Reloaded
 
 > **Implemented**, with two deviations from the design below, both discovered
 > during implementation:
@@ -34,10 +34,10 @@ tags: [plan, sandbox, network, pasta, filesystem]
 >   good config running instead.
 >
 > A third issue was found and fixed *after* the initial implementation
-> shipped: **a missing `.agentports` was never created, so nothing was bound
+> shipped: **a missing `.sandbox/ports` was never created, so nothing was bound
 > at that path at all** — a missing source path gets no bind mount, which
 > left the path part of the regular read-write project bind. The sandboxed
-> agent could create `.agentports` itself, with whatever ports it liked,
+> agent could create `.sandbox/ports` itself, with whatever ports it liked,
 > completely unprotected — worse, `getAgentPortsBind` creating it (before
 > `buildBwrapCommand` runs) closes this within the very same session that
 > finds it missing, so this was never actually a "safe until next run" gap,
@@ -59,8 +59,8 @@ across every future session without anyone needing to remember a port
 number, and be editable from outside the sandbox with the change taking
 effect in a running session, not just the next one.
 
-A `.agentports` file at the project root is the entire mechanism, following
-`.agentreadonly` and the `scratch` symlink's existing convention: a file's
+A `.sandbox/ports` file at the project root is the entire mechanism, following
+`.sandbox/readonly` and the `scratch` symlink's existing convention: a file's
 presence and content *is* the configuration, no flag. It replaces
 `--llm-port`.
 
@@ -72,7 +72,7 @@ the same mechanism now serves MCP servers, local research-tool APIs, and
 whatever else needs a locally hosted port, not just LLM endpoints. Keeping
 it around as a second, CLI-flag-based way to configure the same thing this
 file now owns creates a genuine ambiguity — if `--llm-port 8080` is passed,
-should the port persist into `.agentports` for future sessions, or was it
+should the port persist into `.sandbox/ports` for future sessions, or was it
 meant as a one-off? Neither answer is clearly right, and the file removes
 the question rather than resolving it awkwardly. Since this is
 pre-deployment alpha, the cost of removing it now is low; it will not be
@@ -89,15 +89,15 @@ manually-specified port list, which was never LLM-specific in practice.
 ### 1. File format: one port per line, strict validation
 
 Blank lines and lines starting with `#` are skipped, matching
-`.agentreadonly`'s existing convention. Every other line must be a single
-integer in `1-65535` — unlike `.agentreadonly`'s permissive pattern parsing,
+`.sandbox/readonly`'s existing convention. Every other line must be a single
+integer in `1-65535` — unlike `.sandbox/readonly`'s permissive pattern parsing,
 a malformed line is a **hard error** (exit 1, naming the bad line), not a
 silent skip. This is host-loopback network exposure, not a workspace
 protection list; a config file that could silently mean less than it looks
 like is the wrong failure mode here.
 
 ```
-# .agentports — ports forwarded from host loopback into the sandbox
+# .sandbox/ports — ports forwarded from host loopback into the sandbox
 11434   # ollama, auto-detected
 23119   # zotero local api
 ```
@@ -107,18 +107,18 @@ consistent with how the port itself is just the leading token.)
 
 ### 2. Always read-only inside the sandbox, unconditionally
 
-Same treatment `.agentreadonly` gives itself: `.agentports` is bind-mounted
+Same treatment `.sandbox/readonly` gives itself: `.sandbox/ports` is bind-mounted
 `ro-bind` into the sandbox regardless of whether anything else lists it,
-not routed through the `.agentreadonly` protected-paths mechanism. The
+not routed through the `.sandbox/readonly` protected-paths mechanism. The
 agent can see what's configured; only the host side can change it.
 
 ### 3. Auto-detection seeds the file, additively, once
 
 `detectDefaultLlmPort()` keeps probing `127.0.0.1:11434` (or
 `SCODER_LLM_PORT`) at startup. On a hit, if that port is not already listed
-in `.agentports`, append it — creating the file if it doesn't exist yet.
+in `.sandbox/ports`, append it — creating the file if it doesn't exist yet.
 Never remove or reorder existing entries. This is the same shape of thing
-`setupProtection` already does for a missing `.agentreadonly` (writing a
+`setupProtection` already does for a missing `.sandbox/readonly` (writing a
 default), just additive to an existing file rather than only bootstrapping
 an absent one.
 
@@ -133,7 +133,7 @@ track it).
 
 `launchSandbox` gains a polling loop, started once the sandbox is released
 and running alongside `await proc.exited`, stopped when the tool exits. On
-each tick, re-read and re-parse `.agentports`; if the resulting port list
+each tick, re-read and re-parse `.sandbox/ports`; if the resulting port list
 differs from the one currently forwarded, swap pasta:
 
 1. Attempt to attach a *new* pasta sidecar, with the updated port list, to
@@ -142,7 +142,7 @@ differs from the one currently forwarded, swap pasta:
    [ADR 0001](/architecture/decision-records/0001-sandbox-uid-and-networking-composition.md)).
 2. If it attaches successfully, stop the *old* sidecar and adopt the new one.
 3. If it fails to attach, leave the old sidecar exactly as it was and warn
-   loudly — a bad edit to `.agentports` degrades to "the change didn't take,
+   loudly — a bad edit to `.sandbox/ports` degrades to "the change didn't take,
    try again," never to "the sandbox silently lost networking."
 
 Polling, not `fs.watch`/inotify: simpler, and sidesteps a real class of bugs
@@ -190,7 +190,7 @@ export interface ScoderOptions {
 
 Renamed, not just repurposed — `llmPorts` described a CLI-flag-populated,
 LLM-framed list; `openPorts` is a general "these host-loopback ports are
-forwarded" list seeded from `.agentports` plus whatever the LLM probe just
+forwarded" list seeded from `.sandbox/ports` plus whatever the LLM probe just
 added. The rename is the honest description of what changed.
 
 ### `src/cli/parse-args.ts`
@@ -203,7 +203,7 @@ added. The rename is the honest description of what changed.
 ### `src/git/protection.ts` (or a new small module — see Interactions)
 
 ```typescript
-// Reads and validates .agentports. Missing file -> []. A malformed line is
+// Reads and validates .sandbox/ports. Missing file -> []. A malformed line is
 // a hard error (exit 1), not a silent skip — see Design Decision 1.
 export async function readAgentPorts(projectRoot: string): Promise<number[]>;
 
@@ -211,7 +211,7 @@ export async function readAgentPorts(projectRoot: string): Promise<number[]>;
 // Never reorders or removes existing entries.
 export async function appendAgentPort(projectRoot: string, port: number): Promise<void>;
 
-// The read-only self-bind, unconditional, same treatment as .agentreadonly.
+// The read-only self-bind, unconditional, same treatment as .sandbox/readonly.
 export function getAgentPortsBind(projectRoot: string, sandboxProjDir: string): BindMount | null;
 ```
 
@@ -231,7 +231,7 @@ if (!options.openPorts.includes(/* SCODER_LLM_PORT or 11434 */)) {
 
 Plus the `getAgentPortsBind` result pushed into `protectionConfig.safeBinds`,
 alongside the other project-root marker files (same place `scratch` and
-`.agentreadonly` itself get wired in).
+`.sandbox/readonly` itself get wired in).
 
 ### `src/sandbox/pasta.ts`
 
@@ -254,46 +254,46 @@ to an options field).
 ## Interactions to Resolve
 
 1. **Where does `readAgentPorts`/`appendAgentPort`/`getAgentPortsBind` live?**
-   `protection.ts` already owns the equivalent `.agentreadonly` and
+   `protection.ts` already owns the equivalent `.sandbox/readonly` and
    `scratch` logic, and reuses its `fileExists`/line-parsing helpers — the
    natural home unless it grows enough to warrant its own file, the same
    judgment call `ssh.ts` resolved the other way for `--allow-ssh`.
-2. **Worktree mode and a freshly created worktree not having `.agentports`
+2. **Worktree mode and a freshly created worktree not having `.sandbox/ports`
    yet**, if it's gitignored rather than tracked — the exact same shape of
    issue the `scratch` symlink design already resolved, and the same
    resolution applies: track it, and a fresh `git worktree add` checkout
    carries it automatically. No new mechanism needed, just the same
    recommendation repeated in this file's own README section.
 3. **Interaction with `--dry-run`.** The auto-detect-and-append side effect
-   (writing to `.agentports`) should not happen under `--dry-run`, matching
+   (writing to `.sandbox/ports`) should not happen under `--dry-run`, matching
    how `--allow-ssh` avoids opening a real connection under `--dry-run` —
    dry-run must stay side-effect free. Read the existing file for display,
    but skip the probe-and-append step.
-4. **What happens to a port that's removed from `.agentports` while a
+4. **What happens to a port that's removed from `.sandbox/ports` while a
    session is running?** Symmetric with adding one — the next poll tick
    picks up the shorter list and reattaches pasta without it. Same
    swap-with-fallback mechanics either direction.
 
 ## Test Plan
 
-- `agentports-forwards-listed-port`: a port listed in `.agentports` is
+- `agentports-forwards-listed-port`: a port listed in `.sandbox/ports` is
   reachable inside the sandbox without any CLI flag.
 - `agentports-malformed-line-fails`: a non-numeric or out-of-range line
   exits 1 naming the bad line.
-- `agentports-is-readonly`: `--dry-run` shows `--ro-bind` for `.agentports`,
+- `agentports-is-readonly`: `--dry-run` shows `--ro-bind` for `.sandbox/ports`,
   not `--bind`.
 - `agentports-auto-detect-appends`: with a mock LLM-style server on the
-  probed port and no pre-existing `.agentports`, a session creates the file
+  probed port and no pre-existing `.sandbox/ports`, a session creates the file
   containing that port; a second session with the file already present and
   the port still listed does not duplicate the entry.
 - `agentports-auto-detect-skips-under-dry-run`: `--dry-run` with a
-  detectable port does not write `.agentports`.
+  detectable port does not write `.sandbox/ports`.
 - `agentports-live-reload-adds-port`: start a session, append a port to
-  `.agentports` mid-session, confirm it becomes reachable without
+  `.sandbox/ports` mid-session, confirm it becomes reachable without
   restarting — the real end-to-end proof, and the one that needs the poll
   interval short enough to observe in a test within a reasonable timeout.
 - `agentports-live-reload-bad-edit-keeps-old-config`: mid-session, edit
-  `.agentports` in a way that makes the new pasta attach fail (mirroring the
+  `.sandbox/ports` in a way that makes the new pasta attach fail (mirroring the
   fake-`pasta`-on-`PATH` technique from `bwrap-not-orphaned-on-pasta-attach-failure`),
   confirm the previously-working port is still reachable afterward — guards
   Design Decision 4's fallback specifically, not just the happy path.
@@ -306,12 +306,12 @@ to an options field).
 (At implementation time.)
 
 - `design/features/network-isolation.md`: replace the `--llm-port`
-  description with `.agentports` and the auto-detect-appends behaviour.
+  description with `.sandbox/ports` and the auto-detect-appends behaviour.
 - New `design/features/agentports.md` (or fold into `network-isolation.md`
   directly, since it's the same feature area — a judgment call for
   implementation time, not fixed here).
-- `README.md`: remove `--llm-port` from Options; add a `.agentports` section
-  alongside the existing `.agentreadonly` and `scratch` ones.
+- `README.md`: remove `--llm-port` from Options; add a `.sandbox/ports` section
+  alongside the existing `.sandbox/readonly` and `scratch` ones.
 - `design/test-scripts/validation-suite.md`: the new cases, and the removal
   of any `--llm-port`-specific ones that no longer apply.
 - `architecture/FRAMEWORK.md`: module map, if a new file is warranted (see

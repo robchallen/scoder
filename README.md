@@ -36,7 +36,7 @@ always overrides this.
 
 **`eclipse`** For scoder to work eclipse must have the import-projects plugin
 installed. Scoder creates a persisted, dedicated workspace using the sandbox's
-own project path, plus every included project in `.agentreadonly` —
+own project path, plus every included project in `.sandbox/readonly` —
 so cross-project references resolve correctly, with no
 separate step before the IDE opens. `$HOME/.eclipse` is bound in whole,
 read-write, so your real preferences and configuration carry over rather
@@ -63,7 +63,7 @@ investigation.
 2. Runs the tool in a sandbox **directly in your current working directory**.
    Paths inside the sandbox mirror real absolute paths.
 3. No git branch creation, no worktree isolation.
-4. `.agentreadonly` protection still applies.
+4. `.sandbox/readonly` protection still applies.
 5. Starts the tool through `pasta`, which keeps outbound networking available
    while blocking host localhost services such as `127.0.0.1`.
 6. No commit on exit — changes are immediate.
@@ -87,14 +87,14 @@ investigation.
 
 - **Ephemeral HOME** — a fresh, empty tmpfs each session, populated only by
   explicit binds (the project itself, a curated set of tool configs, and
-  anything `.agentreadonly` adds). `$HOME` itself is your real home path,
+  anything `.sandbox/readonly` adds). `$HOME` itself is your real home path,
   not a separate one — nothing here is a synthetic identity, but nothing
   persists in it either except what's actually bound in.
 - **System read-only** — `/usr`, `/bin`, `/lib`, `/etc` are read-only.
 - **Protected infrastructure** — `.github/`, `.claude/`, `opencode.json`,
    `.gitignore`, `package-lock.json`, `poetry.lock`, `Cargo.lock`, `pnpm-lock.yaml`, `yarn.lock`, `mise.toml`
-   are read-only by default. List can be modified with a `.agentreadonly` file in the repository
-   root. (`.agentreadonly` is always protected)
+   are read-only by default. List can be modified with a `.sandbox/readonly` file in the repository
+   root. (`.sandbox/readonly` is always protected)
 - **Agent skills snapshot** — `~/.agents` is copied at sandbox start and bound
   read-only into the sandbox, so symlinked skills resolve as a stable snapshot
   for the duration of the session.
@@ -126,11 +126,11 @@ investigation.
 - **Host localhost blocked** — tools run behind `pasta` with host localhost
   forwarding disabled, so host-local TCP services are not reachable
   from the sandbox while outbound networking stays available.
-- **Persistent host-loopback ports** — an `.agentports` file at the project
+- **Persistent host-loopback ports** — an `.sandbox/ports` file at the project
   root lists ports forwarded into the sandbox (an MCP server, a local
   research-tool API, an LLM endpoint), live-reloaded if edited mid-session.
   If a local OpenAI-compatible API is listening on port `11434` (the Ollama
-  default) it is auto-detected at startup and appended to `.agentports`
+  default) it is auto-detected at startup and appended to `.sandbox/ports`
   automatically. Override the probed port with `SCODER_LLM_PORT`. See
   [persistent host-loopback ports](#persistent-host-loopback-ports-an-agentports-file)
   below.
@@ -139,7 +139,7 @@ investigation.
   sandbox and multiplexes only that connection in. See
   [ssh access](#ssh-access---allow-ssh) below.
 - **No persistent read-write access outside the project by default** — an
-  `.agentreadwrite` file at the project root lists `$HOME/...` directories
+  `.sandbox/readwrite` file at the project root lists `$HOME/...` directories
   to bind read-write, for a persistent cache or analysis output that
   survives session restarts. See
   [persistent read-write access](#persistent-read-write-access-an-agentreadwrite-file)
@@ -181,10 +181,10 @@ Scoder options must come before the tool name:
 me@remote-host` (anything after the tool name is passed to the tool
 unparsed).
 
-### `.agentreadonly` file
+### `.sandbox/readonly` file
 
 Protecting workspace infrastructure files or directories can be modified with a
-`.agentreadonly` file which is formatted like a `.gitignore` file and defines
+`.sandbox/readonly` file which is formatted like a `.gitignore` file and defines
 what paths within the workspace an agent cannot modify (they can still be read).
 An empty file will make all workspace files writeable.
 
@@ -268,21 +268,21 @@ also sets `MCPTOOLS_SOCKET_DIR` to a writable sandbox path, so
 `.Rprofile` line needed (its own default location, `/run/user/<uid>`, is
 read-only inside the sandbox).
 
-## Persistent host-loopback ports (an `.agentports` file)
+## Persistent host-loopback ports (an `.sandbox/ports` file)
 
-A file named `.agentports` at the project root lists host-loopback ports
+A file named `.sandbox/ports` at the project root lists host-loopback ports
 forwarded into the sandbox — an MCP server running outside it, a locally
 hosted research-tool API (Zotero's, say), an LLM endpoint. No flag: the
 file's presence and content is the entire mechanism, same as
-`.agentreadonly` and `.agentreadwrite`.
+`.sandbox/readonly` and `.sandbox/readwrite`.
 
 ```
-# .agentports — one port per line, # comments allowed
+# .sandbox/ports — one port per line, # comments allowed
 11434   # ollama, auto-detected
 23119   # zotero local api
 ```
 
-- **Always read-only inside the sandbox**, like `.agentreadonly` — only the
+- **Always read-only inside the sandbox**, like `.sandbox/readonly` — only the
   host side can change it. If it doesn't exist yet, it's created first (just
   a header comment) rather than left unbound, which would otherwise leave it
   writable from inside the sandbox in that first session.
@@ -292,35 +292,35 @@ file's presence and content is the entire mechanism, same as
   failure mode.
 - **Auto-detection persists automatically**: if a local OpenAI-compatible
   API is listening on port `11434` (override with `SCODER_LLM_PORT`) it is
-  appended to `.agentports` — additively, only once — so the next session,
+  appended to `.sandbox/ports` — additively, only once — so the next session,
   and every teammate's session, has it without anyone naming the port
   again. Skipped entirely under `--dry-run`.
-- **Live-reloaded.** Editing `.agentports` while a session is running
+- **Live-reloaded.** Editing `.sandbox/ports` while a session is running
   reattaches networking with the new port list, without restarting the
   session. A malformed or failing edit falls back to whatever was working
   before, rather than leaving the sandbox with no networking.
 - **Tracked or gitignored, either works** — same trade-off as
-  `.agentreadwrite`: tracked means a `-w`/`--worktree` session's fresh
+  `.sandbox/readwrite`: tracked means a `-w`/`--worktree` session's fresh
   checkout carries it automatically, which is the recommended default for
   anything a whole project needs, not just one person's session.
 
-## Persistent read-write access (an `.agentreadwrite` file)
+## Persistent read-write access (an `.sandbox/readwrite` file)
 
-A file named `.agentreadwrite` at the project root lists `$HOME/...`
+A file named `.sandbox/readwrite` at the project root lists `$HOME/...`
 directories to bind read-write into the sandbox — a persistent cache,
 analysis output, or any other directory outside the project tree that
 needs to survive session restarts. One line per directory, the same
-`$HOME/...` line format `.agentreadonly` already uses for its own home
+`$HOME/...` line format `.sandbox/readonly` already uses for its own home
 binds, just opening write access instead of read-only.
 
 ```
-# .agentreadwrite — $HOME/... directories bound read-write into the sandbox, one per line
+# .sandbox/readwrite — $HOME/... directories bound read-write into the sandbox, one per line
 $HOME/.cache/my-cache
 $HOME/analysis-output/figures
 ```
 
 - **A missing target directory is created** (`mkdir -p`), not left as an
-  error — unlike `.agentreadonly`'s own `$HOME/...` binds, which require
+  error — unlike `.sandbox/readonly`'s own `$HOME/...` binds, which require
   the target to already exist. A fresh cache or output directory that
   doesn't exist yet on a machine's first run is the common case here, not
   an exception.
@@ -329,25 +329,25 @@ $HOME/analysis-output/figures
   with a clear error. Any line not starting with `$HOME/` is rejected the
   same way: nothing outside `$HOME` is supported at all.
 - **Must not overlap a fixed scoder bind** (`~/.gitconfig`, `~/.m2`,
-  `~/.rustup`, and similar) or an `.agentreadonly` `$HOME/...` entry —
+  `~/.rustup`, and similar) or an `.sandbox/readonly` `$HOME/...` entry —
   both are hard errors naming the conflicting path, rather than a silent
   downgrade to read-only.
-- **Always read-only itself inside the sandbox**, like `.agentreadonly`
-  and `.agentports` — only the host side can change which directories are
+- **Always read-only itself inside the sandbox**, like `.sandbox/readonly`
+  and `.sandbox/ports` — only the host side can change which directories are
   listed.
 
 **Tracked or gitignored, either works** — tracked is recommended: a
 `-w`/`--worktree` session's fresh checkout then carries the file
 automatically. Gitignored works too, but only in direct mode: a new
 worktree checkout contains only tracked files, so an untracked
-`.agentreadwrite` from your main checkout won't appear there on its own.
+`.sandbox/readwrite` from your main checkout won't appear there on its own.
 
 ## After a session
 
 ### Direct mode (default)
 
 Changes are made directly to your working directory. No branch is created,
-no cleanup is needed. The `.agentreadonly` protection still applies during
+no cleanup is needed. The `.sandbox/readonly` protection still applies during
 the session.
 
 ### Worktree mode (`-w` / `--worktree`)

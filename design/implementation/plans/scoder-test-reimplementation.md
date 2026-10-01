@@ -81,8 +81,8 @@ afterAll(async () => {
 5. gitignore-protected - verify .gitignore is protected
 
 ### Agentreadonly Tests
-6. empty-agentreadonly-allows-writes - verify empty .agentreadonly removes protection
-7. agentreadonly-protected - verify .agentreadonly itself is always protected
+6. empty-agentreadonly-allows-writes - verify empty .sandbox/readonly removes protection
+7. agentreadonly-protected - verify .sandbox/readonly itself is always protected
 8. agentreadonly-home-directory-readonly - verify $HOME/ binds are read-only
 9. agentreadonly-home-directory-must-exist - verify $HOME/ paths must exist
 

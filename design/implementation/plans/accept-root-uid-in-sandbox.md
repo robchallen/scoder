@@ -112,7 +112,7 @@ asking NSS lands correctly instead of hitting ENOENT. Cheap insurance.
 
 > **Decided: out of scope.** ssh failing inside the sandbox is the intended
 > behaviour — the sandbox should not carry credentials for reaching other
-> systems. Users opt in explicitly with a `$HOME/.ssh` line in `.agentreadonly`,
+> systems. Users opt in explicitly with a `$HOME/.ssh` line in `.sandbox/readonly`,
 > which already binds host directories read-only at the mirrored path.
 >
 > Of the options below, agent forwarding (option 1) was reconsidered and drafted

@@ -86,7 +86,7 @@ dependency surface above, and by sequencing (Decision 9).
 
 ### 2. The allowlist is a project file, not a constant
 
-The same shape as `.agentports` and `.agentreadonly`: deny by default, allow
+The same shape as `.sandbox/ports` and `.sandbox/readonly`: deny by default, allow
 what a read-only file in the repo names, log what was refused, and let the
 user edit that file from outside the sandbox. It is the mechanism this
 project already uses twice for exactly this problem — a capability that must
@@ -102,7 +102,7 @@ plan therefore assumes that migration lands **first**. If it does not, this
 becomes `.agentdbus` and migrates with the rest.
 
 The file holds well-known bus names, one per line, `#` comments, same as
-`.agentports`:
+`.sandbox/ports`:
 
 ```
 # Services this project's tools may talk to on the session bus.
@@ -112,7 +112,7 @@ org.freedesktop.portal.Desktop
 
 Three things follow from reusing the pattern rather than inventing one:
 
-- **Sane defaults, written on first run**, as `.agentreadonly` does — so the
+- **Sane defaults, written on first run**, as `.sandbox/readonly` does — so the
   common case needs no action and the file documents itself by existing.
 - **Self-protecting**, which under `.sandbox/` is free: the whole directory
   is bound read-only, so the sandbox cannot widen its own permissions.
@@ -120,7 +120,7 @@ Three things follow from reusing the pattern rather than inventing one:
   can name the file and the line to add, which is the difference between a
   menu that mysteriously does nothing and a one-line fix.
 
-Whether to re-read it mid-session, as `.agentports` is watched, is an open
+Whether to re-read it mid-session, as `.sandbox/ports` is watched, is an open
 question. `xdg-dbus-proxy` takes its filter at startup and has no reload, so
 honouring a change would mean restarting the proxy and reconnecting every
 client — probably not worth it. Say so in the file's header rather than
@@ -256,7 +256,7 @@ Mirroring `src/sandbox/xpra.ts`, which is the closest existing sibling:
 ### `src/git/protection.ts`
 
 - Read and validate `.sandbox/dbus`, writing the default on first run —
-  alongside the existing `.agentports` and `.agentreadonly` readers, which it
+  alongside the existing `.sandbox/ports` and `.sandbox/readonly` readers, which it
   should look like.
 
 ### `src/tools/presets.ts`

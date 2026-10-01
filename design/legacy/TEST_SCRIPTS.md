@@ -55,33 +55,33 @@ Tries to append text to `.gitignore`.
 
 ### 6. `empty-agentreadonly-allows-writes`
 
-Creates an empty `.agentreadonly`, commits it, then tries to create a file inside `.github/`.
+Creates an empty `.sandbox/readonly`, commits it, then tries to create a file inside `.github/`.
 
-**Expected result:** the write succeeds. An empty `.agentreadonly` removes the default workspace protection list, while `.agentreadonly` itself remains protected separately.
+**Expected result:** the write succeeds. An empty `.sandbox/readonly` removes the default workspace protection list, while `.sandbox/readonly` itself remains protected separately.
 
 ### 7. `agentreadonly-protected`
 
-Creates and commits an empty `.agentreadonly`, then tries to modify that file from inside the sandbox.
+Creates and commits an empty `.sandbox/readonly`, then tries to modify that file from inside the sandbox.
 
-**Expected result:** the write fails because `.agentreadonly` is always mounted read-only.
+**Expected result:** the write fails because `.sandbox/readonly` is always mounted read-only.
 
 ### 8. `agentreadonly-home-directory-readonly`
 
 Creates a fake home directory with a reference directory outside the repository,
-adds `$HOME/Git/other-project` to `.agentreadonly`, and runs `scoder` with that
+adds `$HOME/Git/other-project` to `.sandbox/readonly`, and runs `scoder` with that
 fake home.
 
 **Expected result:**
 - the sandbox can read `/home/scoder/Git/other-project/data.txt`
 - writes to that mirrored path fail because the bind is read-only
 
-This verifies that bare `$HOME/...` entries in `.agentreadonly` are treated as
+This verifies that bare `$HOME/...` entries in `.sandbox/readonly` are treated as
 read-only host home directory binds mirrored under `/home/scoder/`.
 
 ### 9. `agentreadonly-home-directory-must-exist`
 
 Creates a fake home directory without the referenced path, adds
-`$HOME/Git/missing-project` to `.agentreadonly`, and runs `scoder`.
+`$HOME/Git/missing-project` to `.sandbox/readonly`, and runs `scoder`.
 
 **Expected result:** `scoder` exits with an error explaining that the HOME bind
 must reference an existing directory.

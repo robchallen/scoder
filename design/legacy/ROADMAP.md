@@ -79,8 +79,8 @@ Default protected paths: `.github/`, `.opencode/`, `.claude/`, `opencode.json`,
 `.gitignore`, `package-lock.json`, `poetry.lock`, `Cargo.lock`, `pnpm-lock.yaml`,
 `yarn.lock`, `mise.toml`.
 
-Customisable via `.agentreadonly` in the repository root (`.gitignore` syntax).
-An empty `.agentreadonly` makes all workspace files writable. `.agentreadonly`
+Customisable via `.sandbox/readonly` in the repository root (`.gitignore` syntax).
+An empty `.sandbox/readonly` makes all workspace files writable. `.sandbox/readonly`
 itself is always protected.
 
 ### Environment

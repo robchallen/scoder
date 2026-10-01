@@ -493,7 +493,7 @@ XPRA_SCROLL_ENCODING=1 SCODER_XPRA_CLIENT_ARGS="--encoding=rgb" \
 
 ### Appearance
 
-Two things a forwarded window gets wrong by default, both reported directly.
+Three things a forwarded window gets wrong by default, all reported directly.
 
 **xpra's own title bar.** `--headerbar` defaults to `auto` on Linux, which
 adds an xpra title bar and menu ("Information > About Xpra") to every
@@ -501,6 +501,28 @@ adds an xpra title bar and menu ("Information > About Xpra") to every
 nothing to do with either IDE. Turned off (`--headerbar=no`), because the
 window should look like the application the user asked for, and because that
 menu offers session controls for a connection scoder owns the lifecycle of.
+
+**Dialog placement.** Reported: dialogs appear in unusual places on the
+host. `--modal-windows` defaults to `no`, and xpra's source says why — GTK
+offers only application-modal, not window-modal, so a modal window blocks
+input to *every* window that client manages, "including other unrelated
+applications". That warning is about one client serving a session full of
+applications. A scoder session has its own server and client forwarding one
+GUI program, so the windows at risk are that program's own, which is what a
+modal dialog is meant to block. Turned on (`--modal-windows=yes`).
+
+It is a placement fix only indirectly: modal is about input, but a window
+manager uses the modal and `transient-for` hints to decide to centre a dialog
+on its parent instead of placing it by its own policy. So it is the right
+lever for *dialogs* and not for menus or dropdowns — those are
+override-redirect windows positioned absolutely by the application, and xpra
+already patches a `transient-for` onto them and nudges them back on-screen.
+If the misplaced popups are menus rather than dialogs, this will not touch
+them and the cause is elsewhere.
+
+Unverified in this project, which has no desktop to see window placement on.
+`SCODER_XPRA_CLIENT_ARGS="--modal-windows=no"` turns it off without a
+rebuild.
 
 **GTK theming.** A GUI preset otherwise renders in the default white theme
 rather than the user's, which under a dark desktop is not a small

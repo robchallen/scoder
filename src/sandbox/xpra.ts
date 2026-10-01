@@ -183,6 +183,38 @@ export function buildXpraClientArgs(socketPath: string): string[] {
 		// EM: Overridable: SCODER_XPRA_CLIENT_ARGS is appended after this, and
 		// EM: the last occurrence of an option wins.
 		"--headerbar=no",
+		// EM: Reported: dialogs appear in unusual places on the host desktop.
+		// EM: xpra defaults this to no, and the reason is in its own source —
+		// EM: GTK has no window-modal, only application-modal, so a modal
+		// EM: window blocks input to *every* window this client manages:
+		// EM:
+		// EM:   # setting the window as modal would prevent
+		// EM:   # all other windows we manage from receiving input
+		// EM:   # including other unrelated applications
+		// EM:   # what we want is "window-modal"
+		// EM:
+		// EM: That warning is about a client attached to a session serving
+		// EM: several applications. A scoder session has its own server and
+		// EM: its own client, forwarding one GUI program, so "every window
+		// EM: this client manages" is that program's own windows — which is
+		// EM: what a modal dialog is supposed to block. The edge case left is
+		// EM: something the program spawned separately (a file manager, a
+		// EM: browser) being blocked by a dialog that is not its own.
+		// EM:
+		// EM: It is a placement fix only indirectly: modal is about input, but
+		// EM: a window manager uses the modal and transient-for hints to
+		// EM: decide to centre a dialog on its parent rather than placing it
+		// EM: by its own policy. That makes it the right lever for *dialogs*
+		// EM: and not for menus or dropdowns, which are override-redirect
+		// EM: windows positioned absolutely by the application — xpra already
+		// EM: patches a transient-for onto those and corrects them back
+		// EM: on-screen (patch_OR_popup_transient_for, calculate_window_offset).
+		// EM:
+		// EM: Unverified by the author: this project has no desktop to see
+		// EM: window placement on. SCODER_XPRA_CLIENT_ARGS="--modal-windows=no"
+		// EM: turns it back off without a rebuild, which is how it should be
+		// EM: A/B'd.
+		"--modal-windows=yes",
 		// EM: The performance fix. Both sides name the same path, which is
 		// EM: only possible because the directory is bound at the same path on
 		// EM: both sides — see xpraDir.

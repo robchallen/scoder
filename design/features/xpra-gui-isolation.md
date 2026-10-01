@@ -293,12 +293,25 @@ Two routes, neither yet tested:
    ```
 
    Whether it took effect is checkable rather than a matter of impression —
-   from inside the sandbox, Chromium's GPU process either has the render
-   node open or it does not:
+   a process using the GPU has the DRM render node open:
 
+   ```bash
+   for p in $(ls /proc | grep -E '^[0-9]+$'); do
+       ls -l "/proc/$p/fd" 2>/dev/null | grep -q '/dev/dri/' &&
+           echo "pid $p: $(tr '\0' ' ' < "/proc/$p/cmdline" | cut -c1-90)"
+   done
    ```
-   ls -l /proc/$(pgrep -f type=gpu-process | head -1)/fd | grep dri
-   ```
+
+   Two things that an earlier, broken version of this check got wrong, both
+   worth stating because they are properties of this sandbox rather than
+   mistakes anyone would expect. **scoder does not unshare the PID
+   namespace** (see `sandbox-isolation`), so `/proc` inside the sandbox
+   shows the host's processes too — `pgrep` will cheerfully match a browser
+   running on the desktop outside. Hence printing every match with its
+   command line and picking out the rstudio one, rather than trusting the
+   first hit. And most of those host processes belong to other users or are
+   otherwise unreadable, so the `2>/dev/null` is load-bearing: without it
+   the output is hundreds of `Permission denied` lines and no answer.
 
 2. **Give xpra a virtual display that can reach the GPU.** `--xvfb=` accepts
    alternatives, including `weston+Xwayland`, where Weston's headless

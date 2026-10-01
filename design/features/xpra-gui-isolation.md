@@ -289,16 +289,20 @@ host:    id -G -> 1000 27 1001   (user, sudo, docker)
 sandbox: id -G -> 1000 65534 65534
 ```
 
-DRM render nodes are commonly `crw-rw---- root:render`, so a user who can
-open `/dev/dri/renderD128` on the host *by virtue of being in `render` or
-`video`* cannot open it inside the sandbox. The bind carries the inode,
-permissions included; it cannot carry a group membership the namespace has
-thrown away.
+**That display is misleading, and an earlier version of this document drew
+the wrong conclusion from it.** Entering a user namespace changes how ids are
+*rendered*, not the credentials the kernel checks against. Verified directly:
+a file owned `root:docker` with mode 640 is readable from inside the sandbox
+by a process whose `id -G` reports only `1000 65534 65534`. The supplementary
+group is still there as far as permission checks are concerned — it simply
+has no name inside the namespace.
 
-**On a systemd desktop this turns out not to bite**, which was checked rather
-than assumed after being written up as the likely cause. `logind` sets a
-POSIX ACL on `/dev/dri/*` granting the active user access *by uid*, and a uid
-ACL survives exactly where a group does not:
+So a group-gated device *is* reachable from the sandbox, and this was never
+what blocked the GPU.
+
+Separately, `logind` sets a POSIX ACL on `/dev/dri/*` granting the active
+user access by uid, so on a systemd desktop the node is reachable by that
+route as well:
 
 ```
 crw-rw----+ 1 nobody nogroup 226, 128 renderD128     <- note the ACL "+"
@@ -308,13 +312,13 @@ writable: yes                                         <- ACL still grants it
 
 The owner reads as `nobody nogroup` only because root and `render` are
 outside the namespace's uid/gid map. The node is accessible, and RStudio's
-Chromium zygote was in fact holding `/dev/dri/renderD128` open. So this is
-not what blocks the GPU here.
+Chromium zygote was in fact holding `/dev/dri/renderD128` open.
 
-It remains a real constraint on hosts without such an ACL, and it is not
-fixable from inside scoder: adding a supplementary group needs a gid mapping
-the user namespace may not make without a setuid helper. There the options
-would be a udev rule, or software rendering.
+The wider consequence is a security one rather than a GPU one, and it is
+followed up in [0004-no-host-dbus](/architecture/decision-records/0004-no-host-dbus.md):
+because group membership keeps working, a sandbox reaches anything on the
+host that its user can reach, including group-gated sockets under `/run`.
+`/run` is a tmpfs now, for exactly that reason.
 
 It is also worth noting beyond the GPU: **any group-gated device or file is
 invisible to a sandboxed tool in the same way.** That is arguably correct
@@ -489,7 +493,8 @@ XPRA_SCROLL_ENCODING=1 SCODER_XPRA_CLIENT_ARGS="--encoding=rgb" \
 
 ### Appearance
 
-Two things a forwarded window gets wrong by default, both reported directly.
+Three things a forwarded window gets wrong by default, all reported directly.
+One of them is still open.
 
 **xpra's own title bar.** `--headerbar` defaults to `auto` on Linux, which
 adds an xpra title bar and menu ("Information > About Xpra") to every
@@ -497,6 +502,35 @@ adds an xpra title bar and menu ("Information > About Xpra") to every
 nothing to do with either IDE. Turned off (`--headerbar=no`), because the
 window should look like the application the user asked for, and because that
 menu offers session controls for a connection scoder owns the lifecycle of.
+
+**Dialog placement — open, and one fix ruled out.** Reported: dialogs appear
+in unusual places on the host.
+
+`--modal-windows=yes` was the obvious candidate and is **wrong**: it
+completely breaks drop-down menus. Tried on a real desktop and reverted.
+
+The mechanism is in xpra's client, and the warning sign was there to read
+beforehand. The option does not merely set a flag — turning it on activates a
+dormant code path that fires on *every* override-redirect window, which is
+what a drop-down menu is:
+
+```python
+if override_redirect and self.modal_windows:
+    # find any modal windows and remove the flag
+    # so that the OR window can get the focus
+    # (it will be re-enabled when the OR window disappears)
+```
+
+So every menu that opens makes the client walk its windows toggling modal
+off, and every menu that closes tries to put it back. With
+`--modal-windows=no` that dance never runs at all. The option's blast radius
+is menus, not dialogs — the opposite of where it was aimed.
+
+This is also why it was the wrong lever on its own terms: modal is about
+input, not position. A window manager does use modal and `transient-for` to
+decide to centre a dialog on its parent, which was the theory, but xpra
+already patches a `transient-for` onto override-redirect windows and nudges
+them back on-screen. Whatever is misplacing the dialogs is still unidentified.
 
 **GTK theming.** A GUI preset otherwise renders in the default white theme
 rather than the user's, which under a dark desktop is not a small
@@ -582,18 +616,20 @@ contents and why priority 1001.
   were measured against a directly-exec'd IDE; the signalled process is now
   the xpra server. Unchanged, and should be re-measured rather than reasoned
   about.
-- **D-Bus is untouched**, and is a real capability channel. ADR 0003 says so
-  plainly rather than letting "we moved to xpra" imply more than it
-  delivers. Separate work.
-- **`XDG_RUNTIME_DIR` is passed through but `/run` is read-only**, so both
-  sides log a steady stream of failures writing under `/run/user/<uid>/`:
-  xpra's own session files and pid files, the client's mmap file, and —
-  loudest — `dconf`, which emits a `dconf-CRITICAL` per attempt and warns
-  that "dconf will not work properly". All non-fatal; Eclipse starts and
-  runs through it. Pointing `XDG_RUNTIME_DIR` at a writable path inside the
-  sandbox would clear most of it, but it is the same variable the RStudio
-  greyed-out-menus fix relies on, so that is a change to make deliberately
-  rather than in passing.
+- ~~**D-Bus is untouched**, and is a real capability channel~~ — **closed**
+  by [0004-no-host-dbus](/architecture/decision-records/0004-no-host-dbus.md).
+  The host's session bus went with `--tmpfs /run` and nothing brings it back.
+  What the GUI gets instead is xpra's *own* private bus, which it starts by
+  default and which reaches nothing outside the sandbox — and which turned
+  out to be all the applications ever needed.
+- ~~**`/run/user/<uid>` write failures**~~ — **fixed** by the same tmpfs.
+  That directory is writable now, so xpra's session files, its pid files, the
+  client's mmap file and `dconf` all stop failing against it.
+- **xpra's scope is wider than this document assumes.** It brought its own
+  session bus, its own notification forwarding, its own printer enumeration
+  and its own menu watcher; three of those were switched off one at a time,
+  each as a separate surprise, before anyone looked at the pattern. More of
+  xpra is worth reading before the next feature is built beside it.
 
 [HAS_FEATURE](./tool-presets.md)
 [HAS_FEATURE](./ide-companion.md)

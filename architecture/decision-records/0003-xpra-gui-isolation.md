@@ -79,6 +79,12 @@ exposes on it. **Moving to xpra closes the largest and best-documented hole
 in GUI isolation, not the last one.** Deciding what to do about D-Bus is
 separate work and needs its own plan.
 
+> **Since superseded by
+> [0004](./0004-no-host-dbus.md).** `/run` is a tmpfs, the address is no
+> longer passed through, and the host's session bus is unreachable. The
+> paragraph above stands as written at the time: it was right that this was
+> a real, open hole, and right that it needed its own decision.
+
 Two capabilities xpra would otherwise proxy back are turned off explicitly
 rather than left at their defaults, for the same reason: `--notifications=no`
 and `--printing=no`. Observed directly during the end-to-end test — the

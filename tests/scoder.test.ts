@@ -1668,6 +1668,83 @@ test("sandbox-agents-md-overlay-visible: AGENTS.md overlay is visible in sandbox
 	}
 });
 
+// ### Test: run-is-a-tmpfs-not-the-host
+// EM: The security claim of ADR 0004, asserted as a negative, which is the
+// EM: half that matters — and, since the proxy was dropped, the only thing
+// EM: standing between the sandbox and the host's session bus. --ro-bind /run /run handed the sandbox every
+// EM: socket under it, and permission was no obstacle: entering a user
+// EM: namespace changes how ids are *rendered*, not the credentials the
+// EM: kernel checks, so a sandbox reaches whatever its user can reach.
+// EM: Verified on a real host that /run/docker.sock (root:docker) and
+// EM: /run/ssh-agent.sock (world-writable) both accepted connect() through
+// EM: that bind. A Docker socket is root on the host by design; an ssh-agent
+// EM: is the user's keys, which is what --allow-ssh exists to avoid handing
+// EM: over.
+// EM:
+// EM: A future change could reinstate that bind for a plausible-sounding
+// EM: reason — something under /run appears to be missing — and nothing would
+// EM: look different from outside. Hence asserting it here.
+test("run-is-a-tmpfs-not-the-host: the host's /run is never bound into the sandbox", async () => {
+	const repoDir = await createTempRepo();
+	tempRepos.push(repoDir);
+
+	try {
+		const output = await runScoder(repoDir, [
+			"--dry-run",
+			"--no-worktree",
+			"/bin/bash",
+		]);
+
+		expect(output).toContain("--tmpfs /run");
+		expect(output).not.toContain("--ro-bind /run /run");
+		expect(output).not.toContain("--bind /run /run");
+
+		// XDG_RUNTIME_DIR still has to exist for the applications that expect
+		// it; it is now a writable tmpfs path rather than the host's
+		// directory, with none of the host's sockets in it.
+		expect(output).toMatch(/--dir \/run\/user\/\d+/);
+	} finally {
+		await cleanupRepo(repoDir);
+	}
+});
+
+// ### Test: no-host-dbus-address-in-the-sandbox
+// EM: The positive half of run-is-a-tmpfs-not-the-host, and the one a
+// EM: well-meaning change is most likely to undo. The host's session bus was
+// EM: passed through for a year on the strength of a symptom — RStudio's
+// EM: menus greyed out — that was never retested once xpra started providing
+// EM: a private bus of its own. It turned out the application needed *a*
+// EM: bus, not the user's, and ADR 0004 drops the host's entirely.
+// EM:
+// EM: Forwarding the address without the socket is worse than leaving it
+// EM: unset, because it points applications at a path the tmpfs removed
+// EM: instead of letting xpra's own bus take over. Asserted against a GUI
+// EM: preset specifically: that is the code path that used to set it, and
+// EM: the only one where anything would notice.
+test("no-host-dbus-address-in-the-sandbox: the host's session bus address is never passed in", async () => {
+	const repoDir = await createTempRepo();
+	tempRepos.push(repoDir);
+	const fakeBinDir = await createFakeToolDir("rstudio");
+
+	try {
+		const output = await runScoder(repoDir, ["--dry-run", "rstudio"], {
+			PATH: `${fakeBinDir}:${process.env.PATH}`,
+			DBUS_SESSION_BUS_ADDRESS: "unix:path=/run/user/1000/bus",
+		});
+
+		expect(output).not.toContain("DBUS_SESSION_BUS_ADDRESS");
+		expect(output).not.toContain("/run/user/1000/bus");
+
+		// XDG_RUNTIME_DIR still goes through: it names a directory the
+		// sandbox has, and applications that use it for scratch space rather
+		// than for the bus still need it.
+		expect(output).toContain("XDG_RUNTIME_DIR");
+	} finally {
+		await Bun.spawn(["rm", "-rf", fakeBinDir]).exited;
+		await cleanupRepo(repoDir);
+	}
+});
+
 // ### Test: legacy-config-migrated-automatically
 // EM: The upgrade path. Automatic and unconditional, because every
 // EM: alternative is worse at this project's scale: hard-failing breaks

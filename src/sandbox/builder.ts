@@ -1,4 +1,5 @@
-import { mkdir } from "node:fs/promises";
+import { mkdir, realpath } from "node:fs/promises";
+import { dirname } from "node:path";
 import type { ProtectionConfig } from "../git/protection.ts";
 import {
 	getGitCommonDir,
@@ -57,6 +58,8 @@ export interface SandboxConfig {
 	ideBin?: string;
 	ideArgs?: string[];
 	ideShutdown?: IdeShutdown;
+	// EM: Host path of the filtered D-Bus socket, when there is a session bus
+	// EM: to proxy and a proxy to do it with.
 	// EM: Set when this session runs a GUI preset, as either the primary tool
 	// EM: or the --ide companion. See design/features/xpra-gui-isolation.md.
 	xpra?: XpraWrap;
@@ -149,9 +152,24 @@ export async function buildBwrapCommand(
 		cmd.push("--ro-bind", "/sys", "/sys");
 	}
 
-	if (await dirExists("/run")) {
-		cmd.push("--ro-bind", "/run", "/run");
-	}
+	// EM: A tmpfs, not the host's /run. Binding it read-only handed the
+	// EM: sandbox every socket under it, and permission was no obstacle:
+	// EM: entering a user namespace changes how ids are *rendered*, not the
+	// EM: credentials the kernel checks, so a sandbox reaches whatever its
+	// EM: user can reach. Verified on a real host — /run/docker.sock
+	// EM: (root:docker, and connect() succeeded) and /run/ssh-agent.sock
+	// EM: (world-writable). A reachable Docker socket is root on the host by
+	// EM: design; a reachable ssh-agent is the user's keys, which is exactly
+	// EM: what --allow-ssh goes to the trouble of not handing over.
+	// EM:
+	// EM: The host's session bus goes with it, and nothing brings it back:
+	// EM: see architecture/decision-records/0004-no-host-dbus.md. One thing
+	// EM: does come back the other way — /run/user/<uid> becomes *writable*,
+	// EM: which silences the steady stream of failures xpra, its Xvfb and
+	// EM: dconf used to log against a read-only one.
+	cmd.push("--tmpfs", "/run");
+	cmd.push("--dir", `/run/user/${uid}`);
+	cmd.push(...(await runSymlinkDirs()));
 
 	// EM: /opt is the FHS location for manually-installed, self-contained
 	// EM: software (IDEs, JDKs, browsers, most vendor-shipped dev tools) —
@@ -475,6 +493,44 @@ export async function buildBwrapCommand(
 	// EM: decision in this function keeps applying to the sandbox the tool
 	// EM: actually runs in.
 	return [...buildDevLayer(uid, gid, cmd), "--", ...cmd];
+}
+
+// ### resolvConfDest
+// Where a bind of the DNS snapshot has to land inside the sandbox.
+//
+// EM: Not always `/etc/resolv.conf`. On a systemd host that path is a symlink
+// EM: to `/run/systemd/resolve/stub-resolv.conf`, and `/etc` is bound from
+// EM: the host so the symlink comes with it. bwrap will not create a
+// EM: mountpoint *through* a symlink — verified, including with the target's
+// EM: parent directory scaffolded first, which was the obvious fix and does
+// EM: not work. Binding at the resolved path instead means the host's own
+// EM: symlink resolves to the snapshot, so nothing has to know whether this
+// EM: machine uses systemd-resolved.
+//
+// EM: Reported immediately after `/run` became a tmpfs:
+// EM: `bwrap: Can't create file at /etc/resolv.conf: No such file or
+// EM: directory`. It had never arisen before because the symlink used to
+// EM: resolve into the host's own `/run`, which was bound. Missed here
+// EM: because this development container has a plain file at that path — the
+// EM: single most likely difference between a container and a real desktop,
+// EM: and not something `--dry-run` can show.
+export async function resolvConfDest(): Promise<string> {
+	try {
+		const target = await realpath("/etc/resolv.conf");
+		return target.startsWith("/run/") ? target : "/etc/resolv.conf";
+	} catch {
+		// Absent or dangling on the host; the plain path is the best guess and
+		// the bind simply will not be added if there is nothing to snapshot.
+		return "/etc/resolv.conf";
+	}
+}
+
+// ### runSymlinkDirs
+// `--dir` scaffolding for the resolv.conf destination when it lands in the
+// new `/run` tmpfs, since a bind needs its parent to exist.
+async function runSymlinkDirs(): Promise<string[]> {
+	const dest = await resolvConfDest();
+	return dest.startsWith("/run/") ? ["--dir", dirname(dest)] : [];
 }
 
 // ### buildDevLayer

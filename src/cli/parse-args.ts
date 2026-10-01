@@ -43,8 +43,8 @@ Setup (run once, requires sudo):
                           Install AppArmor profile to allow bwrap to create
                           user namespaces (required on Ubuntu 24.04+)
   sudo scoder --install-dependencies
-                          uses apt to install bubblewrap and passt, and adds
-                          the upstream xpra repository (needed by GUI
+                          uses apt to install bubblewrap and passt, and
+                          adds the upstream xpra repository (needed by GUI
                           presets; the distro's own xpra is too old or
                           absent) before installing xpra and xpra-x11
 `;

@@ -134,14 +134,21 @@ xpra_wrap() {
 	# %q-quoted rather than passed raw — this is the one place an argument
 	# does cross a shell boundary, and the quoting is what keeps that safe.
 	#
-	# Audio, notifications and printing are off. Audio because the stack is
-	# not wired through the sandbox and produced nothing but a steady stream
-	# of pactl connection failures in the log. The other two because they are
-	# capability channels in their own right — xpra will happily proxy the
-	# host's notification daemon and its printer list into the sandbox, and
-	# handing those back is the opposite of the point of this layer. Observed
-	# directly during the end-to-end test: the client tried to enumerate
+	# Audio and printing are off. Audio because the stack is not wired
+	# through the sandbox and produced nothing but a steady stream of pactl
+	# connection failures in the log. Printing because it is a capability
+	# channel in its own right, and one nothing has asked for — observed
+	# directly during the end-to-end test, the client tried to enumerate
 	# printers over the system bus unprompted.
+	#
+	# Notifications were off for that second reason and are now on, which is
+	# a deliberate reversal rather than an oversight. Dropping the host's
+	# session bus (ADR 0004) left the sandbox no way to tell the user
+	# anything at all, and this is the one channel worth having back. What
+	# crosses is outward only: content raised inside the session, relayed
+	# down the display connection to the client, which shows it on the real
+	# desktop. The sandbox still cannot call the host's notification service,
+	# or reach anything else through it.
 	#
 	# --mmap is the performance fix, and it only works because the directory
 	# holding it is bound at the same absolute path on both sides: xpra sends
@@ -183,7 +190,18 @@ xpra_wrap() {
 		--daemon=no
 		--exit-with-children=yes
 		"--start-child=$(printf '%q ' "$@")"
-		--notifications=no
+		# Forwarded to the client, which raises them on the user's real
+		# desktop. This is the whole of what the sandbox gets to say to the
+		# host's desktop, and it travels down the display connection rather
+		# than over a bus — already authenticated, nothing to allowlist, and
+		# no path back for the host's services to be reached in return. See
+		# architecture/decision-records/0004-no-host-dbus.md.
+		#
+		# xpra's own session bus, started by --dbus-launch and private to
+		# this sandbox, is likewise deliberate and left at its default: it
+		# is what gives Electron and GTK applications the bus they expect
+		# without any of it reaching the host.
+		--notifications=yes
 		--printing=no
 		--input-method=keep
 		"--mmap=${XPRA_MMAP:-yes}"

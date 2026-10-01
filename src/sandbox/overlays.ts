@@ -109,6 +109,40 @@ export async function setupOverlays(
 	return binds;
 }
 
+// ### ensureOverlaySources
+// Create any missing host source file, empty, before bwrap binds over it.
+//
+// EM: Not optional, and not merely tidy. A bind needs a mountpoint, and if the
+// EM: host file does not exist bwrap creates one itself inside what is a
+// EM: read-write bind of the user's own project directory — so the file
+// EM: appears on the host either way. The difference is the mode: bwrap
+// EM: creates it `-r--r--r--`, verified directly, leaving the user an empty
+// EM: read-only .Rprofile in their project that they cannot edit without
+// EM: chmod. Creating it here instead gives it ordinary permissions and makes
+// EM: a visible side effect on the user's project a deliberate act rather
+// EM: than a consequence of how bwrap happens to work.
+//
+// EM: Called from launchSandbox rather than at setup time, so that --dry-run
+// EM: — which must not touch the user's project — never reaches it.
+export async function ensureOverlaySources(
+	overlays: LiveOverlay[],
+): Promise<void> {
+	for (const overlay of overlays) {
+		if (await Bun.file(overlay.source).exists()) {
+			continue;
+		}
+		try {
+			await Bun.write(overlay.source, "");
+			info(`Created empty ${overlay.source} for the sandbox overlay`);
+		} catch {
+			// EM: Not fatal. bwrap will make its own mountpoint, which is the
+			// EM: behaviour this improves on rather than depends on; a project
+			// EM: directory we cannot write to is unusual but not a reason to
+			// EM: refuse the session.
+		}
+	}
+}
+
 export interface OverlayWatcher {
 	stop(): void;
 }

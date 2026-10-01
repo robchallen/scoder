@@ -16,7 +16,7 @@ import { terminateProcess } from "../utils/process.ts";
 import { stageHostScratchDir } from "../utils/session.ts";
 import { wrapWithFdShim } from "./builder.ts";
 import type { LiveOverlay, OverlayWatcher } from "./overlays.ts";
-import { startOverlayWatcher } from "./overlays.ts";
+import { ensureOverlaySources, startOverlayWatcher } from "./overlays.ts";
 import {
 	attachPasta,
 	buildPastaArgs,
@@ -128,6 +128,12 @@ export async function launchSandbox(
 	let overlayWatcher: OverlayWatcher | null = null;
 
 	try {
+		// EM: Before bwrap, so that a missing host file gets ordinary
+		// EM: permissions rather than the read-only mountpoint bwrap would
+		// EM: create in its place. Never reached under --dry-run, which exits
+		// EM: long before this.
+		await ensureOverlaySources(overlays);
+
 		// bwrap blocks reading this fifo until we release it
 		await makeFifo(blockPath);
 		await Bun.write(infoPath, "");

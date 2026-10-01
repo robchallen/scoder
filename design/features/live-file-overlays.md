@@ -86,6 +86,32 @@ would be silently useless.
 A missing source renders as the injection alone, with no leading blank line,
 and the overlay starts tracking the file if it appears later.
 
+### When the host file does not exist
+
+**An empty file is created on the host.** That is unavoidable rather than
+chosen: a bind needs a mountpoint, and the project directory is bound
+read-write, so if the file is absent bwrap creates one there — which is the
+host's own directory. The file appears either way.
+
+What scoder controls is *how*. Verified directly: bwrap's own mountpoint is
+created `-r--r--r--`, leaving an empty **read-only** `.Rprofile` in the
+project that the user cannot edit without `chmod`. So `ensureOverlaySources`
+creates it first, with ordinary `-rw-r--r--` permissions, and says so. The
+side effect on the user's project becomes a deliberate act rather than a
+consequence of how bwrap happens to work.
+
+It is called from `launchSandbox`, not at setup time, so `--dry-run` never
+reaches it — confirmed that a dry run leaves the project untouched.
+
+Two consequences worth knowing:
+
+- The file **persists after the session**. For `AGENTS.md` this is long-
+  standing behaviour.
+- `AGENTS.md` is masked from git with `skip-worktree` (see
+  `agents-md-overlay`), but **a created `.Rprofile` is not** — it will show as
+  untracked. That is arguably right, since an R project probably wants one,
+  but it is not hidden.
+
 ### Polled, not inotify
 
 Two seconds, matching the `resolv.conf` watcher. inotify instances are a

@@ -831,13 +831,28 @@ throwaway temp repos), and it reuses the same fake pasta shim as case 64.
 Self-skips if `/opt` does not exist on the host at all. See
 [design/implementation/issues/opt-not-mounted.md](/design/implementation/issues/opt-not-mounted.md).
 
-### 92. rstudio-preset-binds-x11-and-config-dirs
-[TESTED_BY](/tests/scoder.test.ts#testRstudioPresetBindsX11AndConfigDirs)
+### 92a. gui-preset-binds-xpra-socket-not-host-x11
+[TESTED_BY](/tests/scoder.test.ts#testGuiPresetBindsXpraSocketNotHostX11)
 
-The `rstudio` preset binds `/tmp/.X11-unix` (when present on the host),
-passes `DISPLAY` through, and binds `~/.config/rstudio` and
-`~/.local/share/rstudio` read-write. See
-[0002-rstudio-x11-access](/architecture/decision-records/0002-rstudio-x11-access.md).
+A GUI preset's sandbox gets the xpra socket directory bound read-write and
+`XPRA_SOCKET` set, and gets **none** of the host X11 access ADR 0002
+accepted: no `/tmp/.X11-unix`, no `XAUTHORITY`, no `.Xauthority`, no
+`DISPLAY` passthrough. `DISPLAY` is set in the environment for this run
+deliberately, since a host with a real X session is where a regression
+would be most likely to "work".
+
+The negative half is the point. A future change could silently reintroduce
+host X11 access — a preset gaining a convenience bind, someone fixing a
+display problem the quick way — and everything would still function,
+without the isolation. Nothing else would catch it: the window looks
+identical either way. See
+[0003-xpra-gui-isolation](/architecture/decision-records/0003-xpra-gui-isolation.md).
+
+### 92b. rstudio-preset-binds-config-dirs
+[TESTED_BY](/tests/scoder.test.ts#testRstudioPresetBindsConfigDirs)
+
+The `rstudio` preset binds `~/.config/rstudio` and `~/.local/share/rstudio`
+read-write.
 
 ### 93. rstudio-preset-binds-dev-dri-when-present
 [TESTED_BY](/tests/scoder.test.ts#testRstudioPresetBindsDevDriWhenPresent)
@@ -848,7 +863,7 @@ showed a white window then crashed with `SIGILL` ("Illegal instruction
 nodes that never included `/dev/dri` — Chromium's GPU process, unable to
 open a DRM render node, hits an internal `CHECK()` failure (compiled to
 a hardware trap in release builds) rather than falling back to software
-rendering cleanly. `guiX11Binds` (`src/tools/presets.ts`, shared with
+rendering cleanly. `guiDisplayBinds` (`src/tools/presets.ts`, shared with
 `eclipse`) now binds it via `--dev-bind` — not `--ro-bind`, which grants
 no real device-node access — when it exists on the host, absent
 otherwise (asserted either way, so the test is meaningful whether or not
@@ -861,30 +876,69 @@ the machine running the suite has a GPU).
 also includes pi's data/cache binds — via a shared `piConfigBinds` helper
 both presets call, not a second, separately-maintained copy of the list.
 
-### 95. rstudio-preset-binds-xauthority-when-present
-[TESTED_BY](/tests/scoder.test.ts#testRstudioPresetBindsXauthorityWhenPresent)
+### 95, 96. *(removed in 2.6.0)*
 
-When the host X session uses cookie-based auth, the `Xauthority` file is
-bound read-only and `XAUTHORITY` is set to the sandbox-side path — not the
-host's own path, which would not resolve inside the sandbox.
+`rstudio-preset-binds-xauthority-when-present` and
+`rstudio-preset-skips-xauthority-when-absent` asserted the shape of the
+`XAUTHORITY` passthrough — that the cookie file was bound and the env var
+pointed at the sandbox copy rather than the host path. There is no
+`XAUTHORITY` passthrough any more (ADR 0003), and case 92a asserts its
+absence, which is the invariant worth holding. Removed rather than
+adapted: nothing was left for them to test.
 
-### 96. rstudio-preset-skips-xauthority-when-absent
-[TESTED_BY](/tests/scoder.test.ts#testRstudioPresetSkipsXauthorityWhenAbsent)
+### 96b. sandbox-processes-reaped-when-session-dies
+[TESTED_BY](/tests/scoder.test.ts#testSandboxProcessesReapedWhenSessionDies)
 
-No `Xauthority` bind or `XAUTHORITY` env var appears when the file doesn't
-exist (e.g. a no-auth X server, or none of the host's config resolved).
+A force-killed session (two SIGINTs, the documented escape hatch) leaves
+**nothing** running in the sandbox's mount namespace. Regression test for a
+leak that accumulated seven RStudio instances on one machine, each carrying
+an Electron stack, an `rsession`, a Tomcat and a language server — see
+"Nothing outlives the sandbox" in `ide-companion` for why `--die-with-parent`
+does not cover it.
 
-### 97. rstudio-x11-connectivity-end-to-end
-[TESTED_BY](/tests/scoder.test.ts#testRstudioX11ConnectivityEndToEnd)
+Asserts on the namespace being empty rather than on one tracked pid being
+gone, because that is the actual contract and the difference is not
+academic: a pid-based version of this fix left xpra's `Xvfb` and
+`dbus-daemon` behind every time.
 
-A real X11 client, launched as the `rstudio` tool through the real scoder
-binary, genuinely connects to a real (disposable Xvfb) X server outside
-the sandbox — not just "the right-looking flags appear in `--dry-run`
-output that's never executed." Reuses the fake pasta shim established
-earlier in this suite. Self-skips if `Xvfb`/`xdpyinfo`/`xauth` aren't
-installed, or if a real `rstudio` is already installed on the
-test-running machine (so this test never shadows a genuine local
-installation, even temporarily).
+Two things this case had to get right, both of which it got wrong first:
+
+- The namespace is found via a process whose **argv[0]** is the fake IDE's
+  command, not via a substring of the whole command line. scoder nests two
+  bwrap layers and the outer one's argv contains the entire inner command, so
+  a substring match returns the *outer* layer's namespace — where nothing
+  sandboxed lives. That made the test pass against a deliberately broken
+  reaper.
+- Two SIGINTs, not SIGTERM or SIGKILL. scoder handles neither of the latter,
+  so both kill it outright and no teardown runs; the test would then be
+  asserting a gap rather than the fix.
+
+Confirmed to fail with the reaper disabled and pass with it, which is the
+only evidence that a regression test is worth having.
+
+### 97. gui-display-is-private-end-to-end
+[TESTED_BY](/tests/scoder.test.ts#testGuiDisplayIsPrivateEndToEnd)
+
+Replaces `rstudio-x11-connectivity-end-to-end`, whose premise 2.6.0
+inverts. That case asserted a real X client inside the sandbox reached a
+real X server *outside* it — the behaviour ADR 0002 accepted and 0003
+withdraws. Reaching the host's display is now the failure, so the assertion
+is turned around rather than dropped.
+
+A GUI program launched as the `rstudio` tool through the real scoder binary
+gets a working display (`xdpyinfo` reports one), it is xpra's own virtual
+display inside the sandbox rather than the host's disposable Xvfb, and the
+host's is unreachable from in there. Still the one case that actually
+launches the sandbox rather than inspecting `--dry-run` output, and reuses
+the same fake pasta shim.
+
+Runs with a 60s timeout rather than bun's 5s default: the xpra server takes
+~3s to create its socket, on top of Xvfb starting and a real sandbox
+launch. Self-skips without `xpra`/`Xvfb`/`xdpyinfo`, or if a real `rstudio`
+is installed — the fake it writes to `~/.local/bin/rstudio` carries a
+marker comment so that a leftover from a killed run is recognised as
+scoder's own rather than read as a real install, which would otherwise skip
+this case silently on every subsequent run.
 
 ### 98. rstudio-preset-passes-through-xdg-runtime-and-dbus
 [TESTED_BY](/tests/scoder.test.ts#testRstudioPresetPassesThroughXdgRuntimeAndDbus)
@@ -916,7 +970,7 @@ even when a `.Rproj` file is present.
 ### 102. ide-flag-merges-companion-binds
 [TESTED_BY](/tests/scoder.test.ts#testIdeFlagMergesCompanionBinds)
 
-`--ide` merges the companion's own binds (`rstudio`'s X11 access) into
+`--ide` merges the companion's own binds (`rstudio`'s xpra display) into
 the one sandbox alongside the primary tool's own — deduplicated: an entry
 both presets independently contribute (`pi`'s own binds, since `rstudio`
 includes them so `pi` also works from its embedded terminal) appears

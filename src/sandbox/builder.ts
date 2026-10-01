@@ -13,6 +13,8 @@ import type {
 	ScoderOptions,
 } from "../types.ts";
 import { getRealHome } from "../utils/paths.ts";
+import { stageFile } from "../utils/session.ts";
+import entrypointScript from "./entrypoint.sh" with { type: "text" };
 import {
 	getSandboxGid,
 	getSandboxUid,
@@ -24,6 +26,14 @@ import {
 // EM: launcher is a stub around the JVM, which is the process that actually
 // EM: has the window); confirmed directly. A preset whose IDE wants something
 // EM: else says so via ToolPreset.ideShutdown.
+// EM: Both logs live in the sandbox's own /tmp, which is a tmpfs: they exist
+// EM: for the life of the session and are readable from inside it (where the
+// EM: agent can be asked to look at them), and vanish with the sandbox. Fixed
+// EM: names rather than per-session ones so the path can be named in a
+// EM: diagnostic without the user having to find it first.
+const IDE_LOG_PATH = "/tmp/scoder-ide.log";
+const XPRA_LOG_PATH = "/tmp/scoder-xpra.log";
+
 export const DEFAULT_IDE_SHUTDOWN: IdeShutdown = {
 	signal: "TERM",
 	order: "children-first",
@@ -43,10 +53,13 @@ export interface SandboxConfig {
 	toolEnv?: Record<string, string>;
 	// EM: --ide: a companion IDE launched in the background, alongside the
 	// EM: primary tool in the foreground, inside the same sandbox. See
-	// EM: design/features/ide-companion.md and wrapWithIdeBackground below.
+	// EM: design/features/ide-companion.md and src/sandbox/entrypoint.sh.
 	ideBin?: string;
 	ideArgs?: string[];
 	ideShutdown?: IdeShutdown;
+	// EM: Set when this session runs a GUI preset, as either the primary tool
+	// EM: or the --ide companion. See design/features/xpra-gui-isolation.md.
+	xpra?: XpraWrap;
 	protectionConfig?: ProtectionConfig;
 }
 
@@ -73,6 +86,7 @@ export async function buildBwrapCommand(
 		ideBin,
 		ideArgs,
 		ideShutdown,
+		xpra,
 		protectionConfig,
 	} = config;
 
@@ -427,17 +441,31 @@ export async function buildBwrapCommand(
 	// EM: `--` marks end-of-options, so a tool path beginning with `-` cannot be
 	// EM: mistaken for a bwrap flag. Previously this separated pasta's options
 	// EM: from the command; bwrap accepts it in the same role.
-	if (ideBin) {
-		cmd.push(
-			"--",
-			...wrapWithIdeBackground(
-				toolBin,
-				toolArgs,
-				ideBin,
-				ideArgs ?? [],
-				ideShutdown ?? DEFAULT_IDE_SHUTDOWN,
-			),
+	// EM: The entry point is used whenever anything beyond "exec the tool"
+	// EM: has to happen inside the sandbox — a companion IDE to background, or
+	// EM: an xpra server to start. `scoder rstudio` with no --ide hits the
+	// EM: second case alone, which is why this is not simply `if (ideBin)`.
+	if (ideBin || xpra) {
+		const entry = buildEntrypointInvocation(
+			toolBin,
+			toolArgs,
+			ideBin,
+			ideArgs ?? [],
+			ideShutdown ?? DEFAULT_IDE_SHUTDOWN,
+			xpra,
 		);
+		for (const [name, value] of Object.entries(entry.env)) {
+			cmd.push("--setenv", name, value);
+		}
+		// EM: After the --tmpfs /tmp above, so the mountpoint lands in the
+		// EM: sandbox's own tmpfs rather than the host's /tmp. Read-only: see
+		// EM: ENTRYPOINT_DEST for why that is sufficient.
+		cmd.push("--ro-bind", await stageEntrypointScript(), ENTRYPOINT_DEST);
+		// EM: `bash <path>` rather than execing the script directly — the
+		// EM: staged file is bound read-only with whatever mode it was
+		// EM: written with, and naming the interpreter avoids depending on
+		// EM: that mode carrying an executable bit through the bind.
+		cmd.push("--", "bash", ENTRYPOINT_DEST, ...entry.argv);
 	} else {
 		cmd.push("--", toolBin, ...toolArgs);
 	}
@@ -477,7 +505,7 @@ export async function buildBwrapCommand(
 // EM: symlink to pts/ptmx, which is the part that makes ptys work.
 //
 // EM: Device binds contributed by presets (e.g. /dev/dri for the GUI ones,
-// EM: see guiX11Binds in src/tools/presets.ts) are hoisted up here as well:
+// EM: see guiDisplayBinds in src/tools/presets.ts) are hoisted up here as well:
 // EM: --dev replaces /dev wholesale, so a node the inner layer binds from
 // EM: /dev must exist in THIS layer's /dev for the inner bind to resolve.
 // EM: They stay on the inner layer too, where the preset's own gating still
@@ -543,136 +571,133 @@ function collectDeviceBinds(cmd: string[]): [string, string][] {
 	return binds;
 }
 
-// ### wrapWithIdeBackground
+// ### ENTRYPOINT_DEST
+// Where entrypoint.sh is bound inside the sandbox.
+//
+// EM: In /tmp, which is the sandbox's own tmpfs, because bwrap has to be able
+// EM: to create the mountpoint. An earlier version of this used
+// EM: /run/scoder/entrypoint.sh, on the reasoning that /run is read-only and
+// EM: /tmp is writable by the tool, so the entry point should not sit
+// EM: somewhere the sandboxed process could replace it. That failed outright:
+// EM: `bwrap: Can't mkdir parents for /run/scoder/entrypoint.sh: Read-only
+// EM: file system`. A bind's mountpoint has to be created, and it cannot be
+// EM: created inside a read-only bind — at any depth, for a file or a
+// EM: directory.
+//
+// EM: The premise was also wrong. Verified directly: from inside the sandbox,
+// EM: with /tmp fully writable, `rm` and `mv` on this path both fail with
+// EM: EBUSY and a symlink over it fails with EEXIST. A bind mountpoint cannot
+// EM: be removed or replaced by an unprivileged process in the namespace,
+// EM: and --ro-bind makes the contents unwritable, so a writable parent
+// EM: directory buys an attacker nothing here.
+export const ENTRYPOINT_DEST = "/tmp/scoder-entrypoint.sh";
+
+// ### stageEntrypointScript
+// Write entrypoint.sh into the session temp root and return its host path,
+// for binding at ENTRYPOINT_DEST.
+//
+// EM: The script is a real file in the repo, imported as text. Bun embeds a
+// EM: `with { type: "text" }` import into the compiled binary (verified both
+// EM: ways: `bun run` and `bun build --compile`), so there is no "find my own
+// EM: files at runtime" problem to solve — which is what had previously kept
+// EM: every generated script an inline TypeScript string. The editable,
+// EM: shellcheck'able file and the single-binary distribution stop being in
+// EM: tension.
+export async function stageEntrypointScript(): Promise<string> {
+	const path = await stageFile(ENTRYPOINT_DEST);
+	await Bun.write(path, entrypointScript);
+	return path;
+}
+
+// ### XpraWrap
+// Which program in the sandbox gets an xpra server, and the socket its
+// windows are forwarded over. Absent for a non-GUI session.
+export interface XpraWrap {
+	/** Path of the unix socket the server binds — identical on both sides. */
+	socket: string;
+	/** Path of the shared-memory file — identical on both sides, see xpraDir. */
+	mmap: string;
+	/** `scoder rstudio` wraps the primary tool; `--ide rstudio` the companion. */
+	target: "harness" | "ide";
+}
+
+// ### buildEntrypointInvocation
 // [IMPLEMENTS](/design/features/ide-companion.md)
-// Runs the companion IDE detached in the background and the primary tool
-// in the foreground, in the same process group inside the sandbox — bwrap
-// (and so scoder) does not return until BOTH have exited: confirmed
-// directly that a backgrounded job in a non-interactive `bash -c` script
-// shares the script's own process group (no separate job-control group,
-// since that only applies to an interactive shell), so
-// installSignalForwarding's existing process-group kill() already reaches
-// both without any change there.
+// [IMPLEMENTS](/design/features/xpra-gui-isolation.md)
+// The environment and argv for entrypoint.sh, which runs a companion IDE in
+// the background, the primary tool in the foreground, and either of them under
+// an xpra server. The behaviour itself, and the reasoning behind it, live in
+// src/sandbox/entrypoint.sh — this assembles its inputs and nothing else.
 //
-// The IDE's own stdout/stderr are redirected to a log file rather than left
-// attached to the terminal — an Electron/GUI app's own console chatter
-// would otherwise interleave with the primary tool's interactive session.
-// Fully detached with `setsid`, not just a plain background job: a JVM's
-// native crash handler or a GTK/X11 error dialog can write straight to
-// `/dev/tty` (the controlling terminal) rather than its own inherited
-// stdout/stderr, which `>"$IDE_LOG" 2>&1` alone does not catch — `setsid`
-// makes the IDE its own session leader with no controlling terminal at
-// all, so a direct `/dev/tty` open from inside it fails instead of
-// reaching the visible console. Stdin is also redirected from `/dev/null`,
-// not left shared with the primary tool's own — confirmed directly that
-// `setsid` under bwrap's own `--new-session` still leaves `$!` as the
-// IDE's real pid (no extra fork layer to account for), so this needs no
-// change to the kill/wait logic below.
+// Settings go in named environment variables and arguments stay in argv. Two
+// variable-length argv vectors cannot be split positionally without a count or
+// a delimiter, and a delimiter would be a value some real argument could
+// collide with; the counts are what make the split safe. Arguments are never
+// interpolated into a string that is later parsed as shell, so a tool argument
+// containing shell metacharacters cannot be reparsed as syntax.
 //
-// Args are passed as positional parameters ("$@"), never interpolated into
-// the script string, matching wrapWithFdShim's own convention: a tool
-// argument containing spaces or shell metacharacters must never be
-// reparsed as shell syntax. IDE_ARGC is how the one flat argv is split
-// back into "the IDE's own argv" and "the primary tool's own argv" without
-// a sentinel value that some real argument could theoretically collide
-// with.
-//
-// If the primary tool exits first, the `wait` below can block for a while
-// with no further output — indistinguishable from a hang unless something
-// says so. `kill -0` right after the primary tool exits checks whether the
-// IDE is still running at that moment (a benign race if it exits a moment
-// later — the message is just slightly premature, not wrong) and prints a
-// notice, styled like scoder's own info() (src/utils/logger.ts) so it
-// reads as the same kind of message, before blocking on `wait`.
-//
-// Three things happen at that point, all for the same reason — the terminal
-// has just been handed back by a full-screen agent TUI and has to be legible
-// on its own:
-//
-//   - The screen is cleared (ESC[H ESC[2J), so whatever the agent left
-//     rendered does not sit there looking live. Scrollback is deliberately
-//     NOT cleared (no ESC[3J): the session transcript is still worth having.
-//     Guarded on stderr being a tty, so a redirected log gets no escapes.
-//   - The notice names the IDE and its pid, because with several IDE windows
-//     open it is not obvious which one belongs to this terminal.
-//   - ENTER asks that IDE to close, which is also the reliable way to
-//     identify it: the window that disappears was the attached one. A second
-//     ENTER escalates to SIGKILL, for an IDE that ignores SIGTERM (sitting on
-//     a modal dialog, say). Children are signalled before the process itself
-//     — an IDE launcher like Eclipse's is a thin wrapper around a JVM, and
-//     killing only the wrapper would orphan the JVM and leave its window on
-//     screen. SIGTERM is a shutdown *request*, not the IDE's own File → Exit:
-//     it gives the JVM its shutdown hooks, but what happens to unsaved editor
-//     state is the IDE's business, so the prompt says "ask", not "save".
-//
-// The read loop is not gated on stdin being a tty — only the prompt is. With
-// stdin closed or on /dev/null, `read` returns EOF immediately and the `elif`
-// breaks out to the same plain `wait` this did before, rather than spinning.
-// Confirmed directly both ways: ENTER tears the IDE and its child down in
-// milliseconds and still exits with the primary tool's own status, and with
-// stdin closed the script waits the IDE out exactly as it used to.
-//
-// `wait` has its own stderr redirected because bash reports a SIGKILLed
-// background job there ("line 1: 1234 Killed ..."), which is noise the user
-// did not cause and cannot act on.
-export function wrapWithIdeBackground(
+// This replaced a scheme that passed IDE_LOG, IDE_SIG, IDE_ORDER and the count
+// as bare positionals, which read `… _ /tmp/scoder-ide.log HUP process-first 2
+// /opt/eclipse/eclipse …` in --dry-run output and explained nothing. As
+// --setenv pairs they explain themselves, which is most of what offsets no
+// longer printing the script itself.
+export function buildEntrypointInvocation(
 	toolBin: string,
 	toolArgs: string[],
-	ideBin: string,
+	ideBin: string | undefined,
 	ideArgs: string[],
 	ideShutdown: IdeShutdown = DEFAULT_IDE_SHUTDOWN,
-): string[] {
-	// biome-ignore-start lint/suspicious/noTemplateCurlyInString: this is a
-	// literal bash "${...}" reference in a generated shell script, not a
-	// forgotten JS template placeholder — this is a plain string, not a
-	// template literal, so JS never interpolates it.
-	const script =
-		'IDE_LOG="$1"; shift; ' +
-		'IDE_SIG="$1"; shift; ' +
-		'IDE_ORDER="$1"; shift; ' +
-		'IDE_ARGC="$1"; shift; ' +
-		"IDE_ARGV=(); " +
-		'for ((i=0; i<IDE_ARGC; i++)); do IDE_ARGV+=("$1"); shift; done; ' +
-		'IDE_NAME="${IDE_ARGV[0]##*/}"; ' +
-		'setsid "${IDE_ARGV[@]}" </dev/null >"$IDE_LOG" 2>&1 & ' +
-		"IDE_PID=$!; " +
-		'"$@"; STATUS=$?; ' +
-		'if kill -0 "$IDE_PID" 2>/dev/null; then ' +
-		'[ -t 2 ] && printf "\x1b[H\x1b[2J" >&2; ' +
-		'echo "\x1b[0;32mscoder: Waiting for attached IDE to close: $IDE_NAME (pid $IDE_PID)\x1b[0m" >&2; ' +
-		'[ -t 0 ] && echo "\x1b[0;32mscoder: Press ENTER to ask it to close, or close it yourself\x1b[0m" >&2; ' +
-		"IDE_SIGNALLED=0; " +
-		'while kill -0 "$IDE_PID" 2>/dev/null; do ' +
-		"if read -r -t 1 _; then " +
-		'if [ "$IDE_SIGNALLED" -eq 0 ]; then ' +
-		'echo "\x1b[0;32mscoder: Asking $IDE_NAME to close (SIG$IDE_SIG); press ENTER again to force it\x1b[0m" >&2; ' +
-		"IDE_SIGNALLED=1; " +
-		'if [ "$IDE_ORDER" = children-first ] && command -v pkill >/dev/null; then ' +
-		'pkill "-$IDE_SIG" -P "$IDE_PID" 2>/dev/null; fi; ' +
-		'kill "-$IDE_SIG" "$IDE_PID" 2>/dev/null; ' +
-		'else echo "\x1b[0;32mscoder: Forcing $IDE_NAME to stop\x1b[0m" >&2; ' +
-		'command -v pkill >/dev/null && pkill -KILL -P "$IDE_PID" 2>/dev/null; ' +
-		'kill -KILL "$IDE_PID" 2>/dev/null; fi; ' +
-		"elif [ $? -le 128 ]; then break; fi; " +
-		"done; " +
-		"fi; " +
-		'wait "$IDE_PID" 2>/dev/null; ' +
-		'exit "$STATUS"';
-	// biome-ignore-end lint/suspicious/noTemplateCurlyInString: see above
-	return [
-		"bash",
-		"-c",
-		script,
-		"_",
-		"/tmp/scoder-ide.log",
-		ideShutdown.signal,
-		ideShutdown.order,
-		(1 + ideArgs.length).toString(),
-		ideBin,
-		...ideArgs,
-		toolBin,
-		...toolArgs,
-	];
+	xpra?: XpraWrap,
+): { env: Record<string, string>; argv: string[] } {
+	const ideArgv = ideBin ? [ideBin, ...ideArgs] : [];
+
+	const env: Record<string, string> = {
+		HARNESS_ARGC: (1 + toolArgs.length).toString(),
+		IDE_ARGC: ideArgv.length.toString(),
+		IDE_LOG: IDE_LOG_PATH,
+		IDE_SIG: ideShutdown.signal,
+		IDE_ORDER: ideShutdown.order,
+	};
+
+	// EM: Presence is the switch, so a non-GUI session sets nothing and the
+	// EM: script takes the direct-exec path for both programs. Never set to an
+	// EM: empty string: the script tests -n, so an empty value would read as
+	// EM: "no xpra" anyway, but leaving the variables out entirely keeps
+	// EM: --dry-run output honest about which path a session will take.
+	if (xpra) {
+		env.XPRA_SOCKET = xpra.socket;
+		env.XPRA_MMAP = xpra.mmap;
+		env.XPRA_TARGET = xpra.target;
+		env.XPRA_LOG = XPRA_LOG_PATH;
+
+		// EM: An escape hatch, and a deliberate one. Tuning a GUI session
+		// EM: means trying an xpra flag and judging whether it feels better,
+		// EM: which is a judgement only the person at the screen can make —
+		// EM: and every round trip costs them a full IDE session. Forwarding
+		// EM: the host's own XPRA_* variables and an extra-args string lets
+		// EM: them try several in one sitting instead of waiting on a code
+		// EM: change each time. XPRA_SCROLL_ENCODING is the live example: the
+		// EM: client gates its scroll-delta encoding behind it, off by
+		// EM: default in 6.5.4.
+		// EM:
+		// EM: Safe to forward wholesale because the sandbox is --clearenv'd,
+		// EM: so nothing arrives here that the user did not deliberately set,
+		// EM: and these only ever reach xpra. The entrypoint reads each with
+		// EM: a `${VAR:-default}`, so a forwarded value wins over its own.
+		for (const [name, value] of Object.entries(process.env)) {
+			if (name.startsWith("XPRA_") && value) {
+				env[name] = value;
+			}
+		}
+		if (process.env.SCODER_XPRA_SERVER_ARGS) {
+			env.XPRA_EXTRA_ARGS = process.env.SCODER_XPRA_SERVER_ARGS;
+		}
+	}
+
+	return {
+		env,
+		argv: [toolBin, ...toolArgs, ...ideArgv],
+	};
 }
 
 // ### wrapWithFdShim
@@ -901,6 +926,50 @@ async function buildExtraBinds(
 			type: "ro-bind",
 			source: mimeappsPath,
 			dest: `${sandboxHome}/.config/mimeapps.list`,
+		});
+	}
+
+	// EM: GTK appearance. Reported: a GUI preset renders in the default white
+	// EM: theme rather than the user's, which under a dark desktop is not a
+	// EM: small difference. Themes come from several places and a GTK app
+	// EM: needs both halves — the setting that names a theme, and the theme
+	// EM: itself — so missing either leaves it on the default.
+	// EM:
+	// EM: The settings files matter most on KDE specifically, which is where
+	// EM: this was reported: kde-gtk-config writes the chosen GTK theme into
+	// EM: .config/gtk-3.0/settings.ini and .gtkrc-2.0, so without those the
+	// EM: sandbox has no idea a theme was ever chosen. The theme and icon
+	// EM: directories are then what those settings point at, for anything the
+	// EM: user installed themselves; system-wide themes under /usr/share
+	// EM: already arrive with the wholesale read-only /usr bind.
+	// EM:
+	// EM: .fonts and .icons are the pre-XDG locations, still used by plenty of
+	// EM: installers, and cost nothing to include when absent.
+	for (const relative of [
+		".themes",
+		".icons",
+		".fonts",
+		".local/share/themes",
+		".local/share/icons",
+		".config/gtk-3.0",
+		".config/gtk-4.0",
+	]) {
+		const dir = `${realHome}/${relative}`;
+		if (await dirExists(dir)) {
+			binds.push({
+				type: "ro-bind",
+				source: dir,
+				dest: `${sandboxHome}/${relative}`,
+			});
+		}
+	}
+
+	const gtkrcPath = `${realHome}/.gtkrc-2.0`;
+	if (await fileExists(gtkrcPath)) {
+		binds.push({
+			type: "ro-bind",
+			source: gtkrcPath,
+			dest: `${sandboxHome}/.gtkrc-2.0`,
 		});
 	}
 

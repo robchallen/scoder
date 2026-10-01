@@ -6,6 +6,7 @@
 
 // Import test utilities from bun:test
 import { afterAll, expect, test } from "bun:test";
+import { readdirSync, readlinkSync, statSync } from "node:fs";
 import {
 	addGitExclude,
 	refreshResolvConfSnapshot,
@@ -16,15 +17,17 @@ import {
 	getWorktreesParentDir,
 	relocateWorktree,
 } from "../src/git/worktree.ts";
+import type { XpraWrap } from "../src/sandbox/builder.ts";
 import {
 	buildDevLayer,
+	buildEntrypointInvocation,
 	collectBindDests,
 	DEFAULT_IDE_SHUTDOWN,
-	wrapWithIdeBackground,
 } from "../src/sandbox/builder.ts";
 import { getSandboxUsername } from "../src/sandbox/identity.ts";
 import { isIpv6RoutabilityFailure } from "../src/sandbox/pasta.ts";
 import { TOOL_PRESETS } from "../src/tools/presets.ts";
+import type { IdeShutdown } from "../src/types.ts";
 import { getRealHome } from "../src/utils/paths.ts";
 
 // ### Constants
@@ -2373,8 +2376,18 @@ async function createFakeToolDir(name: string): Promise<string> {
 	return dir;
 }
 
-// ### Test: rstudio-preset-binds-x11-and-config-dirs
-test("rstudio-preset-binds-x11-and-config-dirs: binds the X11 socket, DISPLAY, and rstudio's own config/data dirs", async () => {
+// ### Test: gui-preset-binds-xpra-socket-not-host-x11
+// EM: The actual security claim of xpra-gui-isolation, asserted as a
+// EM: negative — and the negative half is the point. A future change could
+// EM: silently reintroduce host X11 access (a preset gaining a convenience
+// EM: bind, someone "fixing" a display problem the quick way) and everything
+// EM: would still work, just without the isolation. Nothing else would catch
+// EM: that: the window looks identical either way.
+// EM:
+// EM: DISPLAY is set in the environment here deliberately, because that is the
+// EM: case where a regression is most likely — a host with a real X session,
+// EM: where passing it through would "work".
+test("gui-preset-binds-xpra-socket-not-host-x11: a GUI preset gets the xpra socket and no host X11 access", async () => {
 	const repoDir = await createTempRepo();
 	tempRepos.push(repoDir);
 	const fakeBinDir = await createFakeToolDir("rstudio");
@@ -2385,10 +2398,38 @@ test("rstudio-preset-binds-x11-and-config-dirs: binds the X11 socket, DISPLAY, a
 			DISPLAY: ":42",
 		});
 
-		if (await dirExists("/tmp/.X11-unix")) {
-			expect(output).toContain("--ro-bind /tmp/.X11-unix /tmp/.X11-unix");
-		}
-		expect(output).toContain("--setenv DISPLAY :42");
+		// The one channel the GUI gets across the boundary, read-write so the
+		// in-sandbox server can create its socket in it.
+		// EM: Source and dest identical — the mirroring mmap depends on.
+		expect(output).toMatch(/--bind (\/tmp\/scoder-[0-9a-f]{8}\/xpra) \1(?= )/);
+		expect(output).toMatch(
+			/--setenv XPRA_SOCKET \/tmp\/scoder-[0-9a-f]{8}\/xpra\/xpra\.sock/,
+		);
+		expect(output).toMatch(
+			/--setenv XPRA_MMAP \/tmp\/scoder-[0-9a-f]{8}\/xpra\/mmap/,
+		);
+
+		// None of what ADR 0002 accepted and 0003 withdrew.
+		expect(output).not.toContain("/tmp/.X11-unix");
+		expect(output).not.toContain("XAUTHORITY");
+		expect(output).not.toContain(".Xauthority");
+		expect(output).not.toContain("--setenv DISPLAY");
+	} finally {
+		await Bun.spawn(["rm", "-rf", fakeBinDir]).exited;
+		await cleanupRepo(repoDir);
+	}
+});
+
+// ### Test: rstudio-preset-binds-config-dirs
+test("rstudio-preset-binds-config-dirs: rstudio's own config/data dirs are bound read-write", async () => {
+	const repoDir = await createTempRepo();
+	tempRepos.push(repoDir);
+	const fakeBinDir = await createFakeToolDir("rstudio");
+
+	try {
+		const output = await runScoder(repoDir, ["--dry-run", "rstudio"], {
+			PATH: `${fakeBinDir}:${process.env.PATH}`,
+		});
 
 		const configBind = `${process.env.HOME}/.config/rstudio ${SANDBOX_HOME}/.config/rstudio`;
 		expect(output).toContain(`--bind ${configBind}`);
@@ -2409,7 +2450,7 @@ test("rstudio-preset-binds-x11-and-config-dirs: binds the X11 socket, DISPLAY, a
 // (core dumped)") once /dev was narrowed to a fixed list of real device
 // nodes that never included /dev/dri — Chromium's GPU process, unable to
 // open a DRM render node, hits an internal CHECK() failure rather than
-// falling back to software rendering. guiX11Binds (src/tools/presets.ts,
+// falling back to software rendering. guiDisplayBinds (src/tools/presets.ts,
 // shared with eclipse) now binds it via --dev-bind (not --ro-bind — only
 // --dev-bind grants real device-node access) when it exists on the host.
 test("rstudio-preset-binds-dev-dri-when-present: /dev/dri is dev-bound when it exists on the host, absent otherwise", async () => {
@@ -2456,118 +2497,14 @@ test("rstudio-preset-includes-pi-config: pi's data/cache dirs are bound, same as
 	}
 });
 
-// ### Test: rstudio-preset-binds-xauthority-when-present
-test("rstudio-preset-binds-xauthority-when-present: binds the auth file and points XAUTHORITY at the sandbox copy, not the host path", async () => {
-	const repoDir = await createTempRepo();
-	tempRepos.push(repoDir);
-	const fakeBinDir = await createFakeToolDir("rstudio");
-	const fakeXauth = `/tmp/scoder-fake-xauth-${Date.now()}`;
-	await Bun.write(fakeXauth, "fake-cookie-data\n");
-
-	try {
-		const output = await runScoder(repoDir, ["--dry-run", "rstudio"], {
-			PATH: `${fakeBinDir}:${process.env.PATH}`,
-			XAUTHORITY: fakeXauth,
-		});
-
-		expect(output).toContain(
-			`--ro-bind ${fakeXauth} ${SANDBOX_HOME}/.Xauthority`,
-		);
-		expect(output).toContain(`--setenv XAUTHORITY ${SANDBOX_HOME}/.Xauthority`);
-		expect(output).not.toContain(`--setenv XAUTHORITY ${fakeXauth}`);
-	} finally {
-		await Bun.spawn(["rm", "-rf", fakeBinDir, fakeXauth]).exited;
-		await cleanupRepo(repoDir);
-	}
-});
-
-// ### Test: rstudio-preset-skips-xauthority-when-absent
-test("rstudio-preset-skips-xauthority-when-absent: no Xauthority bind or env var when the file doesn't exist", async () => {
-	const repoDir = await createTempRepo();
-	tempRepos.push(repoDir);
-	const fakeBinDir = await createFakeToolDir("rstudio");
-	const missingXauth = `/tmp/scoder-nonexistent-xauth-${Date.now()}`;
-
-	try {
-		const output = await runScoder(repoDir, ["--dry-run", "rstudio"], {
-			PATH: `${fakeBinDir}:${process.env.PATH}`,
-			XAUTHORITY: missingXauth,
-		});
-
-		expect(output).not.toContain(".Xauthority");
-		expect(output).not.toContain("XAUTHORITY");
-	} finally {
-		await Bun.spawn(["rm", "-rf", fakeBinDir]).exited;
-		await cleanupRepo(repoDir);
-	}
-});
-
-// ### Test: rstudio-preset-passes-through-xdg-runtime-and-dbus
-// EM: See architecture/decision-records/0002-rstudio-x11-access.md — the
-// EM: reported "most menu items greyed out, only the window-manager close
-// EM: button quits" symptom. Passing these through is a well-motivated fix
-// EM: (RStudio Desktop is Electron/Chromium-based and commonly needs D-Bus
-// EM: for file dialogs and quit/session integration), not a verified one —
-// EM: this project has no real RStudio install or desktop D-Bus session to
-// EM: confirm the actual symptom against. This test covers only what's
-// EM: independently verifiable: that the values are passed through at all.
-test("rstudio-preset-passes-through-xdg-runtime-and-dbus: XDG_RUNTIME_DIR and DBUS_SESSION_BUS_ADDRESS are set inside the sandbox", async () => {
-	const repoDir = await createTempRepo();
-	tempRepos.push(repoDir);
-	const fakeBinDir = await createFakeToolDir("rstudio");
-
-	try {
-		const output = await runScoder(repoDir, ["--dry-run", "rstudio"], {
-			PATH: `${fakeBinDir}:${process.env.PATH}`,
-			XDG_RUNTIME_DIR: "/run/user/1000",
-			DBUS_SESSION_BUS_ADDRESS: "unix:path=/run/user/1000/bus",
-		});
-
-		expect(output).toContain("--setenv XDG_RUNTIME_DIR /run/user/1000");
-		expect(output).toContain(
-			"--setenv DBUS_SESSION_BUS_ADDRESS unix:path=/run/user/1000/bus",
-		);
-	} finally {
-		await Bun.spawn(["rm", "-rf", fakeBinDir]).exited;
-		await cleanupRepo(repoDir);
-	}
-});
-
-// ### Test: rstudio-preset-sets-mcptools-socket-dir
-// EM: Reported: mcptools::mcp_session() (bridging RStudio's R console to
-// EM: pi) failed with "Socket directory /run/user/<uid>/mcptools is a
-// EM: symlink; refusing to use it." Root cause is structural, not just
-// EM: that one symlink: /run is read-only inside the sandbox
-// EM: (--ro-bind), so mcptools' own default ($XDG_RUNTIME_DIR/mcptools)
-// EM: can never be created there regardless of what's already at that
-// EM: path on the host. Unconditional (unlike the XDG_RUNTIME_DIR/D-Bus
-// EM: passthrough above) — a fixed, always-writable sandbox path, not a
-// EM: value read from the host.
-test("rstudio-preset-sets-mcptools-socket-dir: MCPTOOLS_SOCKET_DIR points at a fixed, writable sandbox path", async () => {
-	const repoDir = await createTempRepo();
-	tempRepos.push(repoDir);
-	const fakeBinDir = await createFakeToolDir("rstudio");
-
-	try {
-		const output = await runScoder(repoDir, ["--dry-run", "rstudio"], {
-			PATH: `${fakeBinDir}:${process.env.PATH}`,
-		});
-
-		expect(output).toContain("--setenv MCPTOOLS_SOCKET_DIR /tmp/mcptools");
-	} finally {
-		await Bun.spawn(["rm", "-rf", fakeBinDir]).exited;
-		await cleanupRepo(repoDir);
-	}
-});
-
-// EM: ### Tests for the rstudio preset's resolveArgs (.Rproj detection)
-// EM: RStudio Desktop does not inherit the launching process's cwd for its
-// EM: initial R session — reported directly: getwd() came back $HOME,
-// EM: not the project directory. See presets.ts's own comment on
-// EM: resolveArgs for why a .Rproj argument is the fix, and why the bare-
-// EM: directory fallback (used here, and in the no-.Rproj test below) is a
-// EM: documented RStudio CLI behaviour this project hasn't independently
-// EM: verified against a real install.
+// EM: rstudio-preset-binds-xauthority-when-present and
+// EM: rstudio-preset-skips-xauthority-when-absent lived here. Both asserted
+// EM: the shape of the XAUTHORITY passthrough — that the cookie file was
+// EM: bound and the env var pointed at the sandbox copy rather than the host
+// EM: path. There is no XAUTHORITY passthrough any more (ADR 0003), and
+// EM: gui-preset-binds-xpra-socket-not-host-x11 above now asserts its absence,
+// EM: which is the invariant worth holding. Removed rather than adapted:
+// EM: there is nothing left for them to test.
 
 // ### Test: rstudio-resolveargs-picks-rproj-file
 test("rstudio-resolveargs-picks-rproj-file: rstudio is launched with the project's .Rproj file", async () => {
@@ -2586,7 +2523,7 @@ test("rstudio-resolveargs-picks-rproj-file: rstudio is launched with the project
 		// EM: repoDir is not under $HOME, so it's mirrored unchanged at its
 		// EM: own real path — no sandbox-home prefix.
 		expect(output).toContain(
-			`-- ${fakeBinDir}/rstudio ${repoDir}/myproject.Rproj`,
+			`-- bash /tmp/scoder-entrypoint.sh ${fakeBinDir}/rstudio ${repoDir}/myproject.Rproj`,
 		);
 	} finally {
 		await Bun.spawn(["rm", "-rf", fakeBinDir]).exited;
@@ -2607,7 +2544,9 @@ test("rstudio-resolveargs-falls-back-to-project-dir: with no .Rproj file, rstudi
 			{ PATH: `${fakeBinDir}:${process.env.PATH}` },
 		);
 
-		expect(output).toContain(`-- ${fakeBinDir}/rstudio ${repoDir}\n`);
+		expect(output).toContain(
+			`-- bash /tmp/scoder-entrypoint.sh ${fakeBinDir}/rstudio ${repoDir}\n`,
+		);
 	} finally {
 		await Bun.spawn(["rm", "-rf", fakeBinDir]).exited;
 		await cleanupRepo(repoDir);
@@ -2628,7 +2567,9 @@ test("rstudio-resolveargs-does-not-override-explicit-args: an explicit argument 
 			{ PATH: `${fakeBinDir}:${process.env.PATH}` },
 		);
 
-		expect(output).toContain(`-- ${fakeBinDir}/rstudio somefile.R\n`);
+		expect(output).toContain(
+			`-- bash /tmp/scoder-entrypoint.sh ${fakeBinDir}/rstudio somefile.R\n`,
+		);
 		expect(output).not.toContain(".Rproj");
 	} finally {
 		await Bun.spawn(["rm", "-rf", fakeBinDir]).exited;
@@ -2636,97 +2577,210 @@ test("rstudio-resolveargs-does-not-override-explicit-args: an explicit argument 
 	}
 });
 
-// ### Test: rstudio-x11-connectivity-end-to-end
-// EM: The one test that actually launches the sandbox rather than just
-// EM: inspecting --dry-run output — proves the preset's binds genuinely
-// EM: grant a working X11 connection, not just that the right-looking
-// EM: flags appear in a command line that's never executed. Uses the same
-// EM: daemonize-then-exit fake pasta shim established earlier in this
-// EM: suite (this environment's own missing /dev/net/tun makes a real
-// EM: pasta attach non-deterministic here, and what's under test is a
-// EM: filesystem/env bind, not pasta itself) plus a real, disposable Xvfb
-// EM: server standing in for "the host's X server" — verified manually
-// EM: against this exact setup before being committed here. Self-skips if
-// EM: Xvfb, xdpyinfo, or xauth aren't installed.
-// EM: The tool name looked up in TOOL_PRESETS must literally be "rstudio"
-// EM: for the preset (and so its X11 binds) to apply at all — there is no
-// EM: way to exercise this end-to-end without an executable named exactly
-// EM: that on PATH. Skipped (not just deprioritised) if a real rstudio is
-// EM: already installed on the test-running machine, so this test never
-// EM: shadows a genuine local installation, even temporarily.
-const x11TestToolsAvailable =
+// ### Test: gui-display-is-private-end-to-end
+// EM: Replaces rstudio-x11-connectivity-end-to-end, whose premise this
+// EM: change inverts. That test asserted a real X client inside the sandbox
+// EM: reached a real X server *outside* it, which was the behaviour ADR 0002
+// EM: accepted and 0003 withdraws. Reaching the host's display is now the
+// EM: failure, so the assertion is turned around rather than dropped: the
+// EM: client gets a display, it is xpra's own virtual one inside the sandbox,
+// EM: and the host's is unreachable from there.
+// EM:
+// EM: Still the one test that actually launches the sandbox rather than
+// EM: inspecting --dry-run output, and for the same reason: it proves the
+// EM: preset's binds genuinely produce a working display, not just that the
+// EM: right-looking flags appear in a command line that is never executed.
+// EM: Uses the same daemonize-then-exit fake pasta shim as the rest of the
+// EM: suite (this environment's missing /dev/net/tun makes a real attach
+// EM: non-deterministic, and what is under test is the display, not pasta),
+// EM: plus a real disposable Xvfb standing in for "the host's X server".
+// EM:
+// EM: The tool name looked up in TOOL_PRESETS must literally be "rstudio" for
+// EM: the preset to apply at all, so this skips entirely when a real rstudio
+// EM: is installed rather than shadowing a genuine local install even
+// EM: temporarily.
+// EM: The marker is what stops a crashed run from silently disabling this
+// EM: test forever. The fake is written to ~/.local/bin/rstudio and removed in
+// EM: `finally`, but a killed run (bun's own test timeout kills dangling
+// EM: processes) can leave it there — and since the guard below runs at import
+// EM: time, a leftover fake would read as "a real rstudio is installed" and
+// EM: skip the test on every subsequent run. A silently skipping test is worse
+// EM: than a failing one, so the guard identifies scoder's own leftovers and
+// EM: ignores them.
+const FAKE_RSTUDIO_MARKER = "# scoder test fake rstudio";
+
+async function realRstudioInstalled(): Promise<boolean> {
+	if (!(await commandAvailable("rstudio"))) {
+		return false;
+	}
+	try {
+		const own = await Bun.file(`${process.env.HOME}/.local/bin/rstudio`).text();
+		return !own.includes(FAKE_RSTUDIO_MARKER);
+	} catch {
+		return true;
+	}
+}
+
+const xpraTestToolsAvailable =
+	(await commandAvailable("xpra")) &&
 	(await commandAvailable("Xvfb")) &&
 	(await commandAvailable("xdpyinfo")) &&
-	(await commandAvailable("xauth")) &&
-	!(await commandAvailable("rstudio"));
+	!(await realRstudioInstalled());
 
-test.skipIf(!x11TestToolsAvailable)(
-	"rstudio-x11-connectivity-end-to-end: a real X11 client inside the sandbox reaches a real X server outside it",
+test.skipIf(!xpraTestToolsAvailable)(
+	"gui-display-is-private-end-to-end: a GUI program in the sandbox gets xpra's virtual display and cannot reach the host's",
 	async () => {
 		const display = ":89";
-		const xauthPath = `/tmp/scoder-rstudio-e2e-xauth-${Date.now()}`;
-		await Bun.write(xauthPath, "");
-		await Bun.spawn([
-			"xauth",
-			"-f",
-			xauthPath,
-			"add",
-			display,
-			".",
-			// A fixed, throwaway 128-bit hex cookie — this Xvfb instance is
-			// created and destroyed within this one test, so there is nothing
-			// to protect by generating a fresh random cookie each run.
-			"a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4",
-		]).exited;
-
 		const xvfbProc = Bun.spawn(
-			["Xvfb", display, "-screen", "0", "1024x768x24", "-auth", xauthPath],
+			["Xvfb", display, "-screen", "0", "1024x768x24"],
 			{ stdout: "ignore", stderr: "ignore" },
 		);
-		await new Promise((resolve) => setTimeout(resolve, 1500));
+		// Polled rather than slept: Xvfb's startup time is not a constant, and
+		// a fixed wait is either too short on a loaded machine or wasted on an
+		// idle one.
+		for (let i = 0; i < 60; i++) {
+			const up = await Bun.spawn(["xdpyinfo", "-display", display], {
+				stdout: "ignore",
+				stderr: "ignore",
+			}).exited;
+			if (up === 0) {
+				break;
+			}
+			await Bun.sleep(250);
+		}
 
 		const repoDir = await createTempRepo();
 		tempRepos.push(repoDir);
 		const shimDir = await createFakePastaShim(
-			`/tmp/scoder-rstudio-e2e-${Date.now()}.log`,
+			`/tmp/scoder-xpra-e2e-${Date.now()}.log`,
 		);
 		// Must be named exactly "rstudio" — that literal string is the
-		// TOOL_PRESETS lookup key. Lives in ~/.local/bin (unlike the dry-run
-		// tests above) because this is the one test that actually launches
-		// the sandbox, so the exec target must be genuinely reachable
-		// inside it — mirrors local-bin-symlink-resolved's own precedent,
-		// with the same careful cleanup in `finally`.
+		// TOOL_PRESETS lookup key. In ~/.local/bin because this test really
+		// launches the sandbox, so the exec target has to be genuinely
+		// reachable inside it.
 		const fakeRstudioPath = `${process.env.HOME}/.local/bin/rstudio`;
 
 		try {
-			await Bun.write(fakeRstudioPath, "#!/bin/bash\nexec xdpyinfo\n");
+			// Runs as xpra's --start-child, so it sees the DISPLAY xpra set
+			// for its own virtual server. Writes its findings into the repo
+			// dir, which is bound read-write, because its stdout goes to the
+			// xpra log inside the sandbox's own tmpfs and dies with it.
+			await Bun.write(
+				fakeRstudioPath,
+				[
+					"#!/bin/bash",
+					FAKE_RSTUDIO_MARKER,
+					`xdpyinfo > ${repoDir}/xpra-display.txt 2>&1`,
+					// The host's display, explicitly — the thing that must fail.
+					`DISPLAY=${display} xdpyinfo > ${repoDir}/host-display.txt 2>&1`,
+					`echo $? > ${repoDir}/host-display.status`,
+					// EM: Stays up briefly so the host-side client has a live
+					// EM: server to attach to. Without this the program exits
+					// EM: in milliseconds, --exit-with-children tears the
+					// EM: server down and the socket is removed before
+					// EM: attachXpraClient gets there — which looks exactly
+					// EM: like the bug this test now guards against. A real
+					// EM: IDE does not have that problem.
+					"sleep 6",
+				].join("\n"),
+			);
 			await Bun.spawn(["chmod", "+x", fakeRstudioPath]).exited;
 
-			const proc = Bun.spawn([SCODER_PATH, "-q", "--no-worktree", "rstudio"], {
+			const started = Date.now();
+			// EM: Not -q, unlike the other end-to-end cases: the assertion
+			// EM: below is on scoder's own "GUI attached" line, which is an
+			// EM: info() and so is exactly what -q suppresses.
+			const proc = Bun.spawn([SCODER_PATH, "--no-worktree", "rstudio"], {
 				cwd: repoDir,
 				env: {
 					...process.env,
 					PATH: `${shimDir}:${process.env.PATH}`,
 					DISPLAY: display,
-					XAUTHORITY: xauthPath,
 				},
 				stdout: "pipe",
 				stderr: "pipe",
 			});
 			await proc.exited;
+			const elapsedMs = Date.now() - started;
+			const stderr = await new Response(proc.stderr).text();
 
-			const stdout = await new Response(proc.stdout).text();
-			expect(proc.exitCode).toBe(0);
-			expect(stdout).toContain(`name of display:    ${display}`);
+			// EM: Surfaced on failure rather than swallowed: everything this
+			// EM: test depends on (bwrap, the pasta shim, xpra's own startup)
+			// EM: reports through scoder's stderr, and without this a failure
+			// EM: shows up only as a missing output file.
+			if (!(await fileExists(`${repoDir}/xpra-display.txt`))) {
+				throw new Error(
+					`GUI program produced no output; scoder said:\n${stderr}`,
+				);
+			}
+
+			// EM: The host-side half, and the reason this assertion exists at
+			// EM: all: the first version of this test checked only the GUI
+			// EM: program's own output, which is produced inside the sandbox
+			// EM: and says nothing about whether the client ever attached. It
+			// EM: passed for a fortnight against a waitForXpraSocket that
+			// EM: could never succeed — Bun.file().exists() is false for a
+			// EM: unix socket — so every run silently burned the full 30s
+			// EM: timeout and forwarded no windows at all. Reported from a
+			// EM: real Eclipse session, not caught here.
+			// EM:
+			// EM: The elapsed-time bound is the other half of that lesson. The
+			// EM: symptom visible in this suite was a 32s runtime that nobody
+			// EM: questioned, so the timeout is now something the test fails
+			// EM: on rather than something it waits through.
+			expect(stderr).toContain("GUI attached");
+			expect(elapsedMs).toBeLessThan(25_000);
+
+			// EM: mmap is what makes the GUI usable rather than merely
+			// EM: correct, and it is invisible when it silently stops working
+			// EM: — reported directly as both IDEs being "too laggy to be
+			// EM: useable", with everything else looking fine. It only
+			// EM: negotiates because the shared directory is bound at the same
+			// EM: absolute path on both sides, which is a property a later
+			// EM: change could easily undo while everything still ran. The
+			// EM: server logs this line to its own output, which in
+			// EM: XPRA_TARGET=harness mode is scoder's.
+			expect(stderr).toContain("mmap transfers");
+
+			// EM: And the two things that keep this session's inotify
+			// EM: footprint at 1 instance instead of 8, out of the 128 the
+			// EM: kernel allows per *user* — the budget RStudio exhausted with
+			// EM: `system error 24 (Too many open files)`.
+			expect(stderr).not.toContain("watching for applications menu");
+
+			// EM: --input-method=keep rather than =none. `none` does not mean
+			// EM: "no input method": xpra reads it as "fall back to xim" and
+			// EM: sets GTK_IM_MODULE=xim, which Eclipse's SWT warns is
+			// EM: unsupported. Asserted because the difference between the two
+			// EM: spellings is invisible until an IDE complains.
+			expect(stderr).not.toContain("GTK_IM_MODULE=xim");
+
+			// The GUI program got a display, and it is xpra's own virtual one
+			// inside the sandbox — not the host's :89.
+			const xpraDisplay = await Bun.file(`${repoDir}/xpra-display.txt`).text();
+			expect(xpraDisplay).toContain("name of display:");
+			expect(xpraDisplay).not.toContain(`name of display:    ${display}`);
+
+			// And the host's is unreachable from in there. This is the whole
+			// security claim of xpra-gui-isolation, end to end.
+			const hostStatus = (
+				await Bun.file(`${repoDir}/host-display.status`).text()
+			).trim();
+			expect(hostStatus).not.toBe("0");
 		} finally {
 			await Bun.spawn(["rm", "-rf", shimDir]).exited;
-			await Bun.spawn(["rm", "-f", fakeRstudioPath, xauthPath]).exited;
+			await Bun.spawn(["rm", "-f", fakeRstudioPath]).exited;
 			xvfbProc.kill(9);
 			await xvfbProc.exited;
 			await Bun.spawn(["rm", "-f", "/tmp/.X89-lock"]).exited;
 			await cleanupRepo(repoDir);
 		}
 	},
+	// EM: Well past bun's 5s default, which this test does not fit in and
+	// EM: the X11 one it replaced did: the xpra server takes ~3s to create
+	// EM: its socket (measured, and the reason waitForXpraSocket polls rather
+	// EM: than assuming), on top of Xvfb starting and a real sandbox launch.
+	60_000,
 );
 
 // EM: ### Tests for --ide (companion IDE alongside the primary tool)
@@ -2752,7 +2806,9 @@ test("ide-flag-merges-companion-binds: --ide merges the companion's binds into t
 			{ PATH: `${piDir}:${rstudioDir}:${process.env.PATH}` },
 		);
 
-		expect(output).toContain("--ro-bind /tmp/.X11-unix /tmp/.X11-unix");
+		// The companion is a GUI preset, so its display bind is one of the
+		// things that has to make it into the merged sandbox.
+		expect(output).toContain("--setenv XPRA_SOCKET ");
 
 		const piDataBind = `--bind ${process.env.HOME}/.local/share/pi ${SANDBOX_HOME}/.local/share/pi`;
 		expect(output).toContain(piDataBind);
@@ -2793,8 +2849,9 @@ test("ide-flag-works-before-or-after-tool-name: --ide is recognised whether it c
 		// the companion's own binds and the background/foreground wrapper
 		// are present at all.
 		for (const output of [idAfter, idBefore]) {
-			expect(output).toContain("--ro-bind /tmp/.X11-unix /tmp/.X11-unix");
-			expect(output).toContain("IDE_PID=$!");
+			expect(output).toContain("--setenv XPRA_SOCKET ");
+			expect(output).toContain("--setenv XPRA_TARGET ide");
+			expect(output).toContain("/tmp/scoder-entrypoint.sh");
 		}
 	} finally {
 		await Bun.spawn(["rm", "-rf", piDir, rstudioDir]).exited;
@@ -2909,7 +2966,16 @@ test.skipIf(!ideE2eToolsAvailable)(
 
 			const start = Date.now();
 			const proc = Bun.spawn(
-				[SCODER_PATH, "-q", "--no-worktree", "pi", "--ide", "rstudio"],
+				[
+					SCODER_PATH,
+					"-q",
+					"--no-worktree",
+					"/bin/bash",
+					"-c",
+					"sleep 300",
+					"--ide",
+					"rstudio",
+				],
 				{
 					cwd: repoDir,
 					env: { ...process.env, PATH: `${shimDir}:${process.env.PATH}` },
@@ -2935,11 +3001,44 @@ test.skipIf(!ideE2eToolsAvailable)(
 	},
 );
 
+// ### entrypointCommand
+// The command and environment that bwrap would exec for an --ide session,
+// runnable directly on the host.
+//
+// EM: The behaviour under test lives in src/sandbox/entrypoint.sh, which is a
+// EM: real file rather than a generated string — so these tests run that exact
+// EM: file, not a copy. Running it outside a sandbox is the point: the script
+// EM: is plain bash, and a real IDE cannot be launched in CI. What bwrap adds
+// EM: (the --setenv pairs, the read-only bind) is what `env` and the path
+// EM: stand in for here.
+const ENTRYPOINT_SRC = `${import.meta.dir}/../src/sandbox/entrypoint.sh`;
+
+function entrypointCommand(
+	toolBin: string,
+	toolArgs: string[],
+	ideBin: string,
+	ideArgs: string[],
+	ideShutdown?: IdeShutdown,
+	xpra?: XpraWrap,
+): { cmd: string[]; env: Record<string, string> } {
+	const entry = buildEntrypointInvocation(
+		toolBin,
+		toolArgs,
+		ideBin,
+		ideArgs,
+		ideShutdown,
+		xpra,
+	);
+	return {
+		cmd: ["bash", ENTRYPOINT_SRC, ...entry.argv],
+		env: { ...process.env, ...entry.env } as Record<string, string>,
+	};
+}
+
 // ### spawnWithDelayedEnter
 // Spawns cmd with "\n" written to stdin after a short delay, rather than
-// pre-supplied as a Blob. wrapWithIdeBackground's own IDE spawn line now
-// runs the IDE under `setsid` (see its own comment in
-// src/sandbox/builder.ts), which adds real fork/exec latency before the
+// pre-supplied as a Blob. entrypoint.sh runs the IDE under `setsid` (see
+// its own comment there), which adds real fork/exec latency before the
 // IDE's own script starts running at all — a pre-buffered stdin Blob can
 // be consumed by the wrapper's `read -r -t 1` loop before that finishes,
 // racing the IDE's own startup. Confirmed directly: this raced a real test
@@ -2948,9 +3047,11 @@ test.skipIf(!ideE2eToolsAvailable)(
 // within milliseconds of the IDE launching.
 function spawnWithDelayedEnter(
 	cmd: string[],
+	env?: Record<string, string>,
 	delayMs = 300,
 ): ReturnType<typeof Bun.spawn> {
 	const proc = Bun.spawn(cmd, {
+		env,
 		stdin: "pipe",
 		stdout: "pipe",
 		stderr: "pipe",
@@ -2961,6 +3062,175 @@ function spawnWithDelayedEnter(
 		await proc.stdin.end();
 	})();
 	return proc;
+}
+
+// ### Test: sandbox-processes-reaped-when-session-dies
+// EM: Regression test for a leak that produced seven accumulated RStudio
+// EM: instances on one machine, each carrying an Electron stack, an rsession,
+// EM: a Tomcat and a language server.
+// EM:
+// EM: scoder does not unshare the PID namespace — pasta attaches to the
+// EM: network namespace from outside, see ADR 0001 — so bwrap's
+// EM: --die-with-parent reaches only its own immediate child. entrypoint.sh
+// EM: starts the companion under `setsid`, deliberately, so that an IDE
+// EM: keeping its controlling terminal cannot write crash handlers into the
+// EM: agent's session. A setsid process is reparented to init when its parent
+// EM: dies, so it outlives the sandbox. Verified directly before the fix: a
+// EM: setsid child wrote its marker file eight seconds after bwrap exited.
+// EM:
+// EM: Asserts that NOTHING remains in the sandbox's mount namespace, rather
+// EM: than that one tracked pid is gone. That is the real contract, and the
+// EM: difference is not academic: an earlier fix tracked the IDE's pid and
+// EM: signalled its process group, which left xpra's Xvfb and its dbus-daemon
+// EM: running every time, because xpra forks both into sessions of their own.
+test.skipIf(
+	!(await commandAvailable("bwrap")) || (await realRstudioInstalled()),
+)(
+	"sandbox-processes-reaped-when-session-dies: nothing outlives the sandbox",
+	async () => {
+		const repoDir = await createTempRepo();
+		tempRepos.push(repoDir);
+		const shimDir = await createFakePastaShim(
+			`/tmp/scoder-reap-e2e-${Date.now()}.log`,
+		);
+		// Long-lived on purpose: the point is that it is still running when
+		// the session ends, which is exactly when the leak used to happen.
+		// In ~/.local/bin because checkExecTargetReachable rejects an exec
+		// target whose directory is not bound into the sandbox.
+		const fakeIde = `${process.env.HOME}/.local/bin/rstudio`;
+		await Bun.write(
+			fakeIde,
+			`#!/bin/sh\n${FAKE_RSTUDIO_MARKER}\nexec sleep 300\n`,
+		);
+		await Bun.spawn(["chmod", "+x", fakeIde]).exited;
+
+		try {
+			// Only the companion needs a preset, so the primary tool is just a
+			// long-running shell and no second fake is needed.
+			const proc = Bun.spawn(
+				[
+					SCODER_PATH,
+					"-q",
+					"--no-worktree",
+					"/bin/bash",
+					"-c",
+					"sleep 300",
+					"--ide",
+					"rstudio",
+				],
+				{
+					cwd: repoDir,
+					env: { ...process.env, PATH: `${shimDir}:${process.env.PATH}` },
+					stdin: "ignore",
+					stdout: "pipe",
+					stderr: "pipe",
+				},
+			);
+
+			let sandboxNs = "";
+			for (let i = 0; i < 300; i++) {
+				sandboxNs = await findSandboxNamespace();
+				if (sandboxNs) {
+					break;
+				}
+				if (proc.exitCode !== null) {
+					break;
+				}
+				await Bun.sleep(100);
+			}
+			if (!sandboxNs) {
+				throw new Error(
+					`no sandbox namespace appeared; scoder said:\n${await new Response(proc.stderr).text()}`,
+				);
+			}
+			expect(pidsInNamespace(sandboxNs).length).toBeGreaterThan(0);
+
+			// Two SIGINTs: the documented force-kill path, and how a user
+			// actually abandons a session. A single one forwards into the
+			// sandbox, after which the entrypoint waits for the IDE — which is
+			// the whole point of a companion and would never return.
+			//
+			// Not SIGTERM or SIGKILL: scoder handles neither (FORWARDED_SIGNALS
+			// covers SIGWINCH, SIGINT, SIGQUIT and SIGTSTP), so both terminate
+			// it outright and no teardown runs at all. Those gaps are recorded
+			// in the feature doc rather than pretended away here.
+			proc.kill("SIGINT");
+			await Bun.sleep(200);
+			proc.kill("SIGINT");
+			await proc.exited;
+
+			for (let i = 0; i < 100 && pidsInNamespace(sandboxNs).length > 0; i++) {
+				await Bun.sleep(100);
+			}
+			expect(pidsInNamespace(sandboxNs)).toEqual([]);
+		} finally {
+			await Bun.spawn(["rm", "-rf", shimDir]).exited;
+			await Bun.spawn(["rm", "-f", fakeIde]).exited;
+			await cleanupRepo(repoDir);
+		}
+	},
+	60_000,
+);
+
+// ### pidsInNamespace
+// Our own pids currently in the given mount namespace. Mirrors
+// ourPidsInNamespace in src/sandbox/launch.ts; unreadable entries are skipped
+// because /proc lists processes that are not ours.
+function pidsInNamespace(nsId: string): number[] {
+	const pids: number[] = [];
+	const uid = process.getuid?.() ?? -1;
+	for (const entry of readdirSync("/proc")) {
+		const pid = Number.parseInt(entry, 10);
+		if (Number.isNaN(pid) || pid === process.pid) {
+			continue;
+		}
+		try {
+			if (statSync(`/proc/${pid}`).uid !== uid) {
+				continue;
+			}
+			if (readlinkSync(`/proc/${pid}/ns/mnt`) === nsId) {
+				pids.push(pid);
+			}
+		} catch {
+			// Not ours, or gone mid-scan.
+		}
+	}
+	return pids;
+}
+
+// ### findSandboxNamespace
+// The mount namespace of the fake IDE this test launched, found by its marker
+// rather than by a pid the test could know in advance.
+async function findSandboxNamespace(): Promise<string> {
+	const uid = process.getuid?.() ?? -1;
+	for (const entry of readdirSync("/proc")) {
+		const pid = Number.parseInt(entry, 10);
+		if (Number.isNaN(pid)) {
+			continue;
+		}
+		try {
+			if (statSync(`/proc/${pid}`).uid !== uid) {
+				continue;
+			}
+			// EM: argv[0], not a substring of the whole command line. scoder
+			// EM: nests two bwrap layers, and the outer one's argv contains
+			// EM: the entire inner command — including this sleep — so a
+			// EM: substring match returns the OUTER layer's namespace, which
+			// EM: is not where the sandboxed processes live. That made this
+			// EM: test pass against a deliberately broken reaper.
+			const argv = (await Bun.file(`/proc/${pid}/cmdline`).text()).split("\0");
+			if (argv[0] !== "sleep" || argv[1] !== "300") {
+				continue;
+			}
+			const ns = readlinkSync(`/proc/${pid}/ns/mnt`);
+			if (ns !== readlinkSync("/proc/self/ns/mnt")) {
+				return ns;
+			}
+		} catch {
+			// Not ours, or gone mid-scan.
+		}
+	}
+	return "";
 }
 
 // ### Test: ide-companion-enter-requests-ide-shutdown
@@ -2978,7 +3248,7 @@ test("ide-companion-enter-requests-ide-shutdown: ENTER closes the IDE and its ch
 	const pidFile = `/tmp/scoder-ide-child-${Date.now()}.pid`;
 
 	try {
-		const cmd = wrapWithIdeBackground(
+		const { cmd, env } = entrypointCommand(
 			"/bin/bash",
 			["-c", "exit 7"],
 			"/bin/bash",
@@ -2986,7 +3256,7 @@ test("ide-companion-enter-requests-ide-shutdown: ENTER closes the IDE and its ch
 		);
 
 		const start = Date.now();
-		const proc = spawnWithDelayedEnter(cmd);
+		const proc = spawnWithDelayedEnter(cmd, env);
 		await proc.exited;
 		const elapsedMs = Date.now() - start;
 		const stderr = await new Response(proc.stderr).text();
@@ -3015,7 +3285,7 @@ test("ide-companion-enter-requests-ide-shutdown: ENTER closes the IDE and its ch
 // EM: prompt is — so a closed or /dev/null stdin must fall straight through to
 // EM: the plain `wait` this did before, not spin on EOF or exit early.
 test("ide-companion-waits-out-ide-without-stdin: with no stdin the wrapper waits for the IDE exactly as before", async () => {
-	const cmd = wrapWithIdeBackground(
+	const { cmd, env } = entrypointCommand(
 		"/bin/bash",
 		["-c", "exit 5"],
 		"/bin/bash",
@@ -3024,6 +3294,7 @@ test("ide-companion-waits-out-ide-without-stdin: with no stdin the wrapper waits
 
 	const start = Date.now();
 	const proc = Bun.spawn(cmd, {
+		env,
 		stdin: "ignore",
 		stdout: "pipe",
 		stderr: "pipe",
@@ -3044,16 +3315,14 @@ test("ide-companion-waits-out-ide-without-stdin: with no stdin the wrapper waits
 // EM: looking live. Scrollback is deliberately kept (no ESC[3J) — the session
 // EM: transcript is still worth having — and the escape is guarded on stderr
 // EM: being a tty so a redirected IDE log never collects control codes.
-test("ide-companion-clears-screen-not-scrollback: the wrapper clears the screen, guarded on a tty, and keeps scrollback", () => {
-	const script = wrapWithIdeBackground(
-		"/bin/bash",
-		[],
-		"/usr/bin/eclipse",
-		[],
-	)[2];
+test("ide-companion-clears-screen-not-scrollback: the wrapper clears the screen, guarded on a tty, and keeps scrollback", async () => {
+	const script = await Bun.file(ENTRYPOINT_SRC).text();
 
-	expect(script).toContain('[ -t 2 ] && printf "\x1b[H\x1b[2J" >&2');
-	expect(script).not.toContain("\x1b[3J");
+	expect(script).toContain("[ -t 2 ] && printf '\\033[H\\033[2J' >&2");
+	// EM: The escape itself, not the bare "[3J" an earlier version of this
+	// EM: assertion used — the script's own comment explains why scrollback is
+	// EM: kept and says "ESC[3J" in prose, which that looser form matched.
+	expect(script).not.toContain("\\033[3J");
 	expect(script).toContain("Press ENTER");
 });
 
@@ -3068,17 +3337,19 @@ test("ide-companion-clears-screen-not-scrollback: the wrapper clears the screen,
 // instead of reaching the visible console — and stdin is also
 // redirected from /dev/null, not left shared with the primary tool's
 // own inherited stdin.
-test("ide-companion-detached-from-controlling-terminal: the IDE is spawned under setsid with stdin from /dev/null", () => {
-	const script = wrapWithIdeBackground(
-		"/bin/bash",
-		[],
-		"/usr/bin/eclipse",
-		[],
-	)[2];
+test("ide-companion-detached-from-controlling-terminal: the IDE is spawned under setsid with stdin from /dev/null", async () => {
+	const script = await Bun.file(ENTRYPOINT_SRC).text();
 
-	// biome-ignore-start lint/suspicious/noTemplateCurlyInString: this is a
-	// literal bash "${...}" reference from the generated shell script, not
-	// a forgotten JS template placeholder — a plain string, never interpolated.
+	// EM: Both spawn sites, not just one: the script has a direct-exec branch
+	// EM: and an xpra branch, and the detachment has to hold on both. An
+	// EM: earlier draft detached only the direct one, which would have quietly
+	// EM: reopened this for exactly the GUI presets the report came from.
+	// biome-ignore-start lint/suspicious/noTemplateCurlyInString: these are
+	// literal bash "${...}" references from entrypoint.sh, not forgotten JS
+	// template placeholders — plain strings, never interpolated.
+	expect(script).toContain(
+		'setsid "${IDE_ARGV[@]}" </dev/null >"$XPRA_LOG" 2>&1 &',
+	);
 	expect(script).toContain(
 		'setsid "${IDE_ARGV[@]}" </dev/null >"$IDE_LOG" 2>&1 &',
 	);
@@ -3094,7 +3365,7 @@ test("ide-companion-detached-from-controlling-terminal: the IDE is spawned under
 // EM: and left the IDE standing. Hence process-first must not touch children.
 // EM: Uses spawnWithDelayedEnter, not a pre-buffered stdin Blob — see its
 // EM: own comment: confirmed directly that a Blob races
-// EM: wrapWithIdeBackground's setsid fork/exec latency and flakes this
+// EM: entrypoint.sh's setsid fork/exec latency and flakes this
 // EM: specific test (signal arrives before the fake IDE script has even
 // EM: started, so the pid file it writes as its first statement never
 // EM: gets there).
@@ -3103,7 +3374,7 @@ test("ide-shutdown-process-first-leaves-children-alone: a process-first preset s
 	let childPid = "";
 
 	try {
-		const cmd = wrapWithIdeBackground(
+		const { cmd, env } = entrypointCommand(
 			"/bin/bash",
 			["-c", "exit 4"],
 			"/bin/bash",
@@ -3111,7 +3382,7 @@ test("ide-shutdown-process-first-leaves-children-alone: a process-first preset s
 			{ signal: "HUP", order: "process-first" },
 		);
 
-		const proc = spawnWithDelayedEnter(cmd);
+		const proc = spawnWithDelayedEnter(cmd, env);
 		await proc.exited;
 		const stderr = await new Response(proc.stderr).text();
 

@@ -1,3 +1,10 @@
+import {
+	closeSync,
+	openSync,
+	readdirSync,
+	readlinkSync,
+	statSync,
+} from "node:fs";
 import { join } from "node:path";
 import {
 	readAgentPorts,
@@ -14,6 +21,8 @@ import {
 	type PastaSidecar,
 	stopPasta,
 } from "./pasta.ts";
+import type { XpraSidecar } from "./xpra.ts";
+import { attachXpraClient, stopXpraClient } from "./xpra.ts";
 
 // EM: Two-stage sandbox launch
 // EM: Implements network-isolation and sandbox-isolation
@@ -33,6 +42,13 @@ const CHILD_PID_POLL_MS = 25;
 /** Grace periods for shutting a failed launch down, before escalating. */
 const TERM_GRACE_MS = 500;
 const KILL_GRACE_MS = 500;
+
+// EM: Anything left inside the sandbox gets far longer than pasta or the ssh
+// tunnel do, because these are applications with real shutdown work rather
+// than sidecars: an IDE with unsaved editor state, an xpra server that stops
+// its own Xvfb and removes its sockets.
+const IDE_TERM_GRACE_MS = 5000;
+const IDE_KILL_GRACE_MS = 2000;
 
 /** Terminal-driven signals --new-session detaches the sandboxed process
  * from — see installSignalForwarding. */
@@ -61,6 +77,12 @@ const AGENT_PORTS_POLL_MS =
 const RESOLVCONF_POLL_MS =
 	Number.parseInt(process.env.SCODER_RESOLVCONF_POLL_MS || "", 10) || 2000;
 
+/** A sandbox's mount namespace, pinned by an open fd — see captureSandboxNamespace. */
+interface SandboxNamespace {
+	id: string;
+	fd: number;
+}
+
 export interface LaunchResult {
 	exitCode: number;
 }
@@ -76,6 +98,10 @@ export async function launchSandbox(
 	toolDescription: string,
 	projectRoot: string,
 	resolvConfSnapshotPath: string | null,
+	// EM: Set for a GUI session, meaning a program inside the sandbox will
+	// EM: start an xpra server and this is where its socket will appear. null
+	// EM: for every non-GUI session, which is most of them.
+	xpraSocketPath: string | null = null,
 ): Promise<LaunchResult> {
 	// EM: The one set of temp artifacts with no sandbox-side path to mirror:
 	// EM: the --info-fd/--block-fd fifos and pasta's pid file are read by
@@ -87,7 +113,9 @@ export async function launchSandbox(
 	const blockPath = join(rendezvous, "block");
 	const pidFile = join(rendezvous, "pasta-0.pid");
 
+	let sandboxNs: SandboxNamespace | null = null;
 	let sidecar: PastaSidecar | null = null;
+	let xpraSidecar: XpraSidecar | null = null;
 	let signalForwarder: SignalForwarder | null = null;
 	let portsWatcher: AgentPortsWatcher | null = null;
 	let resolvConfWatcher: ResolvConfWatcher | null = null;
@@ -118,6 +146,11 @@ export async function launchSandbox(
 		// released: the double-Ctrl-C escape hatch should cover the pasta-attach
 		// window too, not only the "tool is running" phase.
 		signalForwarder = installSignalForwarding(proc, childPid);
+
+		// EM: Captured here, while the sandbox is alive, because after it exits
+		// EM: there is no process left to read the namespace from — and the
+		// EM: survivors this exists to find have been reparented away by then.
+		sandboxNs = captureSandboxNamespace(childPid);
 
 		sidecar = await attachPasta(options, childPid, pidFile);
 		if (!sidecar) {
@@ -150,6 +183,19 @@ export async function launchSandbox(
 			resolvConfWatcher = startResolvConfWatcher(resolvConfSnapshotPath);
 		}
 
+		// EM: After the sandbox is released, never before: the socket cannot
+		// EM: exist until bwrap has finished setting the sandbox up and the
+		// EM: server inside has started its virtual display. Measured at ~3s
+		// EM: in the spike, so attachXpraClient waits rather than assuming.
+		// EM:
+		// EM: A failure here is deliberately NOT fatal. The sandbox is already
+		// EM: running with the user's tool in it; tearing that down because a
+		// EM: window did not appear would lose their session over the
+		// EM: companion. attachXpraClient has already said what went wrong.
+		if (xpraSocketPath) {
+			xpraSidecar = await attachXpraClient(xpraSocketPath);
+		}
+
 		const exitCode = await proc.exited;
 		return { exitCode };
 	} finally {
@@ -158,6 +204,18 @@ export async function launchSandbox(
 		// arriving mid-cleanup would just hit an already-gone process group.
 		signalForwarder?.stop();
 		resolvConfWatcher?.stop();
+
+		// EM: Before pasta and before the sandbox finishes dying. The client
+		// EM: renders the sandbox's windows, so leaving it up while the server
+		// EM: inside goes away shows the user a frozen window for as long as
+		// EM: shutdown takes. Same family as pasta and the ssh tunnel: it lives
+		// EM: outside the sandbox, so --die-with-parent does not reap it.
+		await stopXpraClient(xpraSidecar);
+
+		if (sandboxNs) {
+			await reapSandboxNamespace(sandboxNs);
+			closeSync(sandboxNs.fd);
+		}
 
 		// pasta lives outside the sandbox, so bwrap's --die-with-parent does not
 		// reap it. Every exit path has to come through here.
@@ -172,7 +230,139 @@ export async function launchSandbox(
 	}
 }
 
-// ### describeLaunch
+// ### captureSandboxNamespace
+// Record the sandbox's mount namespace, and pin it so its identity cannot be
+// reused while we still intend to act on it.
+//
+// EM: The open fd is the load-bearing part. A namespace is freed once the
+// last process leaves it, and the kernel is free to hand its inode number to
+// the next one — so comparing recorded ids after the sandbox has emptied
+// could, in principle, match an unrelated namespace and kill somebody else's
+// processes. Holding an fd on /proc/<pid>/ns/mnt keeps the namespace alive
+// and its id unique for as long as scoder cares. Verified that the link
+// stays readable through the fd after every process in it has gone.
+function captureSandboxNamespace(childPid: number): SandboxNamespace | null {
+	try {
+		const path = `/proc/${childPid}/ns/mnt`;
+		return { id: readlinkSync(path), fd: openSync(path, "r") };
+	} catch {
+		// The sandbox died between being reported and being inspected.
+		return null;
+	}
+}
+
+// ### reapSandboxNamespace
+// Terminate anything still running inside the sandbox after it has exited.
+//
+// EM: It can happen, and routinely did. scoder does not unshare the PID
+// EM: namespace — pasta attaches to the network namespace from outside, see
+// EM: ADR 0001 — so bwrap's --die-with-parent reaches only its own immediate
+// EM: child, and entrypoint.sh starts the companion IDE under `setsid` so it
+// EM: cannot write to the agent's terminal. A setsid process is reparented to
+// EM: init when its parent dies. Verified directly: a setsid child outlived
+// EM: bwrap. Reported as seven accumulated RStudio instances, each carrying an
+// EM: Electron stack, an rsession, a Tomcat and a language server.
+//
+// EM: By namespace rather than by tracked pid, which an earlier version of
+// EM: this did. A pid only reaches what it names and what shares its process
+// EM: group, and that measurably was not enough: xpra forks its Xvfb and a
+// EM: dbus-daemon into sessions of their own, so both survived every attempt
+// EM: to signal the IDE, with or without a generous grace period. Membership
+// EM: of the sandbox's mount namespace, by contrast, is exactly the property
+// EM: "is part of this sandbox" — nothing else can be in it, and nothing in
+// EM: it belongs to anyone else.
+//
+// EM: A no-op on the normal path: the entrypoint does not return until both
+// EM: programs have exited, so there is usually nothing here and this costs
+// EM: one scan of /proc.
+async function reapSandboxNamespace(ns: SandboxNamespace): Promise<void> {
+	const survivors = ourPidsInNamespace(ns.id);
+	if (survivors.length === 0) {
+		return;
+	}
+
+	warning(
+		`${survivors.length} process(es) outlived the sandbox; shutting them down`,
+	);
+	for (const pid of survivors) {
+		try {
+			process.kill(pid, "SIGTERM");
+		} catch {
+			// Already gone.
+		}
+	}
+
+	// EM: Generous, unlike the sidecars' 500ms: these are applications with
+	// EM: real shutdown work — an IDE with unsaved editor state, an xpra
+	// EM: server that stops its own Xvfb and removes its sockets.
+	const deadline = Date.now() + IDE_TERM_GRACE_MS;
+	while (Date.now() < deadline && ourPidsInNamespace(ns.id).length > 0) {
+		await Bun.sleep(100);
+	}
+
+	for (const pid of ourPidsInNamespace(ns.id)) {
+		try {
+			process.kill(pid, "SIGKILL");
+		} catch {
+			// Already gone.
+		}
+	}
+
+	// EM: Confirmed rather than assumed, the same way stopPasta and
+	// EM: stopSshTunnel do it: signalling and checking immediately reports a
+	// EM: false survivor every time, because the process has not been reaped
+	// EM: yet. Anything still here after SIGKILL is a genuine leak and worth
+	// EM: saying so, since the user is the only one who can act on it.
+	const killDeadline = Date.now() + IDE_KILL_GRACE_MS;
+	while (Date.now() < killDeadline && ourPidsInNamespace(ns.id).length > 0) {
+		await Bun.sleep(100);
+	}
+	const stubborn = ourPidsInNamespace(ns.id);
+	if (stubborn.length > 0) {
+		warning(`sandbox processes survived SIGKILL: ${stubborn.join(", ")}`);
+	}
+}
+
+// ### ourPidsInNamespace
+// Every process of ours currently in the given mount namespace.
+//
+// EM: Restricted to our own uid so that a shared machine's other users are
+// EM: never inspected or signalled, and skipping our own pid, which is in the
+// EM: host's namespace anyway. Unreadable entries are skipped silently:
+// EM: /proc is full of processes that are not ours, and a process exiting
+// EM: mid-scan is normal rather than exceptional.
+function ourPidsInNamespace(nsId: string): number[] {
+	const pids: number[] = [];
+	const uid = process.getuid?.() ?? -1;
+
+	let entries: string[];
+	try {
+		entries = readdirSync("/proc");
+	} catch {
+		return pids;
+	}
+
+	for (const entry of entries) {
+		const pid = Number.parseInt(entry, 10);
+		if (Number.isNaN(pid) || pid === process.pid) {
+			continue;
+		}
+		try {
+			if (statSync(`/proc/${pid}`).uid !== uid) {
+				continue;
+			}
+			if (readlinkSync(`/proc/${pid}/ns/mnt`) === nsId) {
+				pids.push(pid);
+			}
+		} catch {
+			// Not ours to read, or gone between readdir and stat.
+		}
+	}
+
+	return pids;
+}
+
+// ### describeLaunch// ### describeLaunch
 // The two stages as they would run, for --dry-run. Printing only the bwrap
 // command would no longer describe what actually happens.
 //

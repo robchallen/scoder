@@ -89,13 +89,16 @@ read-only so a sandboxed session cannot self-update the host installation.
 
 ### rstudio
 
-RStudio Desktop is a GUI app, so this preset also binds `/tmp/.X11-unix`
-(the host's X11 socket directory) and passes `DISPLAY` through, plus
-`XAUTHORITY` and its backing file when the host X session uses cookie-based
-auth (bound to a sandbox-side path, not the host's own — `XAUTHORITY` is a
-filesystem path, unlike the plain passthrough env vars below, so it cannot
-come from the generic `passThrough` list in `builder.ts`; see
-`ToolBindSpec.env` in `src/types.ts`), plus `/dev/dri` (GPU direct
+RStudio Desktop is a GUI app, so this preset is marked `gui: true` and runs
+under an xpra server started inside the sandbox, which forwards its windows
+to the host over a unix socket (see `xpra-gui-isolation`). The only display
+bind is that socket's directory, `/tmp/scoder-xpra`, read-write. The host's
+`/tmp/.X11-unix`, `XAUTHORITY` and `DISPLAY` are **not** bound or passed
+through — until 2.6.0 they were, and
+[0003-xpra-gui-isolation](/architecture/decision-records/0003-xpra-gui-isolation.md)
+records why that changed.
+
+The preset also binds `/dev/dri` (GPU direct
 rendering) when it exists on the host, via `--dev-bind` rather than
 `--ro-bind` since only `--dev-bind` grants actual device-node access.
 **Load-bearing, not optional**, for RStudio specifically: reported
@@ -105,18 +108,23 @@ wholesale `--dev-bind /dev /dev` down to a fixed list of real device
 nodes that never included it — Chromium's GPU process, unable to open a
 DRM render node, hits an internal `CHECK()` failure (compiled to a
 hardware trap in release builds) rather than falling back to software
-rendering cleanly. All of this — X11 socket, `DISPLAY`, `XDG_RUNTIME_DIR`,
-`DBUS_SESSION_BUS_ADDRESS`, `XAUTHORITY`, `/dev/dri` — lives in a shared
-`guiX11Binds` helper, not a second, separately-maintained copy: `eclipse`
-is a GUI app needing the exact same access, by direct analogy (see below).
+rendering cleanly. It is kept under xpra, and expected to matter *more*
+there: the app now renders into a virtual display rather than handing
+composition to the host's X server. A DRM render node is also a far
+narrower grant than an X socket ever was.
 
-This is a deliberate, accepted relaxation of the sandbox's isolation, not
-an oversight — see
-[0002-rstudio-x11-access](/architecture/decision-records/0002-rstudio-x11-access.md)
-for the full trade-off and what was verified before accepting it (the ADR
-predates the `/dev/dri` addition, which extends the same trade-off to GPU
-access — not independently re-verified against a real GPU-backed host,
-since this project has none). `pi` runs inside RStudio's own embedded
+All of this — the xpra socket directory, `XDG_RUNTIME_DIR`,
+`DBUS_SESSION_BUS_ADDRESS`, `/dev/dri` — lives in a shared
+`guiDisplayBinds` helper (named `guiX11Binds` until it stopped binding
+X11), not a second, separately-maintained copy: `eclipse` is a GUI app
+needing the exact same access, by direct analogy (see below).
+
+`XDG_RUNTIME_DIR` and `DBUS_SESSION_BUS_ADDRESS` are still passed through,
+and still reach the host's session bus via the read-only `/run` bind. xpra
+does nothing about that, so GUI presets are **not** fully isolated — ADR
+0003 says so plainly rather than letting the change imply more than it
+delivers. `/dev/dri` has never been independently verified against a real
+GPU-backed host, since this project has none. `pi` runs inside RStudio's own embedded
 terminal, so this preset also includes pi's own config/data/cache binds —
 via a shared `piConfigBinds` helper, not a second, separately-maintained
 copy of the same list.
@@ -267,10 +275,12 @@ rejected and what was verified against a real Eclipse install, is
   flags work directly on the ordinary interactive launch (see
   eclipse-preset.md's Design Decision 4).
 
-Like `rstudio`, this is a GUI app needing the same X11
-socket/`DISPLAY`/`XAUTHORITY` access — but unlike `rstudio`'s, this has
+Like `rstudio`, this is a GUI app (`gui: true`) getting the same xpra
+display and the same `guiDisplayBinds` — but unlike `rstudio`'s, this has
 **not** been independently re-verified: this project has no host with GTK
 installed and a real X session to confirm the interactive phase against.
+Neither IDE has been verified under xpra specifically; the spike and the
+end-to-end test use `xclock` and `xdpyinfo`.
 Whether `-importProject` behaves on the interactive launch exactly as the
 plugin's README describes, and whether the `RECENT_WORKSPACES`/`.settings`
 seeding mechanism actually locates and copies the right thing on a real

@@ -33,6 +33,9 @@ Options:
                             in the background, the primary tool in the
                             foreground, and both must exit before scoder
                             shuts down. e.g. scoder pi --ide rstudio
+                            GUI presets need xpra — their windows are
+                            forwarded from a virtual display inside the
+                            sandbox, not drawn on the host's X server
        --dry-run           Print the bwrap command without executing
 
 Setup (run once, requires sudo):
@@ -40,7 +43,10 @@ Setup (run once, requires sudo):
                           Install AppArmor profile to allow bwrap to create
                           user namespaces (required on Ubuntu 24.04+)
   sudo scoder --install-dependencies
-                          uses apt to install packages bubblewrap, passt
+                          uses apt to install bubblewrap and passt, and adds
+                          the upstream xpra repository (needed by GUI
+                          presets; the distro's own xpra is too old or
+                          absent) before installing xpra and xpra-x11
 `;
 
 const VERSION = "2.3.3";

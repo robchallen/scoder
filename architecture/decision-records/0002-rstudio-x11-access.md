@@ -1,10 +1,26 @@
 ---
 target-version: 2.5.0
-status: accepted
+status: superseded
+superseded-by: 0003-xpra-gui-isolation
 tags: [decision-record, sandbox, x11, rstudio]
 ---
 
 # 0002 — RStudio Desktop Gets Direct Host X11 Access
+
+> **Superseded by [0003](./0003-xpra-gui-isolation.md) in 2.6.0.** GUI
+> presets now run under an xpra server inside the sandbox, which forwards
+> individual windows over a unix socket; the host's X11 socket, `XAUTHORITY`
+> and `DISPLAY` are no longer bound or passed through.
+>
+> Kept as-is, because its reasoning is what made 0003 credible rather than
+> something 0003 had to argue against. This document's option C — "a nested
+> X server ... entirely inside the sandbox" — is what 0003 adopted, and the
+> two grounds recorded below for rejecting it were both correct at the time
+> and have both stopped applying: xpra's seamless mode needs no window
+> manager or VNC stack, and its unix-socket transport needs none of the
+> inbound port forwarding `buildPastaArgs` still does not do. The verified
+> findings below, particularly that X11's "untrusted" mode does not block
+> XTEST, are what established the cost that made the change worth making.
 
 ## Context
 

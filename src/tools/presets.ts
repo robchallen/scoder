@@ -1,6 +1,7 @@
 import { readdir, realpath } from "node:fs/promises";
 import { dirname } from "node:path";
 import { getProjDir } from "../git/worktree.ts";
+import { stageXpraDir } from "../sandbox/xpra.ts";
 import type { BindMount, ToolBindSpec, ToolPreset } from "../types.ts";
 import { error, info, warning } from "../utils/logger.ts";
 import {
@@ -34,34 +35,56 @@ async function ensureDir(path: string): Promise<void> {
 	await Bun.spawn(["mkdir", "-p", path]);
 }
 
-// ### guiX11Binds
-// Shared between `rstudio` and `eclipse` — both are GUI apps needing a live
-// connection to the host's X server (see
-// architecture/decision-records/0002-rstudio-x11-access.md for the
-// verified X11-socket/XAUTHORITY mechanics this covers; Design Decision 3
-// in eclipse-preset.md applies the same access to Eclipse by direct
-// analogy, not independently re-verified there). A deliberate, accepted
-// relaxation of the sandbox's isolation, not an oversight — see that ADR
-// for the full trade-off.
-async function guiX11Binds(
-	realHome: string,
-	sandboxHome: string,
+// ### guiDisplayBinds
+// Shared between `rstudio` and `eclipse` — both are GUI apps needing a
+// display. What they get is a *virtual* X server running inside the sandbox,
+// whose windows xpra forwards to the host over a unix socket; see
+// architecture/decision-records/0003-xpra-gui-isolation.md.
+//
+// EM: Named guiX11Binds until this changed, and the rename is the honest
+// EM: description of what it now does: it no longer binds X11 at all. What it
+// EM: used to bind, and deliberately — host /tmp/.X11-unix, the XAUTHORITY
+// EM: cookie and its file, and DISPLAY — gave anything inside the sandbox the
+// EM: same access to the user's real display as any of their own desktop
+// EM: apps: reading the screen, and injecting synthetic input into other
+// EM: windows via XTEST, which ADR 0002 verified directly is NOT blocked by
+// EM: X11's own "untrusted" client mode. That was the one channel scoder
+// EM: could not mediate once open. ADR 0002 accepted it because the
+// EM: alternative (a nested X server inside the sandbox) looked like a whole
+// EM: stack to assemble and needed inbound port forwarding that
+// EM: buildPastaArgs does not do. xpra's seamless mode over a unix socket is
+// EM: that option, made cheap: no window manager, no desktop session, no
+// EM: ports. DISPLAY inside the sandbox is now set by xpra for its own
+// EM: virtual display, so nothing here passes one in.
+async function guiDisplayBinds(
+	_realHome: string,
+	_sandboxHome: string,
 ): Promise<ToolBindSpec> {
 	const binds: BindMount[] = [];
 	const dirs: string[] = [];
 	const env: Record<string, string> = {};
 
-	if (await dirExists("/tmp/.X11-unix")) {
-		binds.push({
-			type: "ro-bind",
-			source: "/tmp/.X11-unix",
-			dest: "/tmp/.X11-unix",
-		});
-	}
+	// EM: The whole surface the GUI gets across the sandbox boundary: one
+	// EM: directory, read-write because the server inside creates the socket
+	// EM: and the client outside creates the mmap file. Source and dest are
+	// EM: the same path deliberately — see xpraDir in src/sandbox/xpra.ts;
+	// EM: mmap does not work otherwise, and without mmap the GUI is too laggy
+	// EM: to use.
+	const xpraDirPath = await stageXpraDir();
+	binds.push({
+		type: "bind",
+		source: xpraDirPath,
+		dest: xpraDirPath,
+	});
 
-	if (process.env.DISPLAY) {
-		env.DISPLAY = process.env.DISPLAY;
-	}
+	// EM: XDG_RUNTIME_DIR and DBUS_SESSION_BUS_ADDRESS are still passed
+	// EM: through, and still reach the host's session bus via buildBwrapCommand's
+	// EM: read-only /run bind. xpra does nothing about that, and it is a real
+	// EM: capability channel of its own (notifications, portals, whatever else
+	// EM: the user's desktop exposes). So moving to xpra closes the largest and
+	// EM: best-documented hole in GUI isolation, not the last one — said
+	// EM: plainly in ADR 0003 rather than left for someone to discover.
+	// EM: Deciding what to do about D-Bus is separate work.
 	if (process.env.XDG_RUNTIME_DIR) {
 		env.XDG_RUNTIME_DIR = process.env.XDG_RUNTIME_DIR;
 	}
@@ -69,40 +92,26 @@ async function guiX11Binds(
 		env.DBUS_SESSION_BUS_ADDRESS = process.env.DBUS_SESSION_BUS_ADDRESS;
 	}
 
-	const xauthPath = process.env.XAUTHORITY || `${realHome}/.Xauthority`;
-	if (await fileExists(xauthPath)) {
-		const sandboxXauthPath = `${sandboxHome}/.Xauthority`;
-		binds.push({
-			type: "ro-bind",
-			source: xauthPath,
-			dest: sandboxXauthPath,
-		});
-		env.XAUTHORITY = sandboxXauthPath;
+	// EM: Appearance settings the host desktop sets for GTK apps, inherited so
+	// EM: a forwarded window behaves like a local one. Reported:
+	// EM: GTK_OVERLAY_SCROLLING=0 is how KDE users stop GTK auto-hiding
+	// EM: scrollbars, and without it a sandboxed IDE hides them while every
+	// EM: other app on the desktop does not.
+	// EM:
+	// EM: An explicit allowlist, emphatically not a GTK_* passthrough.
+	// EM: GTK_IM_MODULE must stay unset: entrypoint.sh relies on bwrap's
+	// EM: --clearenv leaving it empty so that xpra's --input-method=keep
+	// EM: leaves it alone, which is what stops Eclipse's SWT warning that
+	// EM: GTK_IM_MODULE=xim "is unsupported and can cause graphical issues".
+	// EM: A host that exports it would silently reintroduce exactly the bug
+	// EM: that spelling was chosen to avoid.
+	for (const name of ["GTK_OVERLAY_SCROLLING"]) {
+		const value = process.env[name];
+		if (value) {
+			env[name] = value;
+		}
 	}
 
-	// EM: GPU render nodes. Reported directly: RStudio Desktop (Electron/
-	// EM: Chromium) showed a white window then crashed with SIGILL
-	// EM: ("Illegal instruction (core dumped)") after /dev was narrowed
-	// EM: from a wholesale --dev-bind /dev /dev (which included /dev/dri
-	// EM: incidentally, along with everything else) down to a short,
-	// EM: explicit list of real device nodes that never included it —
-	// EM: see design/features/sandbox-isolation.md's "History" for that
-	// EM: change. Chromium's GPU process, unable to open a DRM render
-	// EM: node, hits an internal CHECK()/NOTREACHED() failure rather than
-	// EM: falling back to software rendering cleanly — release Chromium
-	// EM: compiles a failed CHECK to a hardware trap instruction, which
-	// EM: the OS reports as exactly this signal, not a graceful error
-	// EM: message. `dev-bind`, not `ro-bind`: bwrap only grants actual
-	// EM: device-node access through `--dev-bind` ("allowing device
-	// EM: access", per its own --help text) — a plain bind mount does
-	// EM: not. Gated on the node existing on the host, same as the X11
-	// EM: socket above: a host with no GPU at all (or only a proprietary
-	// EM: NVIDIA driver, whose separate /dev/nvidia* nodes this does not
-	// EM: cover) has no /dev/dri to bind, and this preset cannot help
-	// EM: that — Chromium is expected to fall back to software rendering
-	// EM: in that case instead, not crash, since the difference between
-	// EM: "no GPU at all" and "GPU present but access denied" is exactly
-	// EM: what this fix targets.
 	if (await dirExists("/dev/dri")) {
 		binds.push({
 			type: "dev-bind",
@@ -370,6 +379,29 @@ async function resolveEclipseLayout(
 	};
 }
 
+// ### requireXpra
+// [IMPLEMENTS](/design/features/xpra-gui-isolation.md)
+// Shared by every GUI preset's validate(). A GUI preset without xpra is a
+// hard failure, never a fallback.
+//
+// EM: Deliberately not "fall back to binding the host X socket if xpra is
+// EM: missing". A security-motivated change that quietly degrades to the
+// EM: mechanism it replaced is the worst available default: the user believes
+// EM: they got isolation and did not, and nothing on screen looks different.
+// EM: If an opt-out is ever wanted it should be an explicit flag that names
+// EM: what it gives up, not something that happens by absence. The message
+// EM: shape matches the bwrap/pasta checks in main() for the same reason.
+async function requireXpra(): Promise<boolean> {
+	if (await commandExists("xpra")) {
+		return true;
+	}
+	error("xpra not found in PATH");
+	error("GUI presets forward windows from a virtual display inside the");
+	error("sandbox, rather than exposing the host's X server to it");
+	error("run sudo scoder --install-dependencies");
+	return false;
+}
+
 // ### TOOL_PRESETS
 // [IMPLEMENTS](/design/features/tool-presets.md)
 // EM: Mapping of tool names to preset configurations for sandboxing
@@ -602,34 +634,23 @@ export const TOOL_PRESETS: Record<string, ToolPreset> = {
 		// EM: rsession down when it closes.
 		ideShutdown: { signal: "HUP", order: "process-first" },
 
+		gui: true,
+
 		configBinds: async (realHome, sandboxHome) => {
-			// EM: RStudio Desktop is a GUI app — it needs a live connection to
-			// EM: the host's X server. Verified directly (see
-			// EM: architecture/decision-records/0002-rstudio-x11-access.md): an empty
-			// EM: --tmpfs /tmp sandbox has no /tmp/.X11-unix at all, and a
-			// EM: client fails with "unable to open display" until this socket
-			// EM: directory is bound in and DISPLAY is set; if the host X
-			// EM: session uses cookie-based auth (the common case for a real
-			// EM: desktop session), XAUTHORITY and its backing file are needed
-			// EM: too, or the client is refused with "Authorization required,
-			// EM: but no authorization protocol specified".
+			// EM: RStudio Desktop is a GUI app and needs a display. It gets a
+			// EM: virtual X server running inside the sandbox, whose windows
+			// EM: xpra forwards to the host over a unix socket — see
+			// EM: architecture/decision-records/0003-xpra-gui-isolation.md and
+			// EM: guiDisplayBinds for the shared display/DRI mechanics.
 			// EM:
-			// EM: This is a deliberate, accepted relaxation of the sandbox's
-			// EM: isolation, not an oversight: exposing the host's real X11
-			// EM: socket gives anything inside the sandbox the same access any
-			// EM: of the user's own desktop apps have to that X display,
-			// EM: including XTEST-based synthetic input injection into other
-			// EM: windows on it — verified directly to NOT be blocked by
-			// EM: X11's own "untrusted" auth mechanism (the same one `ssh -X`
-			// EM: relies on), so it is not a mitigation to lean on. Accepted
-			// EM: because the threat model here is accidents, not a dedicated
-			// EM: adversary — a VM or container is the right answer for the
-			// EM: latter, and is deliberately not what this is. See
-			// EM: guiX11Binds for the shared X11/XAUTHORITY/DRI mechanics.
-			const x11 = await guiX11Binds(realHome, sandboxHome);
-			const binds: BindMount[] = [...x11.binds];
-			const dirs: string[] = [...x11.dirs];
-			const env: Record<string, string> = { ...x11.env };
+			// EM: Until 2.6.0 this bound the host's real X11 socket and
+			// EM: XAUTHORITY instead, which ADR 0002 accepted knowing that it
+			// EM: let anything in the sandbox read the screen and inject
+			// EM: synthetic input into other windows. 0003 supersedes that.
+			const display = await guiDisplayBinds(realHome, sandboxHome);
+			const binds: BindMount[] = [...display.binds];
+			const dirs: string[] = [...display.dirs];
+			const env: Record<string, string> = { ...display.env };
 
 			// EM: Reported: most menu items greyed out except cut/copy/paste,
 			// EM: and only the window manager's own close button quits RStudio.
@@ -649,7 +670,7 @@ export const TOOL_PRESETS: Record<string, ToolPreset> = {
 			// EM: desktop — is already reachable through the existing wholesale
 			// EM: --ro-bind /run /run once these env vars tell RStudio where to
 			// EM: look. (XDG_RUNTIME_DIR/DBUS_SESSION_BUS_ADDRESS themselves
-			// EM: already come from guiX11Binds above.)
+			// EM: already come from guiDisplayBinds above.)
 			//
 			// EM: Reported: mcptools::mcp_session() (bridging RStudio's R console
 			// EM: to pi, e.g. via --ide) fails with "Socket directory
@@ -671,6 +692,19 @@ export const TOOL_PRESETS: Record<string, ToolPreset> = {
 			// EM: the directory itself (dir.create(..., recursive = TRUE)) the
 			// EM: first time either side needs it.
 			env.MCPTOOLS_SOCKET_DIR = "/tmp/mcptools";
+
+			// EM: RStudio Desktop is Electron, so its renderer is Chromium,
+			// EM: and RSTUDIO_CHROMIUM_ARGUMENTS is RStudio's own documented
+			// EM: way to pass Chromium flags to it. Forwarded rather than set,
+			// EM: because the value that helps depends on the host's GPU and
+			// EM: on what is wrong — see "RStudio's wheel scrolling" in
+			// EM: design/features/xpra-gui-isolation.md. Without this the
+			// EM: variable cannot reach RStudio at all: the sandbox runs
+			// EM: --clearenv, so nothing the user exports survives unless it
+			// EM: is named somewhere.
+			if (process.env.RSTUDIO_CHROMIUM_ARGUMENTS) {
+				env.RSTUDIO_CHROMIUM_ARGUMENTS = process.env.RSTUDIO_CHROMIUM_ARGUMENTS;
+			}
 
 			// RStudio writes here throughout a session (preferences, recent
 			// files, environment/history state) — same reasoning as Claude
@@ -714,7 +748,7 @@ export const TOOL_PRESETS: Record<string, ToolPreset> = {
 				error("Install: https://posit.co/download/rstudio-desktop/");
 				return false;
 			}
-			return true;
+			return await requireXpra();
 		},
 
 		// EM: RStudio Desktop does not inherit the launching process's cwd for
@@ -773,6 +807,8 @@ export const TOOL_PRESETS: Record<string, ToolPreset> = {
 		// EM: SIGINT and SIGUSR1 do not close Eclipse at all.
 		ideShutdown: { signal: "TERM", order: "children-first" },
 
+		gui: true,
+
 		// EM: Requires the seeq12/eclipse-import-projects-plugin fork at
 		// EM: https://github.com/robchallen/eclipse-import-projects-plugin
 		// EM: (>= 2.0.0) to already be installed into the host Eclipse from
@@ -781,19 +817,22 @@ export const TOOL_PRESETS: Record<string, ToolPreset> = {
 		// EM: design/implementation/plans/eclipse-preset.md for why an
 		// EM: earlier version tried to and what that cost.
 		configBinds: async (realHome, sandboxHome) => {
-			// EM: Eclipse's UI is SWT/GTK, not Electron — the same class of
-			// EM: X11-needing desktop app as rstudio (see
-			// EM: architecture/decision-records/0002-rstudio-x11-access.md for
-			// EM: the verified X11-socket/XAUTHORITY mechanics this mirrors),
-			// EM: but NOT independently re-verified for Eclipse specifically:
-			// EM: this project has no host with GTK installed and a real X
-			// EM: session to confirm it against. See Design Decision 3 in
-			// EM: eclipse-preset.md, and guiX11Binds for the shared
-			// EM: X11/XAUTHORITY/DRI mechanics.
-			const x11 = await guiX11Binds(realHome, sandboxHome);
-			const binds: BindMount[] = [...x11.binds];
-			const dirs: string[] = [...x11.dirs];
-			const env: Record<string, string> = { ...x11.env };
+			// EM: Eclipse's UI is SWT/GTK, not Electron, but it is the same
+			// EM: class of display-needing desktop app as rstudio and gets the
+			// EM: same treatment: a virtual X server inside the sandbox, with
+			// EM: xpra forwarding its windows out. See
+			// EM: architecture/decision-records/0003-xpra-gui-isolation.md,
+			// EM: Design Decision 3 in eclipse-preset.md, and guiDisplayBinds
+			// EM: for the shared display/DRI mechanics.
+			// EM:
+			// EM: NOT independently verified for Eclipse specifically, before
+			// EM: or after this change: this project has no host with GTK
+			// EM: installed and a real X session to confirm it against, and
+			// EM: the xpra spike used xclock.
+			const display = await guiDisplayBinds(realHome, sandboxHome);
+			const binds: BindMount[] = [...display.binds];
+			const dirs: string[] = [...display.dirs];
+			const env: Record<string, string> = { ...display.env };
 
 			const layout = await resolveEclipseLayout(process.cwd());
 			if (!layout) {
@@ -924,7 +963,7 @@ export const TOOL_PRESETS: Record<string, ToolPreset> = {
 				error("Install: https://www.eclipse.org/downloads/");
 				return false;
 			}
-			return true;
+			return await requireXpra();
 		},
 	},
 };

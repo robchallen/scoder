@@ -113,7 +113,7 @@ The sandbox shape:
     reachability check in `src/index.ts`.
 
 - `/dev/dri` (GPU render nodes) — bound separately, only for GUI presets
-  that need it (`rstudio`, `eclipse` — see `guiX11Binds` in
+  that need it (`rstudio`, `eclipse` — see `guiDisplayBinds` in
   `src/tools/presets.ts`), not part of the fixed list above. **Load-bearing,
   not optional**, for at least RStudio Desktop: reported directly, RStudio
   showed a white window then crashed with `SIGILL` ("Illegal instruction
@@ -125,7 +125,7 @@ The sandbox shape:
   to a hardware trap instruction, which the OS reports as exactly this
   signal, not a graceful error message. `--dev-bind`, not `--ro-bind`:
   bwrap only grants actual device-node access through `--dev-bind`. Gated
-  on the node existing on the host, same as the X11 socket: a host with no
+  on the node existing on the host: a host with no
   GPU at all has no `/dev/dri` to bind, and Chromium is expected to fall
   back to software rendering in that case instead of crashing, since the
   difference between "no GPU at all" and "GPU present but access denied"

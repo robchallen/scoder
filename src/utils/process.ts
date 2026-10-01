@@ -15,6 +15,21 @@ export function isProcessAlive(pid: number): boolean {
 	}
 }
 
+// EM: A negative pid signals the whole process group, which is what the
+// EM: companion IDE needs: entrypoint.sh starts it under `setsid`, making it
+// EM: a session and process-group leader whose pgid equals its pid, and
+// EM: everything it spawns inherits that group. Signalling the leader alone
+// EM: would leave the rest — under xpra that means the server dies and its
+// EM: Xvfb and the IDE itself carry on. Verified that Bun's process.kill
+// EM: accepts a negative pid.
+function signalGroup(pgid: number, sig: "SIGTERM" | "SIGKILL"): void {
+	try {
+		process.kill(-pgid, sig);
+	} catch {
+		// Group already gone, or the leader exited between check and signal
+	}
+}
+
 function signalProcess(pid: number, sig: "SIGTERM" | "SIGKILL"): void {
 	try {
 		process.kill(pid, sig);
@@ -59,4 +74,26 @@ export async function terminateProcess(
 
 	signalProcess(pid, "SIGKILL");
 	return waitForProcessExit(pid, killGraceMs);
+}
+
+// ### terminateProcessGroup
+// terminateProcess, but signalling every process in the group rather than
+// just its leader. Liveness is judged by the leader, which is the pid the
+// caller knows and the last thing standing in practice.
+export async function terminateProcessGroup(
+	pgid: number,
+	termGraceMs: number,
+	killGraceMs: number,
+): Promise<boolean> {
+	if (!isProcessAlive(pgid)) {
+		return true;
+	}
+
+	signalGroup(pgid, "SIGTERM");
+	if (await waitForProcessExit(pgid, termGraceMs)) {
+		return true;
+	}
+
+	signalGroup(pgid, "SIGKILL");
+	return waitForProcessExit(pgid, killGraceMs);
 }

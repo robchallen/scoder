@@ -140,9 +140,22 @@ uid, so everything inside it competes with their whole desktop for the same
 Measured: an xpra session held **8** instances by default, **1** with two
 things turned off, both of which the sandbox wanted off anyway.
 
-- `--input-method=none` stops xpra starting an ibus stack — `ibus-daemon`,
+- `--input-method=keep` stops xpra starting an ibus stack — `ibus-daemon`,
   `-memconf`, `-extension-gtk3`, `-x11`, `-portal`, 8 processes. Nothing in
   a sandbox is using an input method editor.
+
+  `keep`, not `none`. `none` does not mean "no input method": xpra reads it
+  as "disable imsettings and fall back to xim", and sets
+  `GTK_IM_MODULE=xim` for every child
+  (`xpra/x11/subsystem/keyboard.py`, `configure_imsettings_env`). Eclipse's
+  SWT then prints `***WARNING: Detected: GTK_IM_MODULE=xim. This input
+  method is unsupported and can cause graphical issues ... if flicking is
+  experienced` — reported from a real session, and introduced by the `none`
+  spelling rather than present before it. `keep` leaves the environment
+  alone, which here means `GTK_IM_MODULE` stays unset, exactly what SWT
+  asks for. That only works because bwrap runs `--clearenv`, so it depends
+  on `buildBwrapCommand`, not on the host. Verified directly: both
+  variables unset, 0 ibus processes, so the inotify saving is unchanged.
 - `XPRA_MENU_WATCHER=0` and `XPRA_EXPORT_MENU_DATA=0` stop the menu
   provider, which creates one inotify instance per watched directory to
   export the *host's* application menu into the session. That is host data
@@ -186,6 +199,29 @@ unrestricted clipboard access along with everything else, so proxying it is
 the same capability with a name and an off switch, not a regression. Worth
 exposing as a flag.
 
+### Tuning a live session: SCODER_XPRA_*
+
+Judging whether a GUI session feels responsive is something only the person
+at the screen can do, and each attempt costs them a full IDE session. So
+the xpra flags are reachable without a code change:
+
+- any `XPRA_*` variable set on the host is forwarded into the sandbox and
+  reaches the server; the client inherits the host environment already, so
+  one setting covers both sides
+- `SCODER_XPRA_SERVER_ARGS` — extra flags for the in-sandbox `xpra start`
+- `SCODER_XPRA_CLIENT_ARGS` — extra flags for the host-side `xpra attach`
+
+Both are whitespace-split, so a flag value containing a space cannot be
+passed this way. Forwarding `XPRA_*` wholesale is safe because the sandbox
+is `--clearenv`'d: nothing arrives that the user did not deliberately set,
+and it only reaches xpra. The entrypoint reads its own settings with
+`${VAR:-default}`, so a forwarded value wins.
+
+```
+XPRA_SCROLL_ENCODING=1 SCODER_XPRA_CLIENT_ARGS="--encoding=rgb" \
+  scoder pi --ide eclipse
+```
+
 ### Hard dependency, never a fallback
 
 `requireXpra` (`src/tools/presets.ts`), shared by every GUI preset's
@@ -201,9 +237,39 @@ five years stale on Ubuntu 24.04 and absent on 26.04. See
 
 ## Known Gaps
 
-- **Throughput after enabling mmap is unmeasured.** mmap demonstrably
-  negotiates now, and it was the documented cause of the lag, but nobody has
-  confirmed the IDEs are actually comfortable to use afterwards.
+- **Mousewheel scrolling is still laggy, and the cause is not established.**
+  Reported from a real Eclipse session *after* mmap was working. What has
+  been measured, and what it rules out:
+  - mmap is genuinely active and fast —
+    `encoding.pixels_encoded_per_second=137959260`, about 37 full
+    2560x1440 frames per second of encode capacity. Transport is not the
+    bottleneck.
+  - the window encoding is `mmap`, not a video codec, so encode/decode
+    latency is not it either.
+  - **xpra's scroll-delta encoding is off**:
+    `encoding.scrolling.enabled=False`. The client gates it behind
+    `XPRA_SCROLL_ENCODING`, which defaults to **false** in 6.5.4
+    (`xpra/client/subsystem/encoding.py`). Setting it makes the client
+    advertise `scroll`, but `scrolling.enabled` stays false while the window
+    encoding is `mmap` — so scroll deltas and mmap appear to be mutually
+    exclusive in this version, which would mean every wheel notch ships the
+    changed region as pixels rather than a "shift rows by N" instruction.
+    **Not proven**: `--mmap=no` is broken in this xpra build (both client
+    and server fail with
+    `ModuleNotFoundError: No module named 'xpra.net.mmap.common'`), so the
+    A/B that would settle it cannot be run here.
+  - Candidates not yet eliminated: the scroll-encoding/mmap interaction
+    above, the DPI mismatch below, and client-side compositing.
+
+  `XPRA_SCROLL_ENCODING=1` and `SCODER_XPRA_CLIENT_ARGS` exist partly so
+  these can be tried without another code change each time.
+- **DPI is mis-reported and `--dpi` does not fix it.** xpra warns
+  `DPI set to 31 x 35 (wanted 96 x 96)` and suggests "the dpi switch", but
+  measured directly: `--dpi=96` changes nothing — `xdpyinfo` inside the
+  sandbox reports the same value with and without it, because the number
+  derives from the virtual screen's physical dimensions. The flag was
+  removed rather than shipped as an inert setting that looks like a fix.
+  xpra's other suggestion is a patched Xorg dummy driver.
 - **Eclipse starts and runs under xpra** — reported directly from a real
   session: the server came up, `--start-child` launched
   `/opt/eclipse/eclipse` with its full `-data`/`-importProject` argv, m2e
@@ -229,8 +295,6 @@ five years stale on Ubuntu 24.04 and absent on 26.04. See
   sandbox would clear most of it, but it is the same variable the RStudio
   greyed-out-menus fix relies on, so that is a change to make deliberately
   rather than in passing.
-- **DPI is mis-detected** (`DPI set to 12 x 19 (wanted 100 x 100)`), which
-  xpra itself warns may cause scaling problems. Unaddressed.
 
 [HAS_FEATURE](./tool-presets.md)
 [HAS_FEATURE](./ide-companion.md)

@@ -669,6 +669,29 @@ export function buildEntrypointInvocation(
 		env.XPRA_MMAP = xpra.mmap;
 		env.XPRA_TARGET = xpra.target;
 		env.XPRA_LOG = XPRA_LOG_PATH;
+
+		// EM: An escape hatch, and a deliberate one. Tuning a GUI session
+		// EM: means trying an xpra flag and judging whether it feels better,
+		// EM: which is a judgement only the person at the screen can make —
+		// EM: and every round trip costs them a full IDE session. Forwarding
+		// EM: the host's own XPRA_* variables and an extra-args string lets
+		// EM: them try several in one sitting instead of waiting on a code
+		// EM: change each time. XPRA_SCROLL_ENCODING is the live example: the
+		// EM: client gates its scroll-delta encoding behind it, off by
+		// EM: default in 6.5.4.
+		// EM:
+		// EM: Safe to forward wholesale because the sandbox is --clearenv'd,
+		// EM: so nothing arrives here that the user did not deliberately set,
+		// EM: and these only ever reach xpra. The entrypoint reads each with
+		// EM: a `${VAR:-default}`, so a forwarded value wins over its own.
+		for (const [name, value] of Object.entries(process.env)) {
+			if (name.startsWith("XPRA_") && value) {
+				env[name] = value;
+			}
+		}
+		if (process.env.SCODER_XPRA_SERVER_ARGS) {
+			env.XPRA_EXTRA_ARGS = process.env.SCODER_XPRA_SERVER_ARGS;
+		}
 	}
 
 	return {

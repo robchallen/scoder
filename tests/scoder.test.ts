@@ -2747,6 +2747,13 @@ test.skipIf(!xpraTestToolsAvailable)(
 			// EM: `system error 24 (Too many open files)`.
 			expect(stderr).not.toContain("watching for applications menu");
 
+			// EM: --input-method=keep rather than =none. `none` does not mean
+			// EM: "no input method": xpra reads it as "fall back to xim" and
+			// EM: sets GTK_IM_MODULE=xim, which Eclipse's SWT warns is
+			// EM: unsupported. Asserted because the difference between the two
+			// EM: spellings is invisible until an IDE complains.
+			expect(stderr).not.toContain("GTK_IM_MODULE=xim");
+
 			// The GUI program got a display, and it is xpra's own virtual one
 			// inside the sandbox — not the host's :89.
 			const xpraDisplay = await Bun.file(`${repoDir}/xpra-display.txt`).text();

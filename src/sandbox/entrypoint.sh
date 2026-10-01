@@ -34,6 +34,10 @@
 #                      to this unix socket. Unset for a non-GUI session.
 #   XPRA_MMAP=<path>   shared-memory file for the fast transport. Must be the
 #                      same path the host-side client uses.
+#   XPRA_EXTRA_ARGS    extra flags appended to `xpra start`, word-split. An
+#                      escape hatch for tuning a GUI session without a code
+#                      change — scoder forwards SCODER_XPRA_SERVER_ARGS here,
+#                      and any XPRA_* variable set on the host.
 #   XPRA_TARGET=ide|harness   which of the two the server wraps. Only read
 #                      when XPRA_SOCKET is set; defaults to ide.
 #   XPRA_LOG=<path>    where the xpra server's own log goes.
@@ -146,10 +150,33 @@ xpra_wrap() {
 	# decoded rather than shared, which was reported as both IDEs being "too
 	# laggy to be useable". See xpraDir in src/sandbox/xpra.ts.
 	#
-	# --input-method=none stops xpra starting an ibus stack — ibus-daemon,
+	# --input-method=keep stops xpra starting an ibus stack — ibus-daemon,
 	# -memconf, -extension-gtk3, -x11, -portal, 8 processes in all, measured.
 	# Nothing in a sandbox is using an input method editor, and they are not
 	# free: see the inotify note below.
+	#
+	# `keep`, not `none`, and the difference matters. `none` does not mean
+	# "no input method": xpra reads it as "disable imsettings and fall back to
+	# xim", and sets GTK_IM_MODULE=xim for every child
+	# (xpra/x11/subsystem/keyboard.py: configure_imsettings_env). Eclipse's
+	# SWT then prints `***WARNING: Detected: GTK_IM_MODULE=xim. This input
+	# method is unsupported and can cause graphical issues ... if flicking is
+	# experienced` — reported from a real session, and introduced by this
+	# flag rather than present before it.
+	#
+	# `keep` means "leave the environment alone", which here leaves
+	# GTK_IM_MODULE unset — exactly what SWT's warning asks for. That is only
+	# true because bwrap runs with --clearenv and nothing sets it, so this
+	# depends on buildBwrapCommand's behaviour, not on the host's. Verified
+	# directly: GTK_IM_MODULE unset, XMODIFIERS unset, 0 ibus processes.
+	#
+	# No --dpi here, despite xpra warning `DPI set to 31 x 35 (wanted 96 x 96)`
+	# and suggesting "the dpi switch". Measured: --dpi=96 changes nothing —
+	# xdpyinfo inside the sandbox reports the same 100x100 with and without
+	# it, because the number comes from the virtual screen's physical
+	# dimensions, not the flag. Left out rather than shipped as an inert
+	# setting that looks like a fix. xpra's other suggestion, a patched Xorg
+	# dummy driver, is a different piece of work.
 	XPRA_WRAPPED=(
 		xpra start
 		"--bind=$XPRA_SOCKET"
@@ -158,7 +185,7 @@ xpra_wrap() {
 		"--start-child=$(printf '%q ' "$@")"
 		--notifications=no
 		--printing=no
-		--input-method=none
+		--input-method=keep
 		"--mmap=${XPRA_MMAP:-yes}"
 		--audio=no
 		--speaker=no
@@ -166,6 +193,13 @@ xpra_wrap() {
 		--webcam=no
 		--pulseaudio=no
 	)
+
+	# Deliberately unquoted, so the caller's flags word-split into separate
+	# arguments — this is the one place in this script where splitting is the
+	# intent rather than a hazard. See XPRA_EXTRA_ARGS in the interface notes.
+	# shellcheck disable=SC2206
+	[ -n "${XPRA_EXTRA_ARGS:-}" ] && XPRA_WRAPPED+=(${XPRA_EXTRA_ARGS})
+	return 0
 }
 
 if [ -n "$XPRA_SOCKET" ]; then

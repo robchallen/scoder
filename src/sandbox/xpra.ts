@@ -166,7 +166,25 @@ export function buildXpraClientArgs(socketPath: string): string[] {
 		// EM: only possible because the directory is bound at the same path on
 		// EM: both sides — see xpraDir.
 		`--mmap=${xpraMmapPath()}`,
+		// EM: The host-side half of the escape hatch described in
+		// EM: buildEntrypointInvocation. The client already inherits the
+		// EM: host's environment (see xpraClientEnv), so XPRA_* variables
+		// EM: reach it without help; this is for flags, which do not.
+		...extraClientArgs(),
 	];
+}
+
+// ### extraClientArgs
+// SCODER_XPRA_CLIENT_ARGS, split on whitespace.
+//
+// EM: Whitespace splitting means a flag value containing a space cannot be
+// EM: passed this way. Accepted: this is a tuning hatch for things like
+// EM: `--encoding=rgb --video=no`, not a general argv channel, and the
+// EM: alternative is a quoting parser nobody asked for. Said here rather
+// EM: than discovered.
+function extraClientArgs(): string[] {
+	const raw = process.env.SCODER_XPRA_CLIENT_ARGS;
+	return raw ? raw.split(/\s+/).filter(Boolean) : [];
 }
 
 // ### attachXpraClient

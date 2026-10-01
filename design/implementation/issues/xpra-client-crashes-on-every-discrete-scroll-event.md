@@ -198,6 +198,72 @@ several plausible hypotheses each tested negative:
 - **The stall was seconds long with no intermediate frames**, which never fit
   a throughput explanation and should have pointed at blocking much sooner.
 
+## Upstream report
+
+Ready to paste at <https://github.com/Xpra-org/xpra/issues>. Kept short
+deliberately: the project carries well over a hundred open issues, so this
+leads with the regression and the one-line fix, and is written so a
+maintainer can confirm it by reading rather than by running anything.
+
+---
+
+**Title:** `6.5.4 regression: AttributeError on every discrete scroll event (get_subsystem is not defined)`
+
+Since 6.5.4, every non-smooth scroll event raises in the GTK3 client:
+
+````
+File "xpra/client/gtk3/window/pointer.py", line 293, in _do_scroll_event
+    pointer_sub = self.get_subsystem("pointer")
+AttributeError: 'GLClientWindow' object has no attribute 'get_subsystem'
+````
+
+`get_subsystem` is not defined anywhere in 6.5.4 — the only similar name is
+`get_subsystems()` on the server. The window class in the traceback is
+incidental.
+
+**Introduced in 6.5.4.** The whole block is new: 6.5.3 contains neither
+`get_subsystem` nor `SKIP_DUPLICATE_SCROLL_EVENTS`.
+
+````python
+# xpra/client/gtk3/window/pointer.py, _do_scroll_event()
+        pointer_sub = self.get_subsystem("pointer")          # <- raises
+        if SKIP_DUPLICATE_SCROLL_EVENTS and pointer_sub and pointer_sub.wheel_smooth and event.get_pointer_emulated():
+````
+
+`XPRA_SKIP_DUPLICATE_SCROLL_EVENTS=0` does not avoid it: the call is on its
+own line, evaluated before the condition it feeds.
+
+**Impact.** Smooth events return earlier so scrolling partly works, but GDK
+also delivers emulated discrete duplicates — exactly what this block exists
+to filter. Each raises and prints a traceback on the client's UI thread,
+stalling the GUI for several seconds per wheel notch. Electron applications
+(RStudio) become unusable; the server reports the client falling ~9s behind
+with `delayed region timeout ... late responses`.
+
+**Fix.** The same object is reached as `self._client` twice elsewhere in the
+file (lines 96 and 291):
+
+````diff
+-        pointer_sub = self.get_subsystem("pointer")
++        pointer_sub = self._client
+````
+
+Downgrading to 6.5.3 removes the stall entirely, confirming the bisect.
+
+**Reproduce** with any GTK application:
+
+````
+xpra start --bind=/tmp/t.sock --daemon=no --exit-with-children=yes --start-child=xterm
+xpra attach socket:///tmp/t.sock
+````
+
+then scroll with a mouse wheel.
+
+**Environment:** xpra 6.5.4-r0 (xpra.org repo), Ubuntu 24.04 noble, Python
+3.12, GTK3 client and seamless server.
+
+---
+
 ## Testing
 
 `design/prototype/xpra-no-sandbox.sh rstudio` reproduces it on the host with

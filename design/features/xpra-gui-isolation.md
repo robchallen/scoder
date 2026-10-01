@@ -246,20 +246,56 @@ a stream of them queues a backlog of animations — which is what "scroll
 events propagate slowly to the UI" describes. SWT (Eclipse) scrolls directly
 per event and does not compound the same way.
 
-`--mousewheel=coarse` turns that off: the client stops asking for smooth
-scroll and sends one discrete click per notch. Verified that it parses to
+`--mousewheel=coarse` turns that off — the client stops asking for smooth
+scroll and sends one discrete click per notch. Verified it parses to
 `wheel_smooth=False` while keeping the full button map, unlike
-`--mousewheel=no`, which disables the wheel entirely.
+`--mousewheel=no` which disables the wheel entirely.
+
+**Tested, and it does not help.** So the event *rate* is not the problem
+either, and the smooth-scroll explanation above is eliminated along with
+the transport one.
+
+### The remaining hypothesis: GPU compositing into a software X server
+
+What is left is the one structural difference between the two IDEs. Eclipse
+is SWT/GTK and draws with the CPU through cairo and X11 primitives. RStudio
+is Electron, so Chromium composites — and in this sandbox it does so with a
+**real** GPU, because `/dev/dri` is bound (see `tool-presets`, where it is
+load-bearing against a Chromium `CHECK` failure), while presenting to an
+**Xvfb** display that has no GPU path at all: the server log reports
+`OpenGL is supported on display ':0' using 'llvmpipe'`.
+
+A GPU-composited frame presented to a software X server has to be read back
+from GPU memory to the CPU. Readbacks stall the pipeline, and scrolling is
+precisely the interaction that produces a continuous stream of frames, so
+the cost shows up there and not while the UI is static.
+
+Against it: dragging a scrollbar is smooth, and that repaints too. Not
+decisive, because Chromium's wheel scrolling runs an animation for a while
+after each notch and so produces considerably more frames than a
+drag-repaint does — but it is the reason this is still a hypothesis rather
+than a conclusion.
+
+`RSTUDIO_CHROMIUM_ARGUMENTS` is RStudio's own documented way to pass
+Chromium flags, and scoder forwards it when set (it cannot arrive otherwise;
+the sandbox runs `--clearenv`). Three values separate the candidates:
 
 ```
-SCODER_XPRA_CLIENT_ARGS="--mousewheel=coarse" scoder --ide rstudio pi
+# Does the GPU path explain it? If scrolling goes smooth, yes.
+RSTUDIO_CHROMIUM_ARGUMENTS="--disable-gpu" scoder --ide rstudio pi
+
+# Narrower: keep GPU rasterisation, composite on the CPU.
+RSTUDIO_CHROMIUM_ARGUMENTS="--disable-gpu-compositing" scoder --ide rstudio pi
+
+# Tests the animation side instead, independent of the GPU.
+RSTUDIO_CHROMIUM_ARGUMENTS="--disable-smooth-scrolling" scoder --ide rstudio pi
 ```
 
-**Not yet confirmed to help**, and deliberately not made the default: coarse
-scrolling is exactly right for a notched wheel but is a downgrade for a
-touchpad, where smooth scrolling is the point. If it fixes RStudio, whether
-to default it is a question about which input device matters more, not a
-free win.
+If `--disable-gpu` is the answer, there is a follow-on worth taking: the
+`/dev/dri` bind exists because Chromium's GPU process hits a `CHECK` failure
+when it cannot open a render node, and a Chromium told not to use the GPU
+should not reach that code at all. That would let a GUI preset drop a device
+grant rather than add one — but it needs testing, not assuming.
 
 ### Tuning a live session: SCODER_XPRA_*
 
@@ -300,8 +336,11 @@ five years stale on Ubuntu 24.04 and absent on 26.04. See
 ## Known Gaps
 
 - **RStudio's mousewheel scrolling is still laggy**, on the configuration
-  Eclipse is happy with. See "What is actually slow" above for what is
-  isolated and the untested lever. Eclipse is fine.
+  Eclipse is happy with. Eliminated so far: the transport (`--mmap=no` is
+  worse), and the wheel event rate (`--mousewheel=coarse` does not help).
+  Current hypothesis is GPU compositing into a software X server, with three
+  `RSTUDIO_CHROMIUM_ARGUMENTS` values that separate it from the alternative
+  — see above. Eclipse is fine.
 - **DPI is mis-reported and `--dpi` does not fix it.** xpra warns
   `DPI set to 31 x 35 (wanted 96 x 96)` and suggests "the dpi switch", but
   measured directly: `--dpi=96` changes nothing — `xdpyinfo` inside the

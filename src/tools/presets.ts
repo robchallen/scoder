@@ -673,6 +673,19 @@ export const TOOL_PRESETS: Record<string, ToolPreset> = {
 			// EM: first time either side needs it.
 			env.MCPTOOLS_SOCKET_DIR = "/tmp/mcptools";
 
+			// EM: RStudio Desktop is Electron, so its renderer is Chromium,
+			// EM: and RSTUDIO_CHROMIUM_ARGUMENTS is RStudio's own documented
+			// EM: way to pass Chromium flags to it. Forwarded rather than set,
+			// EM: because the value that helps depends on the host's GPU and
+			// EM: on what is wrong — see "RStudio's wheel scrolling" in
+			// EM: design/features/xpra-gui-isolation.md. Without this the
+			// EM: variable cannot reach RStudio at all: the sandbox runs
+			// EM: --clearenv, so nothing the user exports survives unless it
+			// EM: is named somewhere.
+			if (process.env.RSTUDIO_CHROMIUM_ARGUMENTS) {
+				env.RSTUDIO_CHROMIUM_ARGUMENTS = process.env.RSTUDIO_CHROMIUM_ARGUMENTS;
+			}
+
 			// RStudio writes here throughout a session (preferences, recent
 			// files, environment/history state) — same reasoning as Claude
 			// Code's primary .claude dir: a read-only bind makes it fail or

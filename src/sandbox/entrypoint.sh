@@ -358,6 +358,7 @@ fi
 # cannot act on.
 [ -n "$IDE_PID" ] && wait "$IDE_PID" 2>/dev/null
 
+clear
 # The primary tool's status, not the IDE's: the IDE is a companion, and scoder's
 # exit code has always described the tool the user actually invoked.
 exit "$STATUS"

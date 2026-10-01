@@ -31,6 +31,8 @@ export interface IdeShutdown {
 	order: "children-first" | "process-first";
 }
 
+import type { LiveOverlay } from "./sandbox/overlays.ts";
+
 export interface ToolPreset {
 	description: string;
 	configBinds: (realHome: string, sandboxHome: string) => Promise<ToolBindSpec>;
@@ -60,6 +62,15 @@ export interface ToolPreset {
 	// Only meaningful for a preset used as an --ide companion. Omitted means
 	// the default (SIGTERM, children-first) in src/sandbox/builder.ts.
 	ideShutdown?: IdeShutdown;
+	// Files the preset wants presented inside the sandbox with sandbox-only
+	// content added, kept in step with the host while the session runs — see
+	// design/features/live-file-overlays.md. Separate from configBinds
+	// because the project directory is not known when that runs, and these
+	// are almost always project files.
+	fileOverlays?: (
+		hostProjectDir: string,
+		sandboxProjectDir: string,
+	) => Promise<LiveOverlay[]>;
 	// True for a preset that opens windows. Such a preset runs under an xpra
 	// server inside the sandbox, which forwards its windows to the host over a
 	// unix socket rather than letting it reach the host's X server — see

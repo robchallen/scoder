@@ -916,6 +916,27 @@ Two things this case had to get right, both of which it got wrong first:
 Confirmed to fail with the reaper disabled and pass with it, which is the
 only evidence that a regression test is worth having.
 
+### 96c. overlay-tracks-host-edits
+[TESTED_BY](/tests/scoder.test.ts#testOverlayTracksHostEdits)
+
+A host edit reaches the staged file; an unchanged host file produces no
+rewrite, so the watcher stays quiet rather than logging every tick; a missing
+source renders as the injection alone and starts tracking the file if it
+appears later.
+
+Asserts the injection appears **exactly once** after several rounds of
+editing, which is the invariant worth protecting: rendering from the previous
+output rather than from the source would duplicate it on every refresh, and
+would not show up until the host file had been edited twice.
+
+### 96d. overlay-prepends-when-asked
+[TESTED_BY](/tests/scoder.test.ts#testOverlayPrependsWhenAsked)
+
+`position: "prepend"` puts the injection before the host content, with no
+leading blank line when the source is absent. The motivating case is an
+`.Rprofile`: R evaluates it top to bottom, so appending a session
+registration would be silently useless.
+
 ### 97. gui-display-is-private-end-to-end
 [TESTED_BY](/tests/scoder.test.ts#testGuiDisplayIsPrivateEndToEnd)
 

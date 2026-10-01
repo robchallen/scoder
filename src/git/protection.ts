@@ -6,6 +6,8 @@ import {
 	readlink,
 	stat,
 } from "node:fs/promises";
+import type { LiveOverlay } from "../sandbox/overlays.ts";
+import { renderOverlay } from "../sandbox/overlays.ts";
 import type { BindMount } from "../types.ts";
 import { error, info } from "../utils/logger.ts";
 import {
@@ -14,7 +16,7 @@ import {
 	resolveHomePrefixes,
 	toSandboxPath,
 } from "../utils/paths.ts";
-import { stageDir, stageFile } from "../utils/session.ts";
+import { sessionPath, stageDir, stageFile } from "../utils/session.ts";
 
 // EM: Infrastructure protection via .agentreadonly and AGENTS.md overlay
 // EM: Implements infrastructure-protection, agents-md-overlay, and agents-skills-snapshot features
@@ -134,7 +136,14 @@ const MAX_LOCAL_BIN_COPY_BYTES = 64 * 1024 * 1024;
 export interface ProtectionConfig {
 	protectedPaths: string[];
 	safeBinds: BindMount[];
+	/** Host path of the rendered AGENTS.md overlay. */
 	agentsMdOverlay?: string;
+	/**
+	 * Files presented inside the sandbox with sandbox-only content added,
+	 * kept in step with the host while the session runs. See
+	 * src/sandbox/overlays.ts.
+	 */
+	overlays: LiveOverlay[];
 	dirs?: string[];
 	// The sandbox-side destinations of every .agentreadonly $HOME/... entry
 	// — a distinct list, not just whatever of safeBinds happens to look
@@ -219,12 +228,21 @@ export async function setupProtection(
 		dest: `${sandboxProjDir}/.agentreadonly`,
 	});
 
-	const agentsMdOverlay = await _setupAgentsMdOverlay(
-		sourceDir,
-		sandboxProjDir,
-	);
+	// EM: Rendered here so the file exists before bwrap binds it; the watcher
+	// EM: started in launchSandbox keeps it in step thereafter.
+	const agentsOverlay = await _setupAgentsMdOverlay(sourceDir, sandboxProjDir);
+	await renderOverlay(agentsOverlay);
+	const overlays: LiveOverlay[] = [agentsOverlay];
+	const agentsMdOverlay = sessionPath(agentsOverlay.dest);
 
-	return { protectedPaths, safeBinds, agentsMdOverlay, dirs, dependencyDirs };
+	return {
+		protectedPaths,
+		safeBinds,
+		agentsMdOverlay,
+		overlays,
+		dirs,
+		dependencyDirs,
+	};
 }
 
 async function registerAgentreadonlyHomeBind(
@@ -611,32 +629,43 @@ async function findProtectedPaths(
 	}
 }
 
+// ### _setupAgentsMdOverlay
+// [IMPLEMENTS](/design/features/agents-md-overlay.md)
+// [IMPLEMENTS](/design/features/live-file-overlays.md)
+//
+// EM: Returns a LiveOverlay rather than writing a file once, so that editing
+// EM: AGENTS.md on the host takes effect in a running session. It previously
+// EM: rendered exactly once at startup, which for the file whose entire
+// EM: purpose is telling the agent how to behave is the wrong way round: the
+// EM: moment you most want to correct an agent's instructions is while it is
+// EM: working, and the only remedy was to restart the session.
 async function _setupAgentsMdOverlay(
 	sourceDir: string,
 	sandboxProjDir: string,
-): Promise<string | undefined> {
+): Promise<LiveOverlay> {
 	const agentsSrc = `${sourceDir}/AGENTS.md`;
-	const agentsMdExists = await fileExists(agentsSrc);
-
-	const overlayFile = await stageFile(`${sandboxProjDir}/AGENTS.md`);
-
-	if (agentsMdExists) {
-		const content = await Bun.file(agentsSrc).text();
-		await Bun.write(overlayFile, `${content}\n`);
-	} else {
-		await Bun.write(overlayFile, "");
-	}
-
 	const realHome = getRealHome();
 
+	// EM: Deliberately says nothing about paths differing inside and outside,
+	// EM: because they do not — path-mirroring binds the project and $HOME at
+	// EM: their real paths, so there is one path space and nothing to
+	// EM: translate. An earlier version described "sandbox paths" as distinct
+	// EM: from host ones, which was true when the sandbox remapped $HOME and
+	// EM: has been actively misleading since it stopped: it invites an agent
+	// EM: to look for a translation that does not exist. Reported as exactly
+	// EM: that — lines that are at best unnecessary and at worst confusing.
+	// EM:
+	// EM: What survives is the distinction that is still real and still
+	// EM: actionable: an MCP server reached over localhost http is running
+	// EM: OUTSIDE the sandbox, so the read-only binds and the ephemeral home
+	// EM: do not apply to it, while a stdio one runs inside and they do.
 	let sandboxSection = `## scoder sandbox
 
 This section is injected by scoder inside the sandbox and is not part of the repository.
 
 - You are running inside a scoder sandbox.
-- Your \`$HOME\` (\`${realHome}\`) is the real host home directory — paths under it resolve the same way inside and outside the sandbox.
-- \`localhost\` http MCP servers may be running outside the sandbox and operate on real host filesystem.
-- \`stdio\` MCP servers run inside the sandbox and use sandbox paths.
+- Your \`$HOME\` is \`${realHome}\`, the real host home directory.
+- \`stdio\` MCP servers run inside the sandbox and are subject to its restrictions; \`localhost\` http ones run outside it and are not, so they can reach files you cannot.
 - You cannot edit files like \`AGENTS.md\` or \`.agents/*\` or other configuration files, so do not try. Ask the user to edit them instead.
 - Read the \`working-in-a-scoder-sandbox\` skill: \`npx skills add https://github.com/robchallen/scoder/tree/main/skills/working-in-a-scoder-sandbox\`
 `;
@@ -648,12 +677,17 @@ This section is injected by scoder inside the sandbox and is not part of the rep
 `;
 	}
 
-	const existingContent = await Bun.file(overlayFile).text();
-	await Bun.write(overlayFile, existingContent + sandboxSection);
-
 	info("Overlaying sandbox AGENTS.md");
 
-	return overlayFile;
+	return {
+		label: "AGENTS.md",
+		source: agentsSrc,
+		dest: `${sandboxProjDir}/AGENTS.md`,
+		injection: sandboxSection,
+		// EM: Appended, so the project's own instructions are what the agent
+		// EM: reads first and scoder's notes about the sandbox follow them.
+		position: "append",
+	};
 }
 
 // ### getAgentsMdOverlayBind

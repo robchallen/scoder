@@ -15,6 +15,8 @@ import { error, info, warning } from "../utils/logger.ts";
 import { terminateProcess } from "../utils/process.ts";
 import { stageHostScratchDir } from "../utils/session.ts";
 import { wrapWithFdShim } from "./builder.ts";
+import type { LiveOverlay, OverlayWatcher } from "./overlays.ts";
+import { startOverlayWatcher } from "./overlays.ts";
 import {
 	attachPasta,
 	buildPastaArgs,
@@ -102,6 +104,10 @@ export async function launchSandbox(
 	// EM: start an xpra server and this is where its socket will appear. null
 	// EM: for every non-GUI session, which is most of them.
 	xpraSocketPath: string | null = null,
+	// EM: Files whose host sources are watched for the life of the session.
+	// EM: Empty for a session with no project overlay, which is only the
+	// EM: degenerate case — AGENTS.md is always one of these.
+	overlays: LiveOverlay[] = [],
 ): Promise<LaunchResult> {
 	// EM: The one set of temp artifacts with no sandbox-side path to mirror:
 	// EM: the --info-fd/--block-fd fifos and pasta's pid file are read by
@@ -119,6 +125,7 @@ export async function launchSandbox(
 	let signalForwarder: SignalForwarder | null = null;
 	let portsWatcher: AgentPortsWatcher | null = null;
 	let resolvConfWatcher: ResolvConfWatcher | null = null;
+	let overlayWatcher: OverlayWatcher | null = null;
 
 	try {
 		// bwrap blocks reading this fifo until we release it
@@ -183,6 +190,14 @@ export async function launchSandbox(
 			resolvConfWatcher = startResolvConfWatcher(resolvConfSnapshotPath);
 		}
 
+		// EM: Started only after the sandbox is released, like the resolv.conf
+		// EM: watcher: before that there is nothing reading these files, and a
+		// EM: re-render racing bwrap's own bind setup would be pointless work
+		// EM: at best.
+		if (overlays.length > 0) {
+			overlayWatcher = startOverlayWatcher(overlays);
+		}
+
 		// EM: After the sandbox is released, never before: the socket cannot
 		// EM: exist until bwrap has finished setting the sandbox up and the
 		// EM: server inside has started its virtual display. Measured at ~3s
@@ -204,6 +219,7 @@ export async function launchSandbox(
 		// arriving mid-cleanup would just hit an already-gone process group.
 		signalForwarder?.stop();
 		resolvConfWatcher?.stop();
+		overlayWatcher?.stop();
 
 		// EM: Before pasta and before the sandbox finishes dying. The client
 		// EM: renders the sandbox's windows, so leaving it up while the server

@@ -31,6 +31,8 @@ localhost services by default.
 
 [HAS_FEATURE](./features/agents-md-overlay.md) - Sandbox AGENTS.md overlay that appends environment-specific instructions without modifying the repository copy.
 
+[HAS_FEATURE](./features/live-file-overlays.md) - A host file presented inside the sandbox with sandbox-only content added, read-only, and re-rendered whenever the host file changes.
+
 [HAS_FEATURE](./features/agents-skills-snapshot.md) - Startup-time snapshot of ~/.agents with symlink resolution for read-only sandbox access.
 
 [HAS_FEATURE](./features/apparmor-compatibility.md) - Automatic AppArmor profile installation for Ubuntu 24.04+ systems with restricted user namespaces.

@@ -192,7 +192,37 @@ xpra_wrap() {
 		--microphone=no
 		--webcam=no
 		--pulseaudio=no
+		# xpra starts a session bus of its own unless told not to: --dbus-launch
+		# defaults to `dbus-launch --sh-syntax --close-stderr`, and its address
+		# is exported into everything --start-child runs. That silently replaces
+		# the filtered bus scoder binds at /run/user/<uid>/bus, so the allowlist
+		# governs nothing while the GUI works perfectly and the proxy log stays
+		# empty. Reported exactly that way: "everything is working in RStudio
+		# [...] bus.log silent throughout".
+		#
+		# Not a hole, as that private bus lives inside the sandbox and cannot
+		# reach the host's services -- but not harmless either, because D-Bus
+		# *activation* on a fresh bus starts services in here on demand: a file
+		# manager, a browser and a keyring prompt were all observed appearing
+		# from a single "open containing folder".
+		--dbus-launch=
 	)
+
+	# Emptying --dbus-launch is necessary but not sufficient: xpra then leaves
+	# DBUS_SESSION_BUS_ADDRESS *unset* in the child rather than inheriting the
+	# one it was started with, so the address has to be put back by hand.
+	# --start-env appends to xpra's own defaults rather than replacing them --
+	# verified, GTK_CSD and QT_QPA_PLATFORM both survive it.
+	#
+	# Conditional, so that no proxy means no session bus at all: the same
+	# outcome setupDbus produces for a host with no bus, no xdg-dbus-proxy or
+	# an empty allowlist. Falling back to a private in-sandbox bus here would
+	# be exactly the silent degradation to the replaced mechanism that the xpra
+	# work made a rule of refusing.
+	[ -n "${DBUS_SESSION_BUS_ADDRESS:-}" ] &&
+		XPRA_WRAPPED+=(
+			"--start-env=DBUS_SESSION_BUS_ADDRESS=$DBUS_SESSION_BUS_ADDRESS"
+		)
 
 	# Deliberately unquoted, so the caller's flags word-split into separate
 	# arguments — this is the one place in this script where splitting is the

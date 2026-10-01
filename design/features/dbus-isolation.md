@@ -117,6 +117,40 @@ with the symptom arriving long after the cause and looking nothing like it.
 Being under the session root, the log goes when the session does, so deriving
 an allowlist from it wants `SCODER_KEEP_SESSION_TMP=1`.
 
+### xpra brings a bus of its own
+
+Under the GUI preset the proxy was, at first, governing nothing. `xpra start`
+defaults `--dbus-launch` to `dbus-launch --sh-syntax --close-stderr`, starts a
+private session bus inside the sandbox, and exports its address into
+everything `--start-child` runs — replacing the filtered one bound at
+`/run/user/<uid>/bus`.
+
+The symptom is worth recording because it reads as success: RStudio worked
+perfectly, the file manager opened, and `bus.log` stayed completely empty.
+Nothing was being refused because nothing was being asked.
+
+It is **not** a hole — that private bus lives in the sandbox and cannot reach
+the host's services — but it is not harmless either, because D-Bus
+*activation* on a fresh bus starts services in here on demand. One "open
+containing folder" was observed bringing up a file manager, a browser and a
+prompt to create a new keyring: all of them inside the sandbox, none of them
+asked for.
+
+The fix is two flags, because emptying `--dbus-launch` is necessary and not
+sufficient — xpra then leaves `DBUS_SESSION_BUS_ADDRESS` *unset* in the child
+rather than passing through the one it was started with:
+
+```
+--dbus-launch=
+--start-env=DBUS_SESSION_BUS_ADDRESS=<the proxy>
+```
+
+`--start-env` appends to xpra's own defaults rather than replacing them
+(verified: `GTK_CSD` and `QT_QPA_PLATFORM` both survive). The second flag is
+conditional, so no proxy still means no bus rather than a private one — the
+silent degradation to the replaced mechanism that the xpra work made a rule of
+refusing.
+
 ### Degrading
 
 Three ways this ends up absent, all normal rather than degraded: no session
@@ -139,14 +173,21 @@ for a GUI preset while a missing bus is survivable.
 - **Not tested against a live session bus.** The proxy mechanism is verified
   (readiness, filtering, logging, an allowed name passing and a denied one
   returning `ServiceUnknown`) against a throwaway `dbus-daemon --session`.
-  RStudio and Eclipse have since been run under it and both work, including
-  clipboard in and out of the sandbox — but that only shows the defaults are
-  not *actively* breaking them, not that they are right.
+  RStudio and Eclipse have since been run under it and both work — but the
+  first run that *reached* the proxy at all was the one after the
+  `--dbus-launch` fix above, so what the defaults cost in practice is still
+  unmeasured. Deriving them wants a session with one bogus name as the whole
+  allowlist, which keeps the proxy running and logs every real request.
 - **`XDG_RUNTIME_DIR` is now a fresh empty directory.** Anything expecting to
   find existing state there will not. This is the most likely source of a
   surprise from the tmpfs.
-- **The system bus is simply gone.** Nothing has needed it; if something
-  does, it needs its own proxy rather than a hole.
+- **The system bus is simply gone**, with `/run/dbus/system_bus_socket` taken
+  by the tmpfs. The first thing to notice was R's `bspm`, which reports
+  "D-Bus service not found!" at startup and never appears in the proxy log,
+  because the proxy only ever sees the *session* bus. Leaving it that way is
+  deliberate: `bspm` exists to install apt packages as root on the host, which
+  is the `docker.sock` class of escape wearing an unexpected hat. Anything
+  that genuinely needs the system bus needs its own proxy, not a hole.
 - **No reload.** `xdg-dbus-proxy` takes its filter at startup, so editing
   `.sandbox/dbus` takes effect next session. The file's header says so.
 

@@ -199,6 +199,49 @@ unrestricted clipboard access along with everything else, so proxying it is
 the same capability with a name and an off switch, not a regression. Worth
 exposing as a flag.
 
+### Two transports, and they are mutually exclusive
+
+xpra 6.5.4 will use **either** mmap **or** its scroll-delta encoding for a
+window, never both. Verified directly by A/B, with the client's
+`XPRA_SCROLL_ENCODING=1` set in both runs:
+
+| client `--mmap` | window encoding | `encoding.scrolling.enabled` |
+|---|---|---|
+| a path (default) | `mmap` | **False** |
+| `no` | `auto` | **True** |
+
+The trade-off that creates:
+
+- **mmap** moves bulk pixels extremely fast — measured
+  `pixels_encoded_per_second=137959260`, about 37 full 2560x1440 frames per
+  second. But with scroll detection off, every mousewheel notch ships the
+  changed region as pixels rather than a "shift rows by N" instruction.
+- **scroll** sends a tiny packet per scroll, but everything else goes
+  through ordinary encode/decode instead of shared memory.
+
+For an IDE, scrolling is the dominant interaction, which is a reason to
+think the second is the better trade here — but that is a prediction, and
+the only test that counts is whether it feels better. Switching is one
+flag, because the client's `--mmap=no` alone is enough (the server can keep
+its own `--mmap`, as the A/B above did) and `XPRA_SCROLL_ENCODING=1` is
+already the default:
+
+```
+SCODER_XPRA_CLIENT_ARGS="--mmap=no" scoder pi --ide eclipse
+```
+
+**An earlier version of this document said this A/B "cannot be run here".**
+That was wrong, and worth recording because of how the mistake was made: a
+client started with `--mmap=no` died with `ModuleNotFoundError: No module
+named 'xpra.net.mmap.common'`, and that was read as "disabling mmap is
+broken in this build". The traceback actually named
+`xpra/client/subsystem/webcam.py` as the importer — it is the *webcam*
+subsystem's load path that breaks, and `xpra.net.mmap.common` imports
+perfectly well on its own. `--webcam=no` (now a default, since the
+capability is unwanted anyway) avoids it and the A/B runs fine. The lesson
+is the ordinary one: read which module the traceback blames, not which
+module it names.
+
 ### Tuning a live session: SCODER_XPRA_*
 
 Judging whether a GUI session feels responsive is something only the person
@@ -237,32 +280,10 @@ five years stale on Ubuntu 24.04 and absent on 26.04. See
 
 ## Known Gaps
 
-- **Mousewheel scrolling is still laggy, and the cause is not established.**
-  Reported from a real Eclipse session *after* mmap was working. What has
-  been measured, and what it rules out:
-  - mmap is genuinely active and fast —
-    `encoding.pixels_encoded_per_second=137959260`, about 37 full
-    2560x1440 frames per second of encode capacity. Transport is not the
-    bottleneck.
-  - the window encoding is `mmap`, not a video codec, so encode/decode
-    latency is not it either.
-  - **xpra's scroll-delta encoding is off**:
-    `encoding.scrolling.enabled=False`. The client gates it behind
-    `XPRA_SCROLL_ENCODING`, which defaults to **false** in 6.5.4
-    (`xpra/client/subsystem/encoding.py`). Setting it makes the client
-    advertise `scroll`, but `scrolling.enabled` stays false while the window
-    encoding is `mmap` — so scroll deltas and mmap appear to be mutually
-    exclusive in this version, which would mean every wheel notch ships the
-    changed region as pixels rather than a "shift rows by N" instruction.
-    **Not proven**: `--mmap=no` is broken in this xpra build (both client
-    and server fail with
-    `ModuleNotFoundError: No module named 'xpra.net.mmap.common'`), so the
-    A/B that would settle it cannot be run here.
-  - Candidates not yet eliminated: the scroll-encoding/mmap interaction
-    above, the DPI mismatch below, and client-side compositing.
-
-  `XPRA_SCROLL_ENCODING=1` and `SCODER_XPRA_CLIENT_ARGS` exist partly so
-  these can be tried without another code change each time.
+- **Mousewheel scrolling is still laggy.** Reported from a real Eclipse
+  session *after* mmap was working. The cause is now characterised (see
+  "Two transports" above) but which transport is actually better for an IDE
+  has not been judged — that needs someone at the screen.
 - **DPI is mis-reported and `--dpi` does not fix it.** xpra warns
   `DPI set to 31 x 35 (wanted 96 x 96)` and suggests "the dpi switch", but
   measured directly: `--dpi=96` changes nothing — `xdpyinfo` inside the

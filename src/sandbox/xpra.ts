@@ -156,6 +156,14 @@ export function buildXpraClientArgs(socketPath: string): string[] {
 		"--speaker=no",
 		"--microphone=no",
 		"--printing=no",
+		// EM: Another capability not wanted here, and also a crash the
+		// EM: sandbox would otherwise be one code path away from: xpra 6.5.4's
+		// EM: webcam subsystem is what pulls in the import that made an
+		// EM: earlier --mmap=no client die with `ModuleNotFoundError: No
+		// EM: module named 'xpra.net.mmap.common'`. The package is fine and
+		// EM: imports cleanly on its own; it is that subsystem's load path
+		// EM: that breaks. Declining the capability avoids it entirely.
+		"--webcam=no",
 		// EM: The one capability deliberately left ON. X11 passthrough gave the
 		// EM: sandbox unrestricted clipboard access along with everything else;
 		// EM: proxying it here is the same capability with a name and an off
@@ -254,6 +262,14 @@ function xpraClientEnv(): Record<string, string> {
 	} else if (process.env.WAYLAND_DISPLAY) {
 		env.GDK_BACKEND = "wayland";
 	}
+
+	// EM: Inert while mmap is in use — xpra 6.5.4 will not do both, verified
+	// EM: directly — but it costs nothing and it is what makes the
+	// EM: alternative transport a single flag away rather than four. See
+	// EM: "Two transports, and they are mutually exclusive" in
+	// EM: design/features/xpra-gui-isolation.md. A host-set value wins, so
+	// EM: this can still be turned off.
+	env.XPRA_SCROLL_ENCODING = process.env.XPRA_SCROLL_ENCODING ?? "1";
 
 	return env;
 }

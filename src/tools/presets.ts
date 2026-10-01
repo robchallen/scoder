@@ -92,6 +92,26 @@ async function guiDisplayBinds(
 		env.DBUS_SESSION_BUS_ADDRESS = process.env.DBUS_SESSION_BUS_ADDRESS;
 	}
 
+	// EM: Appearance settings the host desktop sets for GTK apps, inherited so
+	// EM: a forwarded window behaves like a local one. Reported:
+	// EM: GTK_OVERLAY_SCROLLING=0 is how KDE users stop GTK auto-hiding
+	// EM: scrollbars, and without it a sandboxed IDE hides them while every
+	// EM: other app on the desktop does not.
+	// EM:
+	// EM: An explicit allowlist, emphatically not a GTK_* passthrough.
+	// EM: GTK_IM_MODULE must stay unset: entrypoint.sh relies on bwrap's
+	// EM: --clearenv leaving it empty so that xpra's --input-method=keep
+	// EM: leaves it alone, which is what stops Eclipse's SWT warning that
+	// EM: GTK_IM_MODULE=xim "is unsupported and can cause graphical issues".
+	// EM: A host that exports it would silently reintroduce exactly the bug
+	// EM: that spelling was chosen to avoid.
+	for (const name of ["GTK_OVERLAY_SCROLLING"]) {
+		const value = process.env[name];
+		if (value) {
+			env[name] = value;
+		}
+	}
+
 	if (await dirExists("/dev/dri")) {
 		binds.push({
 			type: "dev-bind",

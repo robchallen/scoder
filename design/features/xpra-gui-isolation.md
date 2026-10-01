@@ -512,6 +512,18 @@ present:
 | `.icons`, `.local/share/icons` | user-installed icon themes |
 | `.fonts` | pre-XDG font location, alongside the existing `.local/share/fonts` |
 
+`GTK_OVERLAY_SCROLLING` is inherited from the host for the same reason —
+setting it to `0` is how KDE users stop GTK auto-hiding scrollbars, and
+without it a sandboxed IDE hides them while every other application on the
+desktop does not.
+
+That is an explicit allowlist in `guiDisplayBinds`, emphatically **not** a
+`GTK_*` passthrough. `GTK_IM_MODULE` must stay unset: `entrypoint.sh` relies
+on bwrap's `--clearenv` leaving it empty so that xpra's
+`--input-method=keep` leaves it alone, which is what stops Eclipse's SWT
+warning that `GTK_IM_MODULE=xim` is unsupported. A host that exports it would
+silently reintroduce the exact bug that spelling was chosen to avoid.
+
 The settings files matter most on KDE, which is where this was reported:
 `kde-gtk-config` writes the chosen GTK theme into `.config/gtk-3.0/settings.ini`
 and `.gtkrc-2.0`, so without them the sandbox has no idea a theme was ever

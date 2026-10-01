@@ -280,6 +280,33 @@ That makes the working hypothesis "Electron's wheel scrolling wants GPU
 compositing and is not getting it", and the thing to do is **enable** the
 GPU and see, not disable it further.
 
+**A second blocker, verified directly**, which may matter more than the
+first: the sandbox loses supplementary group membership. A user namespace
+maps exactly one gid, so every supplementary group becomes `nogroup`:
+
+```
+host:    id -G -> 1000 27 1001   (user, sudo, docker)
+sandbox: id -G -> 1000 65534 65534
+```
+
+DRM render nodes are commonly `crw-rw---- root:render`, so a user who can
+open `/dev/dri/renderD128` on the host because they are in `render` or
+`video` **cannot open it inside the sandbox**, no matter that `/dev/dri` is
+bind-mounted. The bind carries the inode, permissions included; it cannot
+carry a group membership the namespace has thrown away.
+
+This is not fixable from inside scoder: adding a supplementary group needs a
+gid mapping the user namespace is not permitted to make without a setuid
+helper. If a host's render node turns out to be group-gated, the options are
+a udev rule relaxing it, or accepting software rendering. Worth knowing
+before chasing Chromium flags, because if the node cannot be opened then
+route 1 below cannot work either — EGL on the render node needs the same
+permission GLX does not.
+
+It is also worth noting beyond the GPU: **any group-gated device or file is
+invisible to a sandboxed tool in the same way.** That is arguably correct
+for an isolation tool, but it is undocumented and fails silently.
+
 Two routes, neither yet tested:
 
 1. **Let Chromium use the render node directly via EGL**, instead of GLX on

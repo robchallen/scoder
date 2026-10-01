@@ -1,6 +1,7 @@
 ---
 target-version: 2.6.0
-status: open
+resolved-in: 2.6.0
+status: worked-around
 tags: [issue, xpra, upstream, ide, rstudio]
 ---
 
@@ -140,6 +141,42 @@ sudo apt install --allow-downgrades \
 Add `xpra-audio`, `xpra-audio-server` and `xpra-codecs-extras` at the same
 version if they are installed. `xpra-html5` versions independently and does
 not need pinning.
+
+## What scoder does about it
+
+`--install-dependencies` installs `xpra=6.5.3-r0-1` and writes an apt pin at
+`/etc/apt/preferences.d/scoder-xpra.pref`:
+
+```
+Package: xpra xpra-client xpra-client-gtk3 xpra-server xpra-x11 xpra-codecs xpra-codecs-extras xpra-common xpra-audio xpra-audio-server
+Pin: version 6.5.3-r0-1
+Pin-Priority: 1001
+```
+
+Three details, each verified against apt rather than assumed:
+
+- **Priority 1001, not 500 or 990.** Above 1000 is the specific thing that
+  lets apt *downgrade* an already-installed package, which a machine already
+  on 6.5.4 needs. Checked: with the pin in place, `apt-cache policy xpra`
+  reports `Candidate: 6.5.3-r0-1` while `Installed: 6.5.4-r0-1`.
+- **An explicit package list, not an `xpra*` glob.** `xpra-html5` versions
+  independently (21-r1-1), and a glob would pin it to a version that does not
+  exist. Confirmed that it is unaffected by this stanza. Pinning a package
+  that is not installed is harmless — it only constrains it if it ever is.
+- **It fixes the hand-downgrade conflict.** Listing the packages manually on
+  the command line makes apt resolve them piecemeal, which is why
+  `xpra-audio-server` conflicted when the downgrade was first done by hand.
+  With the pin present apt solves the whole set at once: `apt-get
+  --just-print upgrade` plans all ten packages down to 6.5.3 together,
+  `xpra-audio-server` included. So on a machine where that package was left
+  behind at 6.5.4, `sudo apt upgrade` now completes the downgrade.
+
+The pin is deliberately to an exact version rather than a
+`Pin: version 6.5.4*` / `Pin-Priority: -1` block-the-bad-one rule. The latter
+would pick up a future fixed release automatically, which is attractive, but
+it would equally pick up 6.5.5 if that ships before the fix — and the failure
+is silent and baffling. The file says in a comment to delete it once upstream
+has fixed this, which is the point at which someone should be looking anyway.
 
 ## What this explains about the investigation
 

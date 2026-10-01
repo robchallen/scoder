@@ -500,6 +500,13 @@ per-codename `.sources`, `apt-get update`) before installing
 five years stale on Ubuntu 24.04 and absent on 26.04. See
 `src/cli/dependencies.ts`.
 
+It installs **6.5.3 specifically**, and writes an apt pin holding it there,
+because 6.5.4 makes GUI presets unusable — every mouse-wheel notch stalls the
+UI for seconds. Without the pin an ordinary `apt upgrade` restores the broken
+version silently, and nothing about the symptom points at xpra. See
+`xpra-client-crashes-on-every-discrete-scroll-event` for the pin's exact
+contents and why priority 1001.
+
 ## Known Gaps
 
 - **A killed session leaves the whole IDE stack running.** scoder does not
@@ -528,7 +535,9 @@ five years stale on Ubuntu 24.04 and absent on 26.04. See
   but not SIGKILL, which is what `--die-with-parent` delivers, so the real
   fix probably has to track the IDE's pid on the host side and reap it in
   `launchSandbox`'s `finally` alongside pasta and the ssh tunnel.
-- **Mousewheel scrolling stalls — root cause found, and it is an xpra bug.**
+- ~~**Mousewheel scrolling stalls**~~ — **resolved.** It was an xpra 6.5.4
+  regression, not anything in scoder, and downgrading fixed it. See below.
+- **Mousewheel scrolling stalled — root cause found, and it was an xpra bug.**
   Every *discrete* scroll event raises an `AttributeError` inside xpra's own
   client, which calls a `get_subsystem` method that does not exist in 6.5.4.
   Each raise prints a traceback on the client's UI thread, which is what

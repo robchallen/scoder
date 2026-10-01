@@ -33,6 +33,8 @@ export function dbusSocketDest(uid: string): string {
 export interface DbusProxy {
 	pid: number;
 	socketPath: string;
+	/** Host path of the proxy's own log, which records every refused call. */
+	logPath: string;
 }
 
 // ### stageDbusDir
@@ -91,27 +93,48 @@ export async function startDbusProxy(
 	// EM: be opened by a shell wrapper rather than passed directly — the same
 	// EM: constraint and the same workaround.
 	const args = buildDbusProxyArgs(hostBus, socketPath, allowed, 3);
-	const shim = 'exec 3>"$1"; shift; exec "$@"';
 	const readyPath = `${socketPath}.ready`;
+	const logPath = `${socketPath}.log`;
+
+	// EM: The shim opens fd 3 for --fd and redirects the proxy's own output to
+	// EM: a file. Both halves matter.
+	// EM:
+	// EM: --log is the only way to find out why a call was refused, and an
+	// EM: earlier version of this spawned the proxy with stdout and stderr as
+	// EM: pipes that nothing ever read — so the log was discarded, and worse,
+	// EM: once 64KB of it had accumulated the proxy would block on a full pipe
+	// EM: and D-Bus would stop working mid-session with no indication why.
+	// EM: Reported as "there is no dbus log at all".
+	const shim = 'exec 3>"$1"; exec >"$2" 2>&1; shift 2; exec "$@"';
 
 	await Bun.write(readyPath, "");
-	const proc = Bun.spawn(["bash", "-c", shim, "_", readyPath, ...args], {
-		stdout: "pipe",
-		stderr: "pipe",
-	});
+	const proc = Bun.spawn(
+		["bash", "-c", shim, "_", readyPath, logPath, ...args],
+		{ stdout: "ignore", stderr: "ignore" },
+	);
 
 	// EM: Bounded, for the reason every wait in this project is bounded: an
 	// EM: unbounded one turns a failed launch into a silent hang.
 	const deadline = Date.now() + 10_000;
 	while (Date.now() < deadline) {
 		if (proc.exitCode !== null) {
-			const stderr = (await new Response(proc.stderr).text()).trim();
-			error(`xdg-dbus-proxy exited before it was ready: ${stderr}`);
+			// EM: From the log file now, not from a pipe — the proxy's output
+			// EM: no longer goes anywhere this process can read directly.
+			const why = (
+				await Bun.file(logPath)
+					.text()
+					.catch(() => "")
+			).trim();
+			error(`xdg-dbus-proxy exited before it was ready: ${why}`);
 			return null;
 		}
 		if ((await Bun.file(readyPath).size) > 0) {
+			// EM: The path is named because the log is the only thing that
+			// EM: explains a refused call, and a refused call has no symptom
+			// EM: of its own — it looks like a menu that quietly does nothing.
 			info(`D-Bus filtered: ${allowed.length} service(s) allowed`);
-			return { pid: proc.pid, socketPath };
+			info(`D-Bus proxy log: ${logPath}`);
+			return { pid: proc.pid, socketPath, logPath };
 		}
 		await Bun.sleep(50);
 	}

@@ -108,6 +108,15 @@ It presents as a menu that quietly does nothing, which is the same class of
 problem as the xpra scroll regression that took a dozen rounds to find.
 Without the log there is nothing to look at when a user asks why.
 
+It is written to a **file** beside the socket, under the session root, and the
+path is printed at startup. The first version piped it to the parent instead
+and read neither pipe, which threw the log away — reported as "there is no
+dbus log at all" — and left a worse bug behind it: once ~64KB had accumulated
+the proxy would block on a full pipe and D-Bus would stop working mid-session,
+with the symptom arriving long after the cause and looking nothing like it.
+Being under the session root, the log goes when the session does, so deriving
+an allowlist from it wants `SCODER_KEEP_SESSION_TMP=1`.
+
 ### Degrading
 
 Three ways this ends up absent, all normal rather than degraded: no session
@@ -130,7 +139,9 @@ for a GUI preset while a missing bus is survivable.
 - **Not tested against a live session bus.** The proxy mechanism is verified
   (readiness, filtering, logging, an allowed name passing and a denied one
   returning `ServiceUnknown`) against a throwaway `dbus-daemon --session`.
-  Whether RStudio and Eclipse are happy is unmeasured.
+  RStudio and Eclipse have since been run under it and both work, including
+  clipboard in and out of the sandbox — but that only shows the defaults are
+  not *actively* breaking them, not that they are right.
 - **`XDG_RUNTIME_DIR` is now a fresh empty directory.** Anything expecting to
   find existing state there will not. This is the most likely source of a
   surprise from the tmpfs.

@@ -481,8 +481,13 @@ const DBUS_HEADER = `# ${DBUS_FILE} — D-Bus services the sandbox may talk to, 
 #
 # Everything not listed here is refused: the sandbox sees those services as
 # simply absent. A refused call has no symptom of its own, so if something in
-# a GUI quietly does nothing, look at /tmp/scoder-dbus.log inside the sandbox
-# for a *HIDDEN* line naming what was asked for, and add it here.
+# a GUI quietly does nothing, look in the proxy's log for a *HIDDEN* line
+# naming what was asked for, and add it here.
+#
+# scoder prints the log's path when it starts ("D-Bus proxy log: ..."). It is
+# on the host, not inside the sandbox, and it is deleted with the rest of the
+# session's temporary files when the session ends — set
+# SCODER_KEEP_SESSION_TMP=1 to keep it for reading afterwards.
 #
 # Read once at startup. The proxy cannot reload its filter, so an edit takes
 # effect on the next session, not this one.

@@ -255,49 +255,76 @@ scroll and sends one discrete click per notch. Verified it parses to
 either, and the smooth-scroll explanation above is eliminated along with
 the transport one.
 
-### The remaining hypothesis: GPU compositing into a software X server
+### Not the GPU either
 
-What is left is the one structural difference between the two IDEs. Eclipse
-is SWT/GTK and draws with the CPU through cairo and X11 primitives. RStudio
-is Electron, so Chromium composites — and in this sandbox it does so with a
-**real** GPU, because `/dev/dri` is bound (see `tool-presets`, where it is
-load-bearing against a Chromium `CHECK` failure), while presenting to an
-**Xvfb** display that has no GPU path at all: the server log reports
-`OpenGL is supported on display ':0' using 'llvmpipe'`.
+Eclipse is SWT/GTK and draws with the CPU; RStudio is Electron, so Chromium
+composites, and in this sandbox it does so with a real GPU (`/dev/dri` is
+bound) while presenting to an Xvfb display whose GL is `llvmpipe`. A
+GPU-composited frame presented to a software X server has to be read back to
+the CPU, and readbacks stall pipelines — a good fit on the face of it.
 
-A GPU-composited frame presented to a software X server has to be read back
-from GPU memory to the CPU. Readbacks stall the pipeline, and scrolling is
-precisely the interaction that produces a continuous stream of frames, so
-the cost shows up there and not while the UI is static.
+**Tested, and wrong.** None of `--disable-gpu`,
+`--disable-gpu-compositing` or `--disable-smooth-scrolling` made any
+difference. (`RSTUDIO_CHROMIUM_ARGUMENTS` is RStudio's documented way to
+pass Chromium flags, and scoder forwards it when set; it cannot arrive
+otherwise, since the sandbox runs `--clearenv`.)
 
-Against it: dragging a scrollbar is smooth, and that repaints too. Not
-decisive, because Chromium's wheel scrolling runs an animation for a while
-after each notch and so produces considerably more frames than a
-drag-repaint does — but it is the reason this is still a hypothesis rather
-than a conclusion.
+### The current hypothesis: RStudio's main thread is blocked, by inotify
 
-`RSTUDIO_CHROMIUM_ARGUMENTS` is RStudio's own documented way to pass
-Chromium flags, and scoder forwards it when set (it cannot arrive otherwise;
-the sandbox runs `--clearenv`). Three values separate the candidates:
+The symptom, reported precisely, is not slow scrolling. It is **no response
+for several seconds, during which the UI is unresponsive, and then it
+arrives at the final position** — with no intervening frames, at most the
+last few. That is not a rendering cost. It is something blocking.
+
+Chromium handles the two scroll gestures on *different threads*. Scrollbar
+dragging is handled on the compositor thread. Mouse wheel is routed to the
+**main thread** whenever a non-passive wheel listener is registered, which
+an editor like RStudio's does. So a blocked main thread freezes wheel
+scrolling while leaving scrollbar dragging perfectly smooth — which is
+exactly the split observed, and which no amount of rendering configuration
+would change.
+
+What would block it is already on record from the same sandbox:
 
 ```
-# Does the GPU path explain it? If scrolling goes smooth, yes.
-RSTUDIO_CHROMIUM_ARGUMENTS="--disable-gpu" scoder --ide rstudio pi
-
-# Narrower: keep GPU rasterisation, composite on the CPU.
-RSTUDIO_CHROMIUM_ARGUMENTS="--disable-gpu-compositing" scoder --ide rstudio pi
-
-# Tests the animation side instead, independent of the GPU.
-RSTUDIO_CHROMIUM_ARGUMENTS="--disable-smooth-scrolling" scoder --ide rstudio pi
+rsession ERROR system error 24 (Too many open files);
+  ... file_monitor::detail::registerMonitor ...
+  LOGGED FROM: ProjectContext::fileMonitorTermination
 ```
 
-If `--disable-gpu` is the answer, there is a follow-on worth taking: the
-`/dev/dri` bind exists because Chromium's GPU process hits a `CHECK` failure
-when it cannot open a render node, and a Chromium told not to use the GPU
-should not reach that code at all. That would let a GUI preset drop a device
-grant rather than add one — but it needs testing, not assuming.
+Error 24 is `EMFILE` from `inotify_init()`, meaning
+`fs.inotify.max_user_instances` is exhausted — 128 by default, **per user**,
+shared with the user's entire desktop (see the inotify section above, where
+xpra's own share was cut from 8 instances to 1). On the development machine
+for this work, an idle box, 112 of the 128 were already in use. RStudio
+registers several file monitors and retries them.
 
-### Tuning a live session: SCODER_XPRA_*
+This hypothesis explains every observation, which none of the previous three
+did:
+
+| observation | explained by |
+|---|---|
+| Electron only, Eclipse fine | only Chromium splits wheel and drag across threads |
+| wheel stalls, scrollbar drag smooth | main thread vs compositor thread |
+| no rendering flag helps | it is not a rendering problem |
+| seconds of nothing, then the final state | main thread blocked, then drains its queue |
+| `EMFILE` in the same session | the thing doing the blocking |
+
+**The test is one command on the host, and reversible:**
+
+```
+sudo sysctl -w fs.inotify.max_user_instances=1024
+```
+
+Then run RStudio again. If this is right, the wheel becomes responsive *and*
+the `system error 24` messages stop. If the errors stop but scrolling is
+still bad, the inotify exhaustion was real but not the cause, and the next
+candidate is the client's own GL paint path
+(`SCODER_XPRA_CLIENT_ARGS="--opengl=no"`), which is still untested.
+
+Unconfirmed, and deliberately not acted on in code yet: if it holds, scoder
+should check this budget at startup for a GUI preset and say so, because the
+symptom is baffling and the cause is invisible.### Tuning a live session: SCODER_XPRA_*
 
 Judging whether a GUI session feels responsive is something only the person
 at the screen can do, and each attempt costs them a full IDE session. So
@@ -335,12 +362,12 @@ five years stale on Ubuntu 24.04 and absent on 26.04. See
 
 ## Known Gaps
 
-- **RStudio's mousewheel scrolling is still laggy**, on the configuration
-  Eclipse is happy with. Eliminated so far: the transport (`--mmap=no` is
-  worse), and the wheel event rate (`--mousewheel=coarse` does not help).
-  Current hypothesis is GPU compositing into a software X server, with three
-  `RSTUDIO_CHROMIUM_ARGUMENTS` values that separate it from the alternative
-  — see above. Eclipse is fine.
+- **RStudio's mousewheel scrolling stalls** for seconds on the configuration
+  Eclipse is happy with. Eliminated: the transport (`--mmap=no` is worse),
+  the wheel event rate (`--mousewheel=coarse` does not help), and the GPU
+  (none of three Chromium flags help). Current hypothesis is a blocked
+  Chromium main thread caused by inotify exhaustion, with a one-command host
+  test — see above. Eclipse is fine.
 - **DPI is mis-reported and `--dpi` does not fix it.** xpra warns
   `DPI set to 31 x 35 (wanted 96 x 96)` and suggests "the dpi switch", but
   measured directly: `--dpi=96` changes nothing — `xdpyinfo` inside the

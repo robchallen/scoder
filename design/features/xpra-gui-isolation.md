@@ -290,18 +290,31 @@ sandbox: id -G -> 1000 65534 65534
 ```
 
 DRM render nodes are commonly `crw-rw---- root:render`, so a user who can
-open `/dev/dri/renderD128` on the host because they are in `render` or
-`video` **cannot open it inside the sandbox**, no matter that `/dev/dri` is
-bind-mounted. The bind carries the inode, permissions included; it cannot
-carry a group membership the namespace has thrown away.
+open `/dev/dri/renderD128` on the host *by virtue of being in `render` or
+`video`* cannot open it inside the sandbox. The bind carries the inode,
+permissions included; it cannot carry a group membership the namespace has
+thrown away.
 
-This is not fixable from inside scoder: adding a supplementary group needs a
-gid mapping the user namespace is not permitted to make without a setuid
-helper. If a host's render node turns out to be group-gated, the options are
-a udev rule relaxing it, or accepting software rendering. Worth knowing
-before chasing Chromium flags, because if the node cannot be opened then
-route 1 below cannot work either — EGL on the render node needs the same
-permission GLX does not.
+**On a systemd desktop this turns out not to bite**, which was checked rather
+than assumed after being written up as the likely cause. `logind` sets a
+POSIX ACL on `/dev/dri/*` granting the active user access *by uid*, and a uid
+ACL survives exactly where a group does not:
+
+```
+crw-rw----+ 1 nobody nogroup 226, 128 renderD128     <- note the ACL "+"
+id -G: 1001 65534                                     <- groups gone
+writable: yes                                         <- ACL still grants it
+```
+
+The owner reads as `nobody nogroup` only because root and `render` are
+outside the namespace's uid/gid map. The node is accessible, and RStudio's
+Chromium zygote was in fact holding `/dev/dri/renderD128` open. So this is
+not what blocks the GPU here.
+
+It remains a real constraint on hosts without such an ACL, and it is not
+fixable from inside scoder: adding a supplementary group needs a gid mapping
+the user namespace may not make without a setuid helper. There the options
+would be a udev rule, or software rendering.
 
 It is also worth noting beyond the GPU: **any group-gated device or file is
 invisible to a sandboxed tool in the same way.** That is arguably correct
@@ -319,8 +332,12 @@ Two routes, neither yet tested:
      scoder --ide rstudio pi
    ```
 
-   Whether it took effect is checkable rather than a matter of impression —
-   a process using the GPU has the DRM render node open:
+   Whether it took effect is checkable rather than a matter of impression.
+   Note that Chromium's children re-exec as `/proc/self/exe`, so they must be
+   found by their `--type=` argument and **not** by the application name — a
+   filter on "rstudio" hides the GPU process entirely, which is how an
+   earlier version of this check concluded there was not one. A process using
+   the GPU also has the DRM render node open:
 
    ```bash
    for p in $(ls /proc | grep -E '^[0-9]+$'); do

@@ -18,7 +18,10 @@ that moving to xpra closed the largest channel and not the last one:
 
 This plan is that work. It started from a sketch which had the right
 mechanism — `xdg-dbus-proxy`, as flatpak uses it — and three things worth
-correcting, each of which changes the shape of the job.
+correcting, each of which changes the shape of the job. It then gained a
+fourth decision the sketch did not reach at all: where the allowlist lives
+(Decision 2), which turns out to matter more than any individual entry in
+it.
 
 ## What is actually exposed, which is more than the sketch assumed
 
@@ -79,9 +82,51 @@ can be deleted rather than carried.
 
 The risk is the unknown: something under `/run` that a sandboxed tool
 legitimately reads and nobody has thought of. Mitigated by the narrow
-dependency surface above, and by sequencing (Decision 8).
+dependency surface above, and by sequencing (Decision 9).
 
-### 2. Derive the allowlist by observation, not by guessing
+### 2. The allowlist is a project file, not a constant
+
+The same shape as `.agentports` and `.agentreadonly`: deny by default, allow
+what a read-only file in the repo names, log what was refused, and let the
+user edit that file from outside the sandbox. It is the mechanism this
+project already uses twice for exactly this problem — a capability that must
+be narrow by default but that some projects legitimately need widened — and
+D-Bus fits it better than either, because the right allowlist is genuinely
+per-project.
+
+**Born as `.sandbox/dbus`, not `.agentdbus`.** There is a pending migration of
+every `.agent*` file into a `.sandbox/` directory (see
+`sandbox-config-directory`), and adding a fourth file to a convention that is
+about to be replaced would mean renaming it before anyone had used it. This
+plan therefore assumes that migration lands **first**. If it does not, this
+becomes `.agentdbus` and migrates with the rest.
+
+The file holds well-known bus names, one per line, `#` comments, same as
+`.agentports`:
+
+```
+# Services this project's tools may talk to on the session bus.
+org.freedesktop.Notifications
+org.freedesktop.portal.Desktop
+```
+
+Three things follow from reusing the pattern rather than inventing one:
+
+- **Sane defaults, written on first run**, as `.agentreadonly` does — so the
+  common case needs no action and the file documents itself by existing.
+- **Self-protecting**, which under `.sandbox/` is free: the whole directory
+  is bound read-only, so the sandbox cannot widen its own permissions.
+- **A denial has somewhere to point.** When a call is refused, the message
+  can name the file and the line to add, which is the difference between a
+  menu that mysteriously does nothing and a one-line fix.
+
+Whether to re-read it mid-session, as `.agentports` is watched, is an open
+question. `xdg-dbus-proxy` takes its filter at startup and has no reload, so
+honouring a change would mean restarting the proxy and reconnecting every
+client — probably not worth it. Say so in the file's header rather than
+leaving the user to wonder why their edit did nothing.
+
+### 3. Derive the defaults by observation, not by guessing
 
 The sketch proposes `org.freedesktop.Notifications`,
 `org.freedesktop.portal.Desktop` and `org.freedesktop.portal.Documents`. That
@@ -92,16 +137,19 @@ allowlist that does not restore that reintroduces the original bug while
 claiming to improve security.
 
 So: run the proxy with `--log` and a deliberately permissive filter, use both
-IDEs normally for a while, and read off what they actually ask for. Then
-tighten to that list and confirm the menus still work. `--log` exists for
+IDEs normally for a while, and read off what they actually ask for. That list
+becomes the *default* `.sandbox/dbus` content, and a project needing more can
+add to it. Confirm RStudio's menus still work before calling it done. `--log` exists for
 this; it should be used rather than reasoned around.
 
-**Record the resulting list with its justification**, not as a bare array.
-Each entry should say which application needs it and what breaks without it,
-because the next person to look will otherwise have no way to tell a
-load-bearing entry from a defensive one.
+**Record the resulting list with its justification**, in the default file's
+own comments as well as the ADR. Each entry should say which application
+needs it and what breaks without it, because the next person to look will
+otherwise have no way to tell a load-bearing entry from a defensive one — and
+because the file is the thing they will actually be reading when something
+is refused.
 
-### 3. Default deny, including the system bus
+### 4. Default deny, including the system bus
 
 `--filter` denies everything not named. The system bus gets no proxy at all
 unless something turns out to need it, which nothing yet has.
@@ -114,7 +162,7 @@ output should therefore be kept somewhere discoverable for a GUI session**,
 not discarded, so the first question after "the file picker stopped working"
 has an answer.
 
-### 4. The proxy is a fourth sidecar, and should look like the other three
+### 5. The proxy is a fourth sidecar, and should look like the other three
 
 pasta, the ssh tunnel and the xpra client already share a shape: a host-side
 process that bwrap's `--die-with-parent` does not reap, started around the
@@ -134,7 +182,7 @@ Two differences from the sketch's bash:
 The namespace reaper added in `ide-companion` does **not** cover this: the
 proxy runs on the host, outside the sandbox's mount namespace, by design.
 
-### 5. Socket placement
+### 6. Socket placement
 
 Under the session root, which already owns every staged artifact and is
 removed by the exit handler. The sandbox-side path is scoder's choice, since
@@ -149,13 +197,13 @@ Inside, it should appear at `/run/user/<uid>/bus` — the path everything
 expects — which the `--tmpfs /run` makes a writable mountpoint rather than
 the read-only one that would otherwise need scaffolding.
 
-### 6. Degrade cleanly on a host with no D-Bus
+### 7. Degrade cleanly on a host with no D-Bus
 
 A headless server has no session bus. The proxy must simply not start, no
 `DBUS_SESSION_BUS_ADDRESS` is set, and nothing warns — this is the normal
 case for `scoder pi` on a build machine, not a degraded one.
 
-### 7. A missing proxy binary: skip, do not fall back
+### 8. A missing proxy binary: skip, do not fall back
 
 `xpra`'s Decision 7 was that a missing binary is a hard failure, because
 falling back to the mechanism it replaced would silently withdraw the
@@ -169,7 +217,7 @@ can. So: no proxy, no bus, a one-line warning naming what is degraded, and
 the session proceeds. `--install-dependencies` should add `xdg-dbus-proxy`
 alongside the rest.
 
-### 8. Sequence it, because this one touches every session
+### 9. Sequence it, because this one touches every session
 
 The xpra work was preset-scoped: a bug could only affect someone who ran
 `--ide`. This changes `/run` for every sandbox scoder has ever started, and
@@ -204,6 +252,12 @@ Mirroring `src/sandbox/xpra.ts`, which is the closest existing sibling:
   without starting anything, as `buildPastaArgs` and `buildXpraClientArgs` are
 - `startDbusProxy()` — spawn, wait on `--fd=`, return a sidecar or null
 - `stopDbusProxy()` — `terminateProcess`, same grace periods as pasta
+
+### `src/git/protection.ts`
+
+- Read and validate `.sandbox/dbus`, writing the default on first run —
+  alongside the existing `.agentports` and `.agentreadonly` readers, which it
+  should look like.
 
 ### `src/tools/presets.ts`
 
@@ -242,7 +296,7 @@ Mirroring `src/sandbox/xpra.ts`, which is the closest existing sibling:
 
 ## Open Questions
 
-- **What do RStudio and Eclipse actually need?** The whole of Decision 2.
+- **What do RStudio and Eclipse actually need?** The whole of Decision 3.
   Nothing else should be settled before this is measured.
 - **Is the escape real on a live desktop?** The sketch asserts
   `org.freedesktop.systemd1` and `flatpak-spawn` give a trivial escape. It is

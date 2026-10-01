@@ -338,16 +338,23 @@ Everything so far has varied settings *within* the scoder + xpra + Electron
 stack. What has never been tested is whether scoder is involved at all.
 **Run RStudio under xpra on the host, with no sandbox:**
 
-```bash
-xpra start --bind=/tmp/xpra-bare.sock --daemon=no --exit-with-children=yes \
-  --input-method=keep --notifications=no --printing=no \
-  --audio=no --speaker=no --microphone=no --webcam=no --pulseaudio=no \
-  --start-child=rstudio &
-
-xpra attach socket:///tmp/xpra-bare.sock --daemon=no --audio=no --printing=no --webcam=no
+```
+design/prototype/xpra-no-sandbox.sh rstudio
 ```
 
-(Verified to work as written, with `xclock` standing in for RStudio.)
+It uses the same xpra flags the entrypoint does, with no bwrap, no namespaces
+and no binds, so the sandbox is the only variable removed. Verified end to
+end with `xclock` standing in for RStudio.
+
+`design/prototype/xpra-gpu-debug.sh`, run inside a GUI session, answers the
+questions that came up repeatedly here: which Chromium children exist and of
+what type, which hold the render node, whether it can be opened and why, and
+which GL flags actually arrived. It exists because three separate hand-written
+versions of those checks were wrong in ways specific to this sandbox —
+Chromium's children re-exec as `/proc/self/exe` so they cannot be found by
+application name, the PID namespace is shared with the host so `/proc` lists
+other users' processes, and a bare `grep -- --type=` matches its own command
+line.
 
 It partitions the remaining space in half, and either answer is useful:
 

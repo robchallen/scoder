@@ -142,6 +142,50 @@ requested usage, so the parser scans the tool's own argv specifically for
 tool's own args, untouched. `scoder --ide rstudio pi` also works, parsed
 by the ordinary flag-parsing loop before the tool name is reached.
 
+## Nothing outlives the sandbox
+
+When a session ends, anything still running inside it is terminated.
+
+This is not automatic, and the reason is structural. scoder does not unshare
+the PID namespace — pasta attaches to the network namespace from outside, see
+[ADR 0001](/architecture/decision-records/0001-sandbox-uid-and-networking-composition.md)
+— so bwrap's `--die-with-parent` reaches only its own immediate child. The
+companion IDE is deliberately started under `setsid`, so that an IDE keeping
+its controlling terminal cannot write crash handlers into the agent's
+session, and a `setsid` process is reparented to init when its parent dies.
+Verified directly: a `setsid` child wrote its marker file eight seconds after
+bwrap had exited. Reported as **seven** accumulated RStudio instances on one
+machine, each carrying an Electron stack, an `rsession`, a Tomcat and a
+language server.
+
+`launchSandbox` therefore records the sandbox's mount namespace while the
+session is alive and, after it exits, terminates everything still in it.
+
+**By namespace, not by tracked pid.** An earlier attempt recorded the IDE's
+pid and signalled its process group. That left xpra's `Xvfb` and its
+`dbus-daemon` running after every GUI session, because xpra forks both into
+sessions of their own, and no amount of extra grace period helped. Membership
+of the sandbox's mount namespace is exactly the property "belongs to this
+sandbox": nothing else can be in it, and nothing in it belongs to anyone
+else.
+
+**The namespace is pinned by an open fd**, which is load-bearing rather than
+incidental. A namespace is freed once its last process leaves, and the kernel
+may reuse its inode number — so comparing recorded ids after the fact could
+match an unrelated namespace and signal someone else's processes. Holding an
+fd keeps it alive and its id unique. Only the caller's own uid is ever
+considered.
+
+Normal exits reach none of this: the entrypoint does not return until both
+programs have finished, so there is nothing left and the cost is one scan of
+`/proc`.
+
+**Not covered:** `SIGKILL` to scoder, which runs no teardown at all, and
+`SIGTERM`, which scoder does not handle (`FORWARDED_SIGNALS` covers
+`SIGWINCH`, `SIGINT`, `SIGQUIT` and `SIGTSTP`) so it terminates the process
+outright. `design/prototype/scoder-cleanup.sh` finds and removes what those
+leave behind.
+
 [HAS_FEATURE](./sandbox-isolation.md)
 [HAS_FEATURE](./tool-presets.md)
 

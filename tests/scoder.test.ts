@@ -6,6 +6,7 @@
 
 // Import test utilities from bun:test
 import { afterAll, expect, test } from "bun:test";
+import { readdirSync, readlinkSync, statSync } from "node:fs";
 import {
 	addGitExclude,
 	refreshResolvConfSnapshot,
@@ -2965,7 +2966,16 @@ test.skipIf(!ideE2eToolsAvailable)(
 
 			const start = Date.now();
 			const proc = Bun.spawn(
-				[SCODER_PATH, "-q", "--no-worktree", "pi", "--ide", "rstudio"],
+				[
+					SCODER_PATH,
+					"-q",
+					"--no-worktree",
+					"/bin/bash",
+					"-c",
+					"sleep 300",
+					"--ide",
+					"rstudio",
+				],
 				{
 					cwd: repoDir,
 					env: { ...process.env, PATH: `${shimDir}:${process.env.PATH}` },
@@ -3052,6 +3062,175 @@ function spawnWithDelayedEnter(
 		await proc.stdin.end();
 	})();
 	return proc;
+}
+
+// ### Test: sandbox-processes-reaped-when-session-dies
+// EM: Regression test for a leak that produced seven accumulated RStudio
+// EM: instances on one machine, each carrying an Electron stack, an rsession,
+// EM: a Tomcat and a language server.
+// EM:
+// EM: scoder does not unshare the PID namespace — pasta attaches to the
+// EM: network namespace from outside, see ADR 0001 — so bwrap's
+// EM: --die-with-parent reaches only its own immediate child. entrypoint.sh
+// EM: starts the companion under `setsid`, deliberately, so that an IDE
+// EM: keeping its controlling terminal cannot write crash handlers into the
+// EM: agent's session. A setsid process is reparented to init when its parent
+// EM: dies, so it outlives the sandbox. Verified directly before the fix: a
+// EM: setsid child wrote its marker file eight seconds after bwrap exited.
+// EM:
+// EM: Asserts that NOTHING remains in the sandbox's mount namespace, rather
+// EM: than that one tracked pid is gone. That is the real contract, and the
+// EM: difference is not academic: an earlier fix tracked the IDE's pid and
+// EM: signalled its process group, which left xpra's Xvfb and its dbus-daemon
+// EM: running every time, because xpra forks both into sessions of their own.
+test.skipIf(
+	!(await commandAvailable("bwrap")) || (await realRstudioInstalled()),
+)(
+	"sandbox-processes-reaped-when-session-dies: nothing outlives the sandbox",
+	async () => {
+		const repoDir = await createTempRepo();
+		tempRepos.push(repoDir);
+		const shimDir = await createFakePastaShim(
+			`/tmp/scoder-reap-e2e-${Date.now()}.log`,
+		);
+		// Long-lived on purpose: the point is that it is still running when
+		// the session ends, which is exactly when the leak used to happen.
+		// In ~/.local/bin because checkExecTargetReachable rejects an exec
+		// target whose directory is not bound into the sandbox.
+		const fakeIde = `${process.env.HOME}/.local/bin/rstudio`;
+		await Bun.write(
+			fakeIde,
+			`#!/bin/sh\n${FAKE_RSTUDIO_MARKER}\nexec sleep 300\n`,
+		);
+		await Bun.spawn(["chmod", "+x", fakeIde]).exited;
+
+		try {
+			// Only the companion needs a preset, so the primary tool is just a
+			// long-running shell and no second fake is needed.
+			const proc = Bun.spawn(
+				[
+					SCODER_PATH,
+					"-q",
+					"--no-worktree",
+					"/bin/bash",
+					"-c",
+					"sleep 300",
+					"--ide",
+					"rstudio",
+				],
+				{
+					cwd: repoDir,
+					env: { ...process.env, PATH: `${shimDir}:${process.env.PATH}` },
+					stdin: "ignore",
+					stdout: "pipe",
+					stderr: "pipe",
+				},
+			);
+
+			let sandboxNs = "";
+			for (let i = 0; i < 300; i++) {
+				sandboxNs = await findSandboxNamespace();
+				if (sandboxNs) {
+					break;
+				}
+				if (proc.exitCode !== null) {
+					break;
+				}
+				await Bun.sleep(100);
+			}
+			if (!sandboxNs) {
+				throw new Error(
+					`no sandbox namespace appeared; scoder said:\n${await new Response(proc.stderr).text()}`,
+				);
+			}
+			expect(pidsInNamespace(sandboxNs).length).toBeGreaterThan(0);
+
+			// Two SIGINTs: the documented force-kill path, and how a user
+			// actually abandons a session. A single one forwards into the
+			// sandbox, after which the entrypoint waits for the IDE — which is
+			// the whole point of a companion and would never return.
+			//
+			// Not SIGTERM or SIGKILL: scoder handles neither (FORWARDED_SIGNALS
+			// covers SIGWINCH, SIGINT, SIGQUIT and SIGTSTP), so both terminate
+			// it outright and no teardown runs at all. Those gaps are recorded
+			// in the feature doc rather than pretended away here.
+			proc.kill("SIGINT");
+			await Bun.sleep(200);
+			proc.kill("SIGINT");
+			await proc.exited;
+
+			for (let i = 0; i < 100 && pidsInNamespace(sandboxNs).length > 0; i++) {
+				await Bun.sleep(100);
+			}
+			expect(pidsInNamespace(sandboxNs)).toEqual([]);
+		} finally {
+			await Bun.spawn(["rm", "-rf", shimDir]).exited;
+			await Bun.spawn(["rm", "-f", fakeIde]).exited;
+			await cleanupRepo(repoDir);
+		}
+	},
+	60_000,
+);
+
+// ### pidsInNamespace
+// Our own pids currently in the given mount namespace. Mirrors
+// ourPidsInNamespace in src/sandbox/launch.ts; unreadable entries are skipped
+// because /proc lists processes that are not ours.
+function pidsInNamespace(nsId: string): number[] {
+	const pids: number[] = [];
+	const uid = process.getuid?.() ?? -1;
+	for (const entry of readdirSync("/proc")) {
+		const pid = Number.parseInt(entry, 10);
+		if (Number.isNaN(pid) || pid === process.pid) {
+			continue;
+		}
+		try {
+			if (statSync(`/proc/${pid}`).uid !== uid) {
+				continue;
+			}
+			if (readlinkSync(`/proc/${pid}/ns/mnt`) === nsId) {
+				pids.push(pid);
+			}
+		} catch {
+			// Not ours, or gone mid-scan.
+		}
+	}
+	return pids;
+}
+
+// ### findSandboxNamespace
+// The mount namespace of the fake IDE this test launched, found by its marker
+// rather than by a pid the test could know in advance.
+async function findSandboxNamespace(): Promise<string> {
+	const uid = process.getuid?.() ?? -1;
+	for (const entry of readdirSync("/proc")) {
+		const pid = Number.parseInt(entry, 10);
+		if (Number.isNaN(pid)) {
+			continue;
+		}
+		try {
+			if (statSync(`/proc/${pid}`).uid !== uid) {
+				continue;
+			}
+			// EM: argv[0], not a substring of the whole command line. scoder
+			// EM: nests two bwrap layers, and the outer one's argv contains
+			// EM: the entire inner command — including this sleep — so a
+			// EM: substring match returns the OUTER layer's namespace, which
+			// EM: is not where the sandboxed processes live. That made this
+			// EM: test pass against a deliberately broken reaper.
+			const argv = (await Bun.file(`/proc/${pid}/cmdline`).text()).split("\0");
+			if (argv[0] !== "sleep" || argv[1] !== "300") {
+				continue;
+			}
+			const ns = readlinkSync(`/proc/${pid}/ns/mnt`);
+			if (ns !== readlinkSync("/proc/self/ns/mnt")) {
+				return ns;
+			}
+		} catch {
+			// Not ours, or gone mid-scan.
+		}
+	}
+	return "";
 }
 
 // ### Test: ide-companion-enter-requests-ide-shutdown

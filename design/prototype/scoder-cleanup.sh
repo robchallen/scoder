@@ -54,7 +54,11 @@ for d in /proc/[0-9]*; do
 	mnt=$(readlink "/proc/$p/ns/mnt" 2>/dev/null) || continue
 	[ "$mnt" = "$HOST_MNT" ] && continue
 
-	ppid=$(awk '{print $4}' "/proc/$p/stat" 2>/dev/null) || continue
+	# PPid from status, not field 4 of stat: stat's second field is the
+	# command name in parentheses and may itself contain spaces, which shifts
+	# every later field. Found by this script silently missing orphaned
+	# `xpra start` processes, whose comm does exactly that.
+	ppid=$(awk '/^PPid:/ {print $2}' "/proc/$p/status" 2>/dev/null) || continue
 	[ "$ppid" = "1" ] || continue
 
 	cmd=$( { tr '\0' ' ' < "/proc/$p/cmdline"; } 2>/dev/null | cut -c1-90)

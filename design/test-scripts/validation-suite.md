@@ -886,6 +886,36 @@ pointed at the sandbox copy rather than the host path. There is no
 absence, which is the invariant worth holding. Removed rather than
 adapted: nothing was left for them to test.
 
+### 96b. sandbox-processes-reaped-when-session-dies
+[TESTED_BY](/tests/scoder.test.ts#testSandboxProcessesReapedWhenSessionDies)
+
+A force-killed session (two SIGINTs, the documented escape hatch) leaves
+**nothing** running in the sandbox's mount namespace. Regression test for a
+leak that accumulated seven RStudio instances on one machine, each carrying
+an Electron stack, an `rsession`, a Tomcat and a language server — see
+"Nothing outlives the sandbox" in `ide-companion` for why `--die-with-parent`
+does not cover it.
+
+Asserts on the namespace being empty rather than on one tracked pid being
+gone, because that is the actual contract and the difference is not
+academic: a pid-based version of this fix left xpra's `Xvfb` and
+`dbus-daemon` behind every time.
+
+Two things this case had to get right, both of which it got wrong first:
+
+- The namespace is found via a process whose **argv[0]** is the fake IDE's
+  command, not via a substring of the whole command line. scoder nests two
+  bwrap layers and the outer one's argv contains the entire inner command, so
+  a substring match returns the *outer* layer's namespace — where nothing
+  sandboxed lives. That made the test pass against a deliberately broken
+  reaper.
+- Two SIGINTs, not SIGTERM or SIGKILL. scoder handles neither of the latter,
+  so both kill it outright and no teardown runs; the test would then be
+  asserting a gap rather than the fix.
+
+Confirmed to fail with the reaper disabled and pass with it, which is the
+only evidence that a regression test is worth having.
+
 ### 97. gui-display-is-private-end-to-end
 [TESTED_BY](/tests/scoder.test.ts#testGuiDisplayIsPrivateEndToEnd)
 

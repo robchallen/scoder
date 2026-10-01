@@ -134,14 +134,21 @@ xpra_wrap() {
 	# %q-quoted rather than passed raw — this is the one place an argument
 	# does cross a shell boundary, and the quoting is what keeps that safe.
 	#
-	# Audio, notifications and printing are off. Audio because the stack is
-	# not wired through the sandbox and produced nothing but a steady stream
-	# of pactl connection failures in the log. The other two because they are
-	# capability channels in their own right — xpra will happily proxy the
-	# host's notification daemon and its printer list into the sandbox, and
-	# handing those back is the opposite of the point of this layer. Observed
-	# directly during the end-to-end test: the client tried to enumerate
+	# Audio and printing are off. Audio because the stack is not wired
+	# through the sandbox and produced nothing but a steady stream of pactl
+	# connection failures in the log. Printing because it is a capability
+	# channel in its own right, and one nothing has asked for — observed
+	# directly during the end-to-end test, the client tried to enumerate
 	# printers over the system bus unprompted.
+	#
+	# Notifications were off for that second reason and are now on, which is
+	# a deliberate reversal rather than an oversight. Dropping the host's
+	# session bus (ADR 0004) left the sandbox no way to tell the user
+	# anything at all, and this is the one channel worth having back. What
+	# crosses is outward only: content raised inside the session, relayed
+	# down the display connection to the client, which shows it on the real
+	# desktop. The sandbox still cannot call the host's notification service,
+	# or reach anything else through it.
 	#
 	# --mmap is the performance fix, and it only works because the directory
 	# holding it is bound at the same absolute path on both sides: xpra sends
@@ -183,7 +190,18 @@ xpra_wrap() {
 		--daemon=no
 		--exit-with-children=yes
 		"--start-child=$(printf '%q ' "$@")"
-		--notifications=no
+		# Forwarded to the client, which raises them on the user's real
+		# desktop. This is the whole of what the sandbox gets to say to the
+		# host's desktop, and it travels down the display connection rather
+		# than over a bus — already authenticated, nothing to allowlist, and
+		# no path back for the host's services to be reached in return. See
+		# architecture/decision-records/0004-no-host-dbus.md.
+		#
+		# xpra's own session bus, started by --dbus-launch and private to
+		# this sandbox, is likewise deliberate and left at its default: it
+		# is what gives Electron and GTK applications the bus they expect
+		# without any of it reaching the host.
+		--notifications=yes
 		--printing=no
 		--input-method=keep
 		"--mmap=${XPRA_MMAP:-yes}"
@@ -192,37 +210,7 @@ xpra_wrap() {
 		--microphone=no
 		--webcam=no
 		--pulseaudio=no
-		# xpra starts a session bus of its own unless told not to: --dbus-launch
-		# defaults to `dbus-launch --sh-syntax --close-stderr`, and its address
-		# is exported into everything --start-child runs. That silently replaces
-		# the filtered bus scoder binds at /run/user/<uid>/bus, so the allowlist
-		# governs nothing while the GUI works perfectly and the proxy log stays
-		# empty. Reported exactly that way: "everything is working in RStudio
-		# [...] bus.log silent throughout".
-		#
-		# Not a hole, as that private bus lives inside the sandbox and cannot
-		# reach the host's services -- but not harmless either, because D-Bus
-		# *activation* on a fresh bus starts services in here on demand: a file
-		# manager, a browser and a keyring prompt were all observed appearing
-		# from a single "open containing folder".
-		--dbus-launch=
 	)
-
-	# Emptying --dbus-launch is necessary but not sufficient: xpra then leaves
-	# DBUS_SESSION_BUS_ADDRESS *unset* in the child rather than inheriting the
-	# one it was started with, so the address has to be put back by hand.
-	# --start-env appends to xpra's own defaults rather than replacing them --
-	# verified, GTK_CSD and QT_QPA_PLATFORM both survive it.
-	#
-	# Conditional, so that no proxy means no session bus at all: the same
-	# outcome setupDbus produces for a host with no bus, no xdg-dbus-proxy or
-	# an empty allowlist. Falling back to a private in-sandbox bus here would
-	# be exactly the silent degradation to the replaced mechanism that the xpra
-	# work made a rule of refusing.
-	[ -n "${DBUS_SESSION_BUS_ADDRESS:-}" ] &&
-		XPRA_WRAPPED+=(
-			"--start-env=DBUS_SESSION_BUS_ADDRESS=$DBUS_SESSION_BUS_ADDRESS"
-		)
 
 	# Deliberately unquoted, so the caller's flags word-split into separate
 	# arguments — this is the one place in this script where splitting is the

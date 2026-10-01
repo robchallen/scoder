@@ -9,7 +9,6 @@ import { afterAll, expect, test } from "bun:test";
 import { readdirSync, readlinkSync, statSync } from "node:fs";
 import {
 	addGitExclude,
-	readDbusAllowlist,
 	refreshResolvConfSnapshot,
 	removeGitExclude,
 	setupResolvConf,
@@ -1670,8 +1669,9 @@ test("sandbox-agents-md-overlay-visible: AGENTS.md overlay is visible in sandbox
 });
 
 // ### Test: run-is-a-tmpfs-not-the-host
-// EM: The security claim of dbus-isolation, asserted as a negative, which is
-// EM: the half that matters. --ro-bind /run /run handed the sandbox every
+// EM: The security claim of ADR 0004, asserted as a negative, which is the
+// EM: half that matters — and, since the proxy was dropped, the only thing
+// EM: standing between the sandbox and the host's session bus. --ro-bind /run /run handed the sandbox every
 // EM: socket under it, and permission was no obstacle: entering a user
 // EM: namespace changes how ids are *rendered*, not the credentials the
 // EM: kernel checks, so a sandbox reaches whatever its user can reach.
@@ -1699,39 +1699,48 @@ test("run-is-a-tmpfs-not-the-host: the host's /run is never bound into the sandb
 		expect(output).not.toContain("--ro-bind /run /run");
 		expect(output).not.toContain("--bind /run /run");
 
-		// XDG_RUNTIME_DIR has to exist for the bus mountpoint and for the
-		// applications that expect it; it is now a writable tmpfs path rather
-		// than the host's directory.
+		// XDG_RUNTIME_DIR still has to exist for the applications that expect
+		// it; it is now a writable tmpfs path rather than the host's
+		// directory, with none of the host's sockets in it.
 		expect(output).toMatch(/--dir \/run\/user\/\d+/);
 	} finally {
 		await cleanupRepo(repoDir);
 	}
 });
 
-// ### Test: dbus-allowlist-defaults-exclude-the-dangerous-names
-// EM: The two names that must never be defaults. org.freedesktop.secrets is
-// EM: the keyring — every credential the user has stored — and
-// EM: org.freedesktop.systemd1 starts units outside the sandbox, which is an
-// EM: escape. A project that genuinely needs one can say so in its own file;
-// EM: neither should ever arrive by default, and a well-meaning "make the
-// EM: portals work" commit is exactly how one would.
-test("dbus-allowlist-defaults-exclude-the-dangerous-names: the default allowlist admits no keyring or systemd", async () => {
+// ### Test: no-host-dbus-address-in-the-sandbox
+// EM: The positive half of run-is-a-tmpfs-not-the-host, and the one a
+// EM: well-meaning change is most likely to undo. The host's session bus was
+// EM: passed through for a year on the strength of a symptom — RStudio's
+// EM: menus greyed out — that was never retested once xpra started providing
+// EM: a private bus of its own. It turned out the application needed *a*
+// EM: bus, not the user's, and ADR 0004 drops the host's entirely.
+// EM:
+// EM: Forwarding the address without the socket is worse than leaving it
+// EM: unset, because it points applications at a path the tmpfs removed
+// EM: instead of letting xpra's own bus take over. Asserted against a GUI
+// EM: preset specifically: that is the code path that used to set it, and
+// EM: the only one where anything would notice.
+test("no-host-dbus-address-in-the-sandbox: the host's session bus address is never passed in", async () => {
 	const repoDir = await createTempRepo();
 	tempRepos.push(repoDir);
+	const fakeBinDir = await createFakeToolDir("rstudio");
 
 	try {
-		const allowed = await readDbusAllowlist(repoDir, false);
+		const output = await runScoder(repoDir, ["--dry-run", "rstudio"], {
+			PATH: `${fakeBinDir}:${process.env.PATH}`,
+			DBUS_SESSION_BUS_ADDRESS: "unix:path=/run/user/1000/bus",
+		});
 
-		expect(allowed).not.toContain("org.freedesktop.secrets");
-		expect(allowed).not.toContain("org.freedesktop.systemd1");
-		expect(allowed.length).toBeGreaterThan(0);
+		expect(output).not.toContain("DBUS_SESSION_BUS_ADDRESS");
+		expect(output).not.toContain("/run/user/1000/bus");
 
-		// Written on first run, so the file documents itself and a user has
-		// something to edit rather than something to discover.
-		const written = await Bun.file(`${repoDir}/.sandbox/dbus`).text();
-		expect(written).toContain("org.freedesktop.secrets");
-		expect(written).toContain("# ");
+		// XDG_RUNTIME_DIR still goes through: it names a directory the
+		// sandbox has, and applications that use it for scratch space rather
+		// than for the bus still need it.
+		expect(output).toContain("XDG_RUNTIME_DIR");
 	} finally {
+		await Bun.spawn(["rm", "-rf", fakeBinDir]).exited;
 		await cleanupRepo(repoDir);
 	}
 });

@@ -9,7 +9,6 @@ do. Edit them from outside.
 - `readonly`  — paths kept read-only inside the sandbox
 - `readwrite` — `$HOME` directories opened read-write
 - `ports`     — localhost ports forwarded into the sandbox
-- `dbus`      — D-Bus services the sandbox may talk to
 
 scoder creates this directory and these files with sane defaults the first
 time it runs in a project. Each file documents itself in its own comments.

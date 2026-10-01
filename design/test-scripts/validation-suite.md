@@ -921,23 +921,31 @@ only evidence that a regression test is worth having.
 
 The host's `/run` is never bound into the sandbox: `--tmpfs /run` is present
 and neither `--ro-bind /run /run` nor `--bind /run /run` is. `--dir
-/run/user/<uid>` is, since the bus mountpoint and `XDG_RUNTIME_DIR` need it.
+/run/user/<uid>` is, since `XDG_RUNTIME_DIR` still needs to exist.
 
-The security claim of `dbus-isolation`, asserted as a negative because that
-is the half that matters. The old bind handed the sandbox every socket under
+The security claim of [0004-no-host-dbus](/architecture/decision-records/0004-no-host-dbus.md),
+asserted as a negative because that is the half that matters — and, since
+the filtering proxy was dropped, the only thing standing between the sandbox
+and the host's session bus. The old bind handed the sandbox every socket under
 `/run`, and permission was no obstacle — measured on a real host,
 `/run/docker.sock` (root:docker) and `/run/ssh-agent.sock` (world-writable)
 both accepted `connect()`. A future change could reinstate the bind for a
 plausible-sounding reason and nothing would look different from outside.
 
-### 96h. dbus-allowlist-defaults-exclude-the-dangerous-names
-[TESTED_BY](/tests/scoder.test.ts#testDbusAllowlistDefaultsExcludeTheDangerousNames)
+### 96h. no-host-dbus-address-in-the-sandbox
+[TESTED_BY](/tests/scoder.test.ts#testNoHostDbusAddressInTheSandbox)
 
-The default `.sandbox/dbus` admits neither `org.freedesktop.secrets` (the
-keyring — every stored credential) nor `org.freedesktop.systemd1` (starting
-units outside the sandbox — an escape), and is written on first run so the
-file documents itself. A well-meaning "make the portals work" commit is
-exactly how one of those would arrive by default.
+`DBUS_SESSION_BUS_ADDRESS` is never set inside the sandbox, even with a GUI
+preset and the variable set on the host — that is the code path which used
+to set it, and the only one where anything would notice. `XDG_RUNTIME_DIR`
+still goes through, since it names a directory the sandbox has.
+
+The positive half of 96g, and the one a well-meaning change is most likely
+to undo: the host's bus was passed through for a year on the strength of a
+symptom (RStudio's menus greyed out) that was never retested once xpra began
+providing a private bus of its own. The application needed *a* bus, not the
+user's. See
+[0004-no-host-dbus](/architecture/decision-records/0004-no-host-dbus.md).
 
 ### 96e. legacy-config-migrated-automatically
 [TESTED_BY](/tests/scoder.test.ts#testLegacyConfigMigratedAutomatically)
@@ -1001,14 +1009,6 @@ is installed — the fake it writes to `~/.local/bin/rstudio` carries a
 marker comment so that a leftover from a killed run is recognised as
 scoder's own rather than read as a real install, which would otherwise skip
 this case silently on every subsequent run.
-
-### 98. rstudio-preset-passes-through-xdg-runtime-and-dbus
-[TESTED_BY](/tests/scoder.test.ts#testRstudioPresetPassesThroughXdgRuntimeAndDbus)
-
-`XDG_RUNTIME_DIR` and `DBUS_SESSION_BUS_ADDRESS` are set inside the
-sandbox when present on the host — the (unverified, well-motivated) fix
-for RStudio's reported greyed-out menus. See
-[0002-rstudio-x11-access](/architecture/decision-records/0002-rstudio-x11-access.md).
 
 ### 99. rstudio-resolveargs-picks-rproj-file
 [TESTED_BY](/tests/scoder.test.ts#testRstudioResolveargsPicksRprojFile)

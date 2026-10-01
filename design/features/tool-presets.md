@@ -113,35 +113,35 @@ there: the app now renders into a virtual display rather than handing
 composition to the host's X server. A DRM render node is also a far
 narrower grant than an X socket ever was.
 
-All of this — the xpra socket directory, `XDG_RUNTIME_DIR`,
-`DBUS_SESSION_BUS_ADDRESS`, `/dev/dri` — lives in a shared
+All of this — the xpra socket directory, `XDG_RUNTIME_DIR`, `/dev/dri` —
+lives in a shared
 `guiDisplayBinds` helper (named `guiX11Binds` until it stopped binding
 X11), not a second, separately-maintained copy: `eclipse` is a GUI app
 needing the exact same access, by direct analogy (see below).
 
-`XDG_RUNTIME_DIR` and `DBUS_SESSION_BUS_ADDRESS` are still passed through,
-and still reach the host's session bus via the read-only `/run` bind. xpra
-does nothing about that, so GUI presets are **not** fully isolated — ADR
-0003 says so plainly rather than letting the change imply more than it
-delivers. `/dev/dri` has never been independently verified against a real
+`XDG_RUNTIME_DIR` is passed through; `DBUS_SESSION_BUS_ADDRESS` is not, and
+the host's session bus is unreachable — see
+[0004-no-host-dbus](/architecture/decision-records/0004-no-host-dbus.md).
+`/dev/dri` has never been independently verified against a real
 GPU-backed host, since this project has none. `pi` runs inside RStudio's own embedded
 terminal, so this preset also includes pi's own config/data/cache binds —
 via a shared `piConfigBinds` helper, not a second, separately-maintained
 copy of the same list.
 
-Also passes `XDG_RUNTIME_DIR` and `DBUS_SESSION_BUS_ADDRESS` through when
-set on the host — reported: most menu items greyed out except cut/copy/
-paste, and only the window manager's own close button quits RStudio.
-RStudio Desktop is Electron/Chromium-based, and such apps commonly need
-D-Bus for native file dialogs and session/quit integration, degrading
-rather than crashing when it's unavailable, which matches the symptom.
-This is a well-motivated fix, not a verified one — this project has no
-real RStudio install or desktop D-Bus session to confirm the actual
-symptom against, unlike the X11 mechanics above. No extra bind is needed
-for the socket itself: confirmed directly that bwrap's `--ro-bind`
-recurses into a nested mount stacked on its source, so `/run/user/<uid>`
-— a separate tmpfs on a real systemd-managed desktop — is already
-reachable through the existing wholesale `--ro-bind /run /run`.
+Also passes `XDG_RUNTIME_DIR` through when set on the host. It used to pass
+`DBUS_SESSION_BUS_ADDRESS` too — reported: most menu items greyed out except
+cut/copy/paste, and only the window manager's own close button quits
+RStudio. RStudio Desktop is Electron/Chromium-based, and such apps commonly
+need D-Bus for native file dialogs and session/quit integration, degrading
+rather than crashing when it's unavailable, which matched the symptom.
+
+That fix worked, and was recorded here as "well-motivated, not verified"
+because this project had no real RStudio or desktop D-Bus session to confirm
+it against. The unexamined half was which bus: what Electron needs is *a*
+session bus, not the user's. Under a GUI preset xpra starts one of its own,
+private to the sandbox, and the menus are fine with no host bus reachable at
+all — measured, finally, against a real RStudio. The passthrough is gone;
+see [0004-no-host-dbus](/architecture/decision-records/0004-no-host-dbus.md).
 
 Also sets `MCPTOOLS_SOCKET_DIR=/tmp/mcptools` unconditionally — reported:
 `mcptools::mcp_session()`, bridging RStudio's R console to `pi` (e.g. via

@@ -77,19 +77,15 @@ async function guiDisplayBinds(
 		dest: xpraDirPath,
 	});
 
-	// EM: XDG_RUNTIME_DIR and DBUS_SESSION_BUS_ADDRESS are still passed
-	// EM: through, and still reach the host's session bus via buildBwrapCommand's
-	// EM: read-only /run bind. xpra does nothing about that, and it is a real
-	// EM: capability channel of its own (notifications, portals, whatever else
-	// EM: the user's desktop exposes). So moving to xpra closes the largest and
-	// EM: best-documented hole in GUI isolation, not the last one — said
-	// EM: plainly in ADR 0003 rather than left for someone to discover.
-	// EM: Deciding what to do about D-Bus is separate work.
+	// EM: XDG_RUNTIME_DIR is passed through; DBUS_SESSION_BUS_ADDRESS
+	// EM: deliberately is not. The host's session bus went with --tmpfs /run,
+	// EM: and nothing brings it back: see
+	// EM: architecture/decision-records/0004-no-host-dbus.md. Forwarding the
+	// EM: address without the socket would only point applications at a path
+	// EM: that does not exist, which is worse than an unset variable — the
+	// EM: unset one lets xpra's own private bus take over cleanly.
 	if (process.env.XDG_RUNTIME_DIR) {
 		env.XDG_RUNTIME_DIR = process.env.XDG_RUNTIME_DIR;
-	}
-	if (process.env.DBUS_SESSION_BUS_ADDRESS) {
-		env.DBUS_SESSION_BUS_ADDRESS = process.env.DBUS_SESSION_BUS_ADDRESS;
 	}
 
 	// EM: Appearance settings the host desktop sets for GTK apps, inherited so
@@ -689,18 +685,16 @@ export const TOOL_PRESETS: Record<string, ToolPreset> = {
 			// EM: Electron apps on Linux commonly use D-Bus / xdg-desktop-portal
 			// EM: for native file dialogs, single-instance activation, and
 			// EM: session/quit integration — degrading rather than crashing when
-			// EM: unavailable, which matches the symptom. Passing these through
-			// EM: is a reasonable, well-motivated fix, not a verified one: this
-			// EM: project has no real RStudio Desktop install or desktop D-Bus
-			// EM: session to confirm it against directly, unlike the X11
-			// EM: mechanics above. No extra bind needed for the socket itself —
-			// EM: confirmed directly that bwrap's --ro-bind recurses into a
-			// EM: nested mount stacked on its source (built one and tested it),
-			// EM: so /run/user/<uid> — a separate tmpfs on a real systemd-managed
-			// EM: desktop — is already reachable through the existing wholesale
-			// EM: --ro-bind /run /run once these env vars tell RStudio where to
-			// EM: look. (XDG_RUNTIME_DIR/DBUS_SESSION_BUS_ADDRESS themselves
-			// EM: already come from guiDisplayBinds above.)
+			// EM: unavailable, which matches the symptom.
+			// EM:
+			// EM: The fix at the time was to pass the *host's* bus address
+			// EM: through, and it worked. It was never the only option, which
+			// EM: nobody noticed for a year: what Electron needs is *a* session
+			// EM: bus, not the user's. Under a GUI preset xpra now starts one
+			// EM: private to the sandbox, and the menus are fine with no host
+			// EM: bus reachable at all — measured, finally, against a real
+			// EM: RStudio. See
+			// EM: architecture/decision-records/0004-no-host-dbus.md.
 			//
 			// EM: Reported: mcptools::mcp_session() (bridging RStudio's R console
 			// EM: to pi, e.g. via --ide) fails with "Socket directory

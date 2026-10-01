@@ -27,9 +27,6 @@ export const CONFIG_FILES: Record<
 	readonly: { path: `${CONFIG_DIR}/readonly`, legacy: ".agentreadonly" },
 	readwrite: { path: `${CONFIG_DIR}/readwrite`, legacy: ".agentreadwrite" },
 	ports: { path: `${CONFIG_DIR}/ports`, legacy: ".agentports" },
-	// EM: No legacy counterpart — this one is born in the new layout, which is
-	// EM: why the migration landed first.
-	dbus: { path: `${CONFIG_DIR}/dbus`, legacy: null },
 };
 
 const README = `# .sandbox
@@ -43,7 +40,6 @@ do. Edit them from outside.
 - \`readonly\`  — paths kept read-only inside the sandbox
 - \`readwrite\` — \`$HOME\` directories opened read-write
 - \`ports\`     — localhost ports forwarded into the sandbox
-- \`dbus\`      — D-Bus services the sandbox may talk to
 
 scoder creates this directory and these files with sane defaults the first
 time it runs in a project. Each file documents itself in its own comments.

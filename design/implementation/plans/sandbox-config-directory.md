@@ -152,7 +152,9 @@ went. `.agent/` keeps the existing prefix and reads oddly as a directory.
 4. **Test renames**, scripted, in a commit of their own so the mechanical
    change is reviewable apart from the behavioural one.
 5. **Then `dbus-proxy`**, which assumes `.sandbox/` exists and adds
-   `.sandbox/dbus` to it.
+   `.sandbox/dbus` to it. *(That step was built and then dropped — see
+   [0004-no-host-dbus](/architecture/decision-records/0004-no-host-dbus.md).
+   `.sandbox/` has three files, not four.)*
 
 ## Open Questions — all now decided
 

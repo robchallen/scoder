@@ -315,9 +315,10 @@ outside the namespace's uid/gid map. The node is accessible, and RStudio's
 Chromium zygote was in fact holding `/dev/dri/renderD128` open.
 
 The wider consequence is a security one rather than a GPU one, and it is
-followed up in `dbus-proxy`: because group membership keeps working, a
-sandbox reaches anything on the host that its user can reach, including
-group-gated sockets under `/run`.
+followed up in [0004-no-host-dbus](/architecture/decision-records/0004-no-host-dbus.md):
+because group membership keeps working, a sandbox reaches anything on the
+host that its user can reach, including group-gated sockets under `/run`.
+`/run` is a tmpfs now, for exactly that reason.
 
 It is also worth noting beyond the GPU: **any group-gated device or file is
 invisible to a sandboxed tool in the same way.** That is arguably correct
@@ -585,20 +586,23 @@ contents and why priority 1001.
   were measured against a directly-exec'd IDE; the signalled process is now
   the xpra server. Unchanged, and should be re-measured rather than reasoned
   about.
-- **D-Bus is untouched**, and is a real capability channel. ADR 0003 says so
-  plainly rather than letting "we moved to xpra" imply more than it
-  delivers. Separate work.
-- ~~**`/run/user/<uid>` write failures**~~ — **fixed**, as a side effect of
-  `dbus-isolation`. `/run` is now a tmpfs rather than a read-only bind of the
-  host's, so that directory is writable and xpra's session files, its pid
-  files, the client's mmap file and `dconf` all stop failing against it.
-  `XDG_RUNTIME_DIR` still points there, so the RStudio greyed-out-menus fix
-  that depends on it is unaffected — it is the same path, now writable and
-  empty rather than read-only and shared.
+- ~~**D-Bus is untouched**, and is a real capability channel~~ — **closed**
+  by [0004-no-host-dbus](/architecture/decision-records/0004-no-host-dbus.md).
+  The host's session bus went with `--tmpfs /run` and nothing brings it back.
+  What the GUI gets instead is xpra's *own* private bus, which it starts by
+  default and which reaches nothing outside the sandbox — and which turned
+  out to be all the applications ever needed.
+- ~~**`/run/user/<uid>` write failures**~~ — **fixed** by the same tmpfs.
+  That directory is writable now, so xpra's session files, its pid files, the
+  client's mmap file and `dconf` all stop failing against it.
+- **xpra's scope is wider than this document assumes.** It brought its own
+  session bus, its own notification forwarding, its own printer enumeration
+  and its own menu watcher; three of those were switched off one at a time,
+  each as a separate surprise, before anyone looked at the pattern. More of
+  xpra is worth reading before the next feature is built beside it.
 
 [HAS_FEATURE](./tool-presets.md)
 [HAS_FEATURE](./ide-companion.md)
 [HAS_FEATURE](./sandbox-isolation.md)
 [HAS_FEATURE](./session-temp-root.md)
-[HAS_FEATURE](./dbus-isolation.md)
 [HAS_TEST](../test-scripts/validation-suite.md)

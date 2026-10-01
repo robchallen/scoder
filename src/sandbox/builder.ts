@@ -15,7 +15,6 @@ import type {
 } from "../types.ts";
 import { getRealHome } from "../utils/paths.ts";
 import { stageFile } from "../utils/session.ts";
-import { dbusSocketDest } from "./dbus.ts";
 import entrypointScript from "./entrypoint.sh" with { type: "text" };
 import {
 	getSandboxGid,
@@ -61,7 +60,6 @@ export interface SandboxConfig {
 	ideShutdown?: IdeShutdown;
 	// EM: Host path of the filtered D-Bus socket, when there is a session bus
 	// EM: to proxy and a proxy to do it with.
-	dbusSocket?: string;
 	// EM: Set when this session runs a GUI preset, as either the primary tool
 	// EM: or the --ide companion. See design/features/xpra-gui-isolation.md.
 	xpra?: XpraWrap;
@@ -92,7 +90,6 @@ export async function buildBwrapCommand(
 		ideArgs,
 		ideShutdown,
 		xpra,
-		dbusSocket,
 		protectionConfig,
 	} = config;
 
@@ -165,11 +162,11 @@ export async function buildBwrapCommand(
 	// EM: design; a reachable ssh-agent is the user's keys, which is exactly
 	// EM: what --allow-ssh goes to the trouble of not handing over.
 	// EM:
-	// EM: Two things come back the other way. The session bus returns through
-	// EM: xdg-dbus-proxy, filtered (see src/sandbox/dbus.ts). And
-	// EM: /run/user/<uid> becomes *writable*, which silences the steady
-	// EM: stream of failures xpra, its Xvfb and dconf used to log against a
-	// EM: read-only one.
+	// EM: The host's session bus goes with it, and nothing brings it back:
+	// EM: see architecture/decision-records/0004-no-host-dbus.md. One thing
+	// EM: does come back the other way — /run/user/<uid> becomes *writable*,
+	// EM: which silences the steady stream of failures xpra, its Xvfb and
+	// EM: dconf used to log against a read-only one.
 	cmd.push("--tmpfs", "/run");
 	cmd.push("--dir", `/run/user/${uid}`);
 	cmd.push(...(await runSymlinkDirs()));
@@ -457,20 +454,6 @@ export async function buildBwrapCommand(
 		if (process.env[envVar]) {
 			cmd.push("--setenv", envVar, process.env[envVar] || "");
 		}
-	}
-
-	// EM: The filtered session bus, at the path everything expects. Bound
-	// EM: read-write: connecting to a unix socket needs write permission on
-	// EM: the socket inode, and while a --ro-bind happens to permit connect()
-	// EM: (verified), there is nothing to gain from relying on that here —
-	// EM: the only thing reachable through it is the proxy.
-	if (dbusSocket) {
-		cmd.push("--bind", dbusSocket, dbusSocketDest(uid));
-		cmd.push(
-			"--setenv",
-			"DBUS_SESSION_BUS_ADDRESS",
-			`unix:path=${dbusSocketDest(uid)}`,
-		);
 	}
 
 	// EM: `--` marks end-of-options, so a tool path beginning with `-` cannot be

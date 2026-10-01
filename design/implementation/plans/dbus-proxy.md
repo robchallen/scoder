@@ -1,10 +1,25 @@
 ---
 target-version: 2.8.0
-status: draft
+status: superseded
 tags: [plan, sandbox, dbus, security, ide]
 ---
 
 # Filter D-Bus Through xdg-dbus-proxy
+
+> **Superseded by
+> [0004-no-host-dbus](/architecture/decision-records/0004-no-host-dbus.md),
+> which deletes rather than filters.** This plan was built and it worked;
+> its premise did not. It assumed the sandbox needed access to the *host's*
+> session bus, because passing `DBUS_SESSION_BUS_ADDRESS` through had fixed
+> RStudio's greyed-out menus. The first session that actually reached the
+> proxy showed the application only ever needed *a* bus — and xpra was
+> already starting a private one inside the sandbox, which is why the proxy's
+> log stayed empty while everything worked.
+>
+> Kept as written. The mechanics below are sound and would be the right
+> starting point if a future need for selective host access appears; the
+> part worth reading twice is how long an unverified premise survived in the
+> documents that cited it.
 
 ## Goal
 

@@ -71,3 +71,5 @@ sandbox (worktree operations, stash, etc.) without seeing a dirty working tree.
 [HAS_FEATURE](./sandbox-isolation.md)
 
 [HAS_TEST](../test-scripts/validation-suite.md)
+
+[HAS_FEATURE](./live-file-overlays.md)

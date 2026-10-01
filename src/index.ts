@@ -38,6 +38,7 @@ import {
 	setupSandboxIdentity,
 } from "./sandbox/identity.ts";
 import { describeLaunch, launchSandbox } from "./sandbox/launch.ts";
+import { setupOverlays } from "./sandbox/overlays.ts";
 import {
 	describeSshAccess,
 	type SshTunnel,
@@ -420,6 +421,30 @@ async function main(): Promise<void> {
 		);
 	}
 
+	// EM: Preset-declared file overlays, from the primary tool and the
+	// EM: companion alike — a GUI preset is the same preset either way. Done
+	// EM: here rather than in configBinds because the project directory is not
+	// EM: known when that runs, and these are almost always project files.
+	//
+	// EM: Rendered immediately so bwrap has something to bind, then added to
+	// EM: protectionConfig.overlays, which launchSandbox watches for the life
+	// EM: of the session.
+	if (protectionConfig) {
+		const hostProjectDir =
+			options.worktree && worktreeInfo
+				? worktreeInfo.worktreeDir
+				: process.cwd();
+
+		for (const p of [preset, idePreset]) {
+			if (!p?.fileOverlays) {
+				continue;
+			}
+			const overlays = await p.fileOverlays(hostProjectDir, sandboxProjDir);
+			protectionConfig.overlays.push(...overlays);
+			protectionConfig.safeBinds.push(...(await setupOverlays(overlays)));
+		}
+	}
+
 	// EM: Independent of worktree vs. direct mode, so set up once here rather
 	// EM: than duplicated into both branches above.
 	if (options.sshTarget) {
@@ -638,6 +663,7 @@ async function main(): Promise<void> {
 			repoRoot,
 			resolvConfSnapshotPath,
 			xpra ? xpraSocketPath() : null,
+			protectionConfig?.overlays ?? [],
 		);
 		exitCode = result.exitCode;
 

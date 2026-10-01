@@ -25,10 +25,12 @@ import {
 	DEFAULT_IDE_SHUTDOWN,
 } from "../src/sandbox/builder.ts";
 import { getSandboxUsername } from "../src/sandbox/identity.ts";
+import { renderOverlay } from "../src/sandbox/overlays.ts";
 import { isIpv6RoutabilityFailure } from "../src/sandbox/pasta.ts";
 import { TOOL_PRESETS } from "../src/tools/presets.ts";
 import type { IdeShutdown } from "../src/types.ts";
 import { getRealHome } from "../src/utils/paths.ts";
+import { sessionPath } from "../src/utils/session.ts";
 
 // ### Constants
 const TEST_BASE = "/tmp/scoder-test-repos";
@@ -1656,6 +1658,108 @@ test("sandbox-agents-md-overlay-visible: AGENTS.md overlay is visible in sandbox
 	}
 });
 
+// ### Test: overlay-tracks-host-edits
+// EM: The point of live-file-overlays. AGENTS.md used to be rendered once at
+// EM: startup, so correcting an agent's instructions meant restarting its
+// EM: session — for the one file whose entire purpose is telling the agent
+// EM: how to behave, exactly backwards.
+// EM:
+// EM: Exercised against renderOverlay directly rather than through a running
+// EM: sandbox: what is under test is the composition and the
+// EM: change-detection, and the watcher that calls it is three lines around a
+// EM: poll. A sandbox would add minutes and test bwrap instead.
+test("overlay-tracks-host-edits: a host edit reaches the sandbox without the injection accumulating", async () => {
+	const dir = `/tmp/scoder-overlay-test-${Date.now()}`;
+	await Bun.spawn(["mkdir", "-p", dir]).exited;
+	const source = `${dir}/AGENTS.md`;
+	const overlay = {
+		label: "AGENTS.md",
+		source,
+		dest: `${dir}/sandbox/AGENTS.md`,
+		injection: "## scoder sandbox\ninjected",
+		position: "append" as const,
+	};
+
+	try {
+		await Bun.write(source, "project rules");
+		expect(await renderOverlay(overlay)).toBe(true);
+
+		const staged = sessionPath(overlay.dest);
+		expect(await Bun.file(staged).text()).toBe(
+			"project rules\n## scoder sandbox\ninjected",
+		);
+
+		// Unchanged host file: no rewrite, so the watcher stays quiet rather
+		// than logging a change every tick.
+		expect(await renderOverlay(overlay)).toBe(false);
+
+		await Bun.write(source, "project rules, revised");
+		expect(await renderOverlay(overlay)).toBe(true);
+		expect(await Bun.file(staged).text()).toContain("revised");
+
+		// EM: The invariant that matters. Rendering from the previous output
+		// EM: rather than from the source would duplicate the injection on
+		// EM: every refresh, and would not show up until the host file had
+		// EM: been edited twice — so it is asserted after several rounds, not
+		// EM: one.
+		for (let i = 0; i < 4; i++) {
+			await Bun.write(source, `project rules, revision ${i}`);
+			await renderOverlay(overlay);
+		}
+		const final = await Bun.file(staged).text();
+		expect(final.split("## scoder sandbox").length - 1).toBe(1);
+
+		// A source that does not exist renders as the injection alone, which
+		// is what a project with no AGENTS.md should see.
+		await Bun.spawn(["rm", "-f", source]).exited;
+		expect(await renderOverlay(overlay)).toBe(true);
+		expect(await Bun.file(staged).text()).toBe("## scoder sandbox\ninjected");
+
+		// ...and it starts tracking the file again if it appears later.
+		await Bun.write(source, "created mid-session");
+		expect(await renderOverlay(overlay)).toBe(true);
+		expect(await Bun.file(staged).text()).toContain("created mid-session");
+	} finally {
+		await Bun.spawn(["rm", "-rf", dir]).exited;
+	}
+});
+
+// ### Test: overlay-prepends-when-asked
+// EM: An .Rprofile is the motivating case for prepend: R evaluates it top to
+// EM: bottom, so a session registration has to run before anything the
+// EM: project does. Appending would be silently useless.
+test("overlay-prepends-when-asked: prepend puts the injection before the host content", async () => {
+	const dir = `/tmp/scoder-overlay-pre-${Date.now()}`;
+	await Bun.spawn(["mkdir", "-p", dir]).exited;
+	const source = `${dir}/.Rprofile`;
+
+	try {
+		await Bun.write(source, "options(stringsAsFactors = FALSE)");
+		const overlay = {
+			label: ".Rprofile",
+			source,
+			dest: `${dir}/sandbox/.Rprofile`,
+			injection: "if (interactive()) btw::btw_mcp_session()",
+			position: "prepend" as const,
+		};
+		await renderOverlay(overlay);
+
+		const text = await Bun.file(sessionPath(overlay.dest)).text();
+		expect(text).toBe(
+			"if (interactive()) btw::btw_mcp_session()\noptions(stringsAsFactors = FALSE)",
+		);
+		// No leading blank line when the source is absent — the injected call
+		// must be the first thing R evaluates.
+		await Bun.spawn(["rm", "-f", source]).exited;
+		await renderOverlay(overlay);
+		expect(await Bun.file(sessionPath(overlay.dest)).text()).toBe(
+			"if (interactive()) btw::btw_mcp_session()",
+		);
+	} finally {
+		await Bun.spawn(["rm", "-rf", dir]).exited;
+	}
+});
+
 // ### Test: agents-md-overlay-states-real-home
 // EM: Now that the sandbox's $HOME is the real host $HOME (no more separate
 // EM: /home/scoder namespace), there's only one spelling to state — this
@@ -1695,9 +1799,17 @@ test("agents-md-overlay-states-real-home: overlay states $HOME is the real host 
 		expect(realHome).toBeTruthy();
 
 		expect(content).toContain(
-			`Your \`$HOME\` (\`${realHome}\`) is the real host home directory`,
+			`Your \`$HOME\` is \`${realHome}\`, the real host home directory`,
 		);
 		expect(content).not.toContain("/home/scoder");
+
+		// EM: The overlay must not describe paths as differing inside and
+		// EM: outside, because they do not — path-mirroring gives one path
+		// EM: space. It did say so once, truthfully, back when the sandbox
+		// EM: remapped $HOME; the wording outlived the behaviour and was
+		// EM: reported as confusing. Asserted as a negative because that is
+		// EM: the kind of claim that creeps back in.
+		expect(content).not.toContain("sandbox paths");
 
 		// Loosely, not word-for-word: only pins down that the distinction is
 		// present at all (stdio MCP servers run inside the sandbox and need

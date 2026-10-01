@@ -636,6 +636,36 @@ export const TOOL_PRESETS: Record<string, ToolPreset> = {
 
 		gui: true,
 
+		// EM: An R session in the sandbox registers itself with MCP, so that a
+		// EM: `pi` running alongside it can drive the live R session rather
+		// EM: than a separate one. btw::btw_mcp_session() has to run from
+		// EM: .Rprofile, which R evaluates top to bottom — hence prepend.
+		// EM:
+		// EM: As an overlay rather than a committed file: the alternative is
+		// EM: adding these lines to the .Rprofile of every project that might
+		// EM: ever be opened in a sandbox, where they are noise for everyone
+		// EM: not using scoder, and keeping them in step by hand when the
+		// EM: project's own .Rprofile changes. The overlay re-renders from the
+		// EM: host file whenever it changes, so neither problem arises.
+		// EM:
+		// EM: Guarded on interactive(): .Rprofile is also read by Rscript and
+		// EM: by R CMD check, where starting an MCP session would be wrong and
+		// EM: possibly fatal to a build.
+		fileOverlays: async (hostProjectDir, sandboxProjectDir) => [
+			{
+				label: ".Rprofile",
+				source: `${hostProjectDir}/.Rprofile`,
+				dest: `${sandboxProjectDir}/.Rprofile`,
+				injection: [
+					"# Injected by scoder inside the sandbox; not part of the project.",
+					'if (interactive() && requireNamespace("btw", quietly = TRUE)) {',
+					"  btw::btw_mcp_session()",
+					"}",
+				].join("\n"),
+				position: "prepend" as const,
+			},
+		],
+
 		configBinds: async (realHome, sandboxHome) => {
 			// EM: RStudio Desktop is a GUI app and needs a display. It gets a
 			// EM: virtual X server running inside the sandbox, whose windows

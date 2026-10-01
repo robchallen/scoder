@@ -255,21 +255,63 @@ scroll and sends one discrete click per notch. Verified it parses to
 either, and the smooth-scroll explanation above is eliminated along with
 the transport one.
 
-### Not the GPU either
+### The GPU: a badly designed test, and what the logs already said
 
-Eclipse is SWT/GTK and draws with the CPU; RStudio is Electron, so Chromium
-composites, and in this sandbox it does so with a real GPU (`/dev/dri` is
-bound) while presenting to an Xvfb display whose GL is `llvmpipe`. A
-GPU-composited frame presented to a software X server has to be read back to
-the CPU, and readbacks stall pipelines — a good fit on the face of it.
+`--disable-gpu`, `--disable-gpu-compositing` and `--disable-smooth-scrolling`
+were all tried and none made any difference. That was read as "not the GPU".
+**It does not show that**, as the reporter pointed out: disabling something
+that was never working looks identical to leaving it alone. The test could
+not distinguish its two outcomes, which is a reason to design a better test
+rather than a result.
 
-**Tested, and wrong.** None of `--disable-gpu`,
-`--disable-gpu-compositing` or `--disable-smooth-scrolling` made any
-difference. (`RSTUDIO_CHROMIUM_ARGUMENTS` is RStudio's documented way to
-pass Chromium flags, and scoder forwards it when set; it cannot arrive
-otherwise, since the sandbox runs `--clearenv`.)
+What settles the question was already in the server log all along:
 
-### The current hypothesis: RStudio's main thread is blocked, by inotify
+```
+OpenGL is supported on display ':0' using 'llvmpipe (LLVM 20.1.2, 256 bits)'
+```
+
+`llvmpipe` is Mesa's **software** rasteriser. The virtual display's GL is
+software, so anything going through GLX against it — Chromium included —
+renders on the CPU no matter that `/dev/dri` is bound. The GPU is not
+blocked by permissions; it is unreachable by that route, because the route
+runs through Xvfb.
+
+That makes the working hypothesis "Electron's wheel scrolling wants GPU
+compositing and is not getting it", and the thing to do is **enable** the
+GPU and see, not disable it further.
+
+Two routes, neither yet tested:
+
+1. **Let Chromium use the render node directly via EGL**, instead of GLX on
+   Xvfb. `/dev/dri` is already bound, so this needs no sandbox change —
+   only flags. Chromium also blocklists software/unknown GL configurations,
+   hence `--ignore-gpu-blocklist`:
+
+   ```
+   RSTUDIO_CHROMIUM_ARGUMENTS="--ignore-gpu-blocklist --enable-gpu-rasterization --use-gl=egl" \
+     scoder --ide rstudio pi
+   ```
+
+   Whether it took effect is checkable rather than a matter of impression —
+   from inside the sandbox, Chromium's GPU process either has the render
+   node open or it does not:
+
+   ```
+   ls -l /proc/$(pgrep -f type=gpu-process | head -1)/fd | grep dri
+   ```
+
+2. **Give xpra a virtual display that can reach the GPU.** `--xvfb=` accepts
+   alternatives, including `weston+Xwayland`, where Weston's headless
+   backend can render through GBM on the DRM node and Xwayland presents X11
+   on top. More invasive — it needs weston and Xwayland installed on the
+   host, since `/usr` is what the sandbox sees — but it fixes the problem at
+   the display rather than per-application.
+
+Chromium's own sandbox is *not* in the way, incidentally: nested user
+namespaces work inside a scoder sandbox, verified directly, so
+`--no-sandbox` and `--disable-gpu-sandbox` should not be needed.
+
+### Ruled out: inotify exhaustion
 
 The symptom, reported precisely, is not slow scrolling. It is **no response
 for several seconds, during which the UI is unresponsive, and then it
@@ -310,21 +352,16 @@ did:
 | seconds of nothing, then the final state | main thread blocked, then drains its queue |
 | `EMFILE` in the same session | the thing doing the blocking |
 
-**The test is one command on the host, and reversible:**
+**Tested and eliminated.** The limit was raised to 512 on the host, the
+`system error 24` messages stopped, and the scrolling was unchanged — so
+every test recorded above was run without the inotify errors present. The
+exhaustion was real and worth fixing on its own account; it was not the
+cause of this.
 
-```
-sudo sysctl -w fs.inotify.max_user_instances=1024
-```
-
-Then run RStudio again. If this is right, the wheel becomes responsive *and*
-the `system error 24` messages stop. If the errors stop but scrolling is
-still bad, the inotify exhaustion was real but not the cause, and the next
-candidate is the client's own GL paint path
-(`SCODER_XPRA_CLIENT_ARGS="--opengl=no"`), which is still untested.
-
-Unconfirmed, and deliberately not acted on in code yet: if it holds, scoder
-should check this budget at startup for a GUI preset and say so, because the
-symptom is baffling and the cause is invisible.### Tuning a live session: SCODER_XPRA_*
+The thread-split reasoning survives the elimination, though, and is still
+the best account of *why* the wheel and the scrollbar behave differently:
+whatever blocks RStudio's main thread will stall the wheel and leave
+dragging smooth. It just is not inotify doing the blocking.### Tuning a live session: SCODER_XPRA_*
 
 Judging whether a GUI session feels responsive is something only the person
 at the screen can do, and each attempt costs them a full IDE session. So
@@ -364,10 +401,13 @@ five years stale on Ubuntu 24.04 and absent on 26.04. See
 
 - **RStudio's mousewheel scrolling stalls** for seconds on the configuration
   Eclipse is happy with. Eliminated: the transport (`--mmap=no` is worse),
-  the wheel event rate (`--mousewheel=coarse` does not help), and the GPU
-  (none of three Chromium flags help). Current hypothesis is a blocked
-  Chromium main thread caused by inotify exhaustion, with a one-command host
-  test — see above. Eclipse is fine.
+  the wheel event rate (`--mousewheel=coarse` does not help), and inotify
+  exhaustion (raised to 512, errors stopped, scrolling unchanged). The GPU
+  is **not** eliminated — the test that appeared to do so could not
+  distinguish "disabled" from "never working", and the server log shows the
+  virtual display's GL is `llvmpipe`, i.e. software. Current direction is to
+  *enable* GPU rendering rather than disable it further; see above for the
+  two routes and the check that tells you whether it took. Eclipse is fine.
 - **DPI is mis-reported and `--dpi` does not fix it.** xpra warns
   `DPI set to 31 x 35 (wanted 96 x 96)` and suggests "the dpi switch", but
   measured directly: `--dpi=96` changes nothing — `xdpyinfo` inside the

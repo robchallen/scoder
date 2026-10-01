@@ -199,7 +199,7 @@ unrestricted clipboard access along with everything else, so proxying it is
 the same capability with a name and an off switch, not a regression. Worth
 exposing as a flag.
 
-### Two transports, and they are mutually exclusive
+### Two transports, and mmap is the right default
 
 xpra 6.5.4 will use **either** mmap **or** its scroll-delta encoding for a
 window, never both. Verified directly by A/B, with the client's
@@ -207,40 +207,59 @@ window, never both. Verified directly by A/B, with the client's
 
 | client `--mmap` | window encoding | `encoding.scrolling.enabled` |
 |---|---|---|
-| a path (default) | `mmap` | **False** |
+| a path (the default) | `mmap` | **False** |
 | `no` | `auto` | **True** |
 
-The trade-off that creates:
+It looked as though scroll-delta would be the better trade for an IDE, since
+scrolling is the dominant interaction and mmap ships every wheel notch as
+changed pixels. **That prediction was wrong.** Tested on real Eclipse and
+RStudio sessions: `--mmap=no` was *worse* in both, never better. mmap stays
+the default, and the measured
+`pixels_encoded_per_second=137959260` (~37 full 2560x1440 frames/sec) is why.
 
-- **mmap** moves bulk pixels extremely fast — measured
-  `pixels_encoded_per_second=137959260`, about 37 full 2560x1440 frames per
-  second. But with scroll detection off, every mousewheel notch ships the
-  changed region as pixels rather than a "shift rows by N" instruction.
-- **scroll** sends a tiny packet per scroll, but everything else goes
-  through ordinary encode/decode instead of shared memory.
+### What is actually slow: the mouse wheel, in Electron
 
-For an IDE, scrolling is the dominant interaction, which is a reason to
-think the second is the better trade here — but that is a prediction, and
-the only test that counts is whether it feels better. Switching is one
-flag, because the client's `--mmap=no` alone is enough (the server can keep
-its own `--mmap`, as the A/B above did) and `XPRA_SCROLL_ENCODING=1` is
-already the default:
+Reported from real sessions, which between them isolate it:
+
+| session | wheel scrolling |
+|---|---|
+| `scoder pi --ide eclipse` | **fine** |
+| `scoder pi --ide eclipse` with `--mmap=no` | laggy |
+| `scoder --ide rstudio pi` | laggy |
+| `scoder --ide rstudio pi` with `--mmap=no` | laggy |
+
+Two things follow. Eclipse is fine on the shipped configuration. And
+RStudio's problem is not the transport, because it is laggy on the
+configuration Eclipse is happy with.
+
+The decisive detail: **dragging a scrollbar is smooth; only the wheel is
+slow.** Dragging produces pointer-motion events and repaints fine, so
+rendering is not the bottleneck — this is wheel *event* handling.
+
+The mechanism, from xpra's own source. `XPRA_SMOOTH_SCROLL` defaults on, so
+the GTK client requests `SMOOTH_SCROLL_MASK` from GDK
+(`client/gtk3/window/pointer.py`) and one physical notch arrives as a stream
+of fractional deltas, which `send_wheel_delta`
+(`client/subsystem/window/wheel.py`) forwards as precise `wheel-motion`
+packets. RStudio is Electron, and Chromium *animates* each scroll event, so
+a stream of them queues a backlog of animations — which is what "scroll
+events propagate slowly to the UI" describes. SWT (Eclipse) scrolls directly
+per event and does not compound the same way.
+
+`--mousewheel=coarse` turns that off: the client stops asking for smooth
+scroll and sends one discrete click per notch. Verified that it parses to
+`wheel_smooth=False` while keeping the full button map, unlike
+`--mousewheel=no`, which disables the wheel entirely.
 
 ```
-SCODER_XPRA_CLIENT_ARGS="--mmap=no" scoder pi --ide eclipse
+SCODER_XPRA_CLIENT_ARGS="--mousewheel=coarse" scoder --ide rstudio pi
 ```
 
-**An earlier version of this document said this A/B "cannot be run here".**
-That was wrong, and worth recording because of how the mistake was made: a
-client started with `--mmap=no` died with `ModuleNotFoundError: No module
-named 'xpra.net.mmap.common'`, and that was read as "disabling mmap is
-broken in this build". The traceback actually named
-`xpra/client/subsystem/webcam.py` as the importer — it is the *webcam*
-subsystem's load path that breaks, and `xpra.net.mmap.common` imports
-perfectly well on its own. `--webcam=no` (now a default, since the
-capability is unwanted anyway) avoids it and the A/B runs fine. The lesson
-is the ordinary one: read which module the traceback blames, not which
-module it names.
+**Not yet confirmed to help**, and deliberately not made the default: coarse
+scrolling is exactly right for a notched wheel but is a downgrade for a
+touchpad, where smooth scrolling is the point. If it fixes RStudio, whether
+to default it is a question about which input device matters more, not a
+free win.
 
 ### Tuning a live session: SCODER_XPRA_*
 
@@ -280,10 +299,9 @@ five years stale on Ubuntu 24.04 and absent on 26.04. See
 
 ## Known Gaps
 
-- **Mousewheel scrolling is still laggy.** Reported from a real Eclipse
-  session *after* mmap was working. The cause is now characterised (see
-  "Two transports" above) but which transport is actually better for an IDE
-  has not been judged — that needs someone at the screen.
+- **RStudio's mousewheel scrolling is still laggy**, on the configuration
+  Eclipse is happy with. See "What is actually slow" above for what is
+  isolated and the untested lever. Eclipse is fine.
 - **DPI is mis-reported and `--dpi` does not fix it.** xpra warns
   `DPI set to 31 x 35 (wanted 96 x 96)` and suggests "the dpi switch", but
   measured directly: `--dpi=96` changes nothing — `xdpyinfo` inside the

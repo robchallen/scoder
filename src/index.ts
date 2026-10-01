@@ -10,8 +10,8 @@ import { parseArgs, printUsage, printVersion } from "./cli/parse-args.ts";
 import {
 	addGitExclude,
 	appendAgentPort,
-	getAgentPortsBind,
 	getAgentsMdOverlayBind,
+	getConfigDirBind,
 	type ProtectionConfig,
 	readAgentPorts,
 	removeGitExclude,
@@ -21,6 +21,7 @@ import {
 	setupReadWriteAccess,
 	setupResolvConf,
 } from "./git/protection.ts";
+import { prepareConfigDir } from "./git/sandbox-config.ts";
 import {
 	commitAllChanges,
 	getCommitCount,
@@ -280,6 +281,9 @@ async function main(): Promise<void> {
 		// EM: would collide with the project's own real checkout at that same
 		// EM: path.
 		sandboxProjDir = worktreeInfo.worktreeDir;
+		// EM: Before anything reads configuration, so that every later code
+		// EM: path sees one layout and none of them has to know both.
+		await prepareConfigDir(worktreeInfo.worktreeDir);
 		protectionConfig = await setupProtection(
 			worktreeInfo.worktreeDir,
 			sandboxProjDir,
@@ -341,6 +345,7 @@ async function main(): Promise<void> {
 		// EM: outside $HOME (e.g. /opt/proj) onto a fabricated $HOME/opt/proj
 		// EM: that has no relation to where it actually lives.
 		sandboxProjDir = toSandboxPath(cwd, homePrefixes);
+		await prepareConfigDir(cwd);
 		protectionConfig = await setupProtection(cwd, sandboxProjDir);
 
 		const agentsSnapshotBind = await setupAgentsSnapshot();
@@ -381,7 +386,7 @@ async function main(): Promise<void> {
 
 	// EM: Independent of worktree vs. direct mode, so set up once here — see
 	// EM: ProtectionConfig.dependencyDirs (protection.ts): the sandbox-side
-	// EM: destinations of every .agentreadonly $HOME/... entry, as their
+	// EM: destinations of every .sandbox/readonly $HOME/... entry, as their
 	// EM: own distinct list, so a preset's resolveArgs can import each as
 	// EM: its own project (e.g. eclipse) without guessing which
 	// EM: safeBinds entries are dependency-shaped.
@@ -455,7 +460,7 @@ async function main(): Promise<void> {
 		);
 		if (sshHomeBindConflict) {
 			error(
-				".agentreadonly binds $HOME/.ssh, which conflicts with --allow-ssh — use one or the other",
+				".sandbox/readonly binds $HOME/.ssh, which conflicts with --allow-ssh — use one or the other",
 			);
 			process.exit(1);
 		}
@@ -484,7 +489,7 @@ async function main(): Promise<void> {
 				? worktreeInfo.worktreeDir
 				: process.cwd();
 
-		// EM: .agentports replaces --llm-port entirely: read what's already
+		// EM: .sandbox/ports replaces --llm-port entirely: read what's already
 		// EM: configured, then (outside --dry-run, which must stay side-effect
 		// EM: free) let the LLM auto-detect probe seed it additively on a hit.
 		// EM: readAgentPorts throws rather than exiting itself (see its own
@@ -505,7 +510,7 @@ async function main(): Promise<void> {
 			}
 		}
 
-		const agentPortsBind = await getAgentPortsBind(
+		const agentPortsBind = await getConfigDirBind(
 			projectRoot,
 			sandboxProjDir,
 			options.dryRun,
@@ -838,7 +843,7 @@ function checkExecTargetReachable(
 		"The sandbox uses an ephemeral home, and that directory is not bound into it",
 	);
 	report(`Fix: install ${name} system-wide, or bind its directory by adding`);
-	report(`     ${hostDir.replace(realHome, "$HOME")}/ to .agentreadonly`);
+	report(`     ${hostDir.replace(realHome, "$HOME")}/ to .sandbox/readonly`);
 	return false;
 }
 

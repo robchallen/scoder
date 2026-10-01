@@ -32,23 +32,23 @@ missing, and how visibility/commits work — not a full description of scoder
 - **System paths**: `/usr`, `/bin`, `/lib`, `/etc`, `/opt`, `/sys`, `/run` —
   always read-only. Installing or modifying anything here will fail.
 - **Protected project files**: `.github/`, `.gitignore`, lockfiles,
-  `.agentreadonly` itself, and anything else `.agentreadonly` lists, are
+  `.sandbox/readonly` itself, and anything else `.sandbox/readonly` lists, are
   read-only even though the rest of the project tree is writable. A repo
-  can relax this (an empty `.agentreadonly` removes the defaults) but you
+  can relax this (an empty `.sandbox/readonly` removes the defaults) but you
   can't relax it yourself from inside the sandbox.
 - **`AGENTS.md`**: always read-only inside the sandbox (overlaid with the
   sandbox notice). Don't try to edit it — ask the user instead.
-- **`.agentports`**: read-only. If you need a localhost port opened (e.g. a
-  local LLM/MCP server), ask the user to add it to `.agentports` or restart
+- **`.sandbox/ports`**: read-only. If you need a localhost port opened (e.g. a
+  local LLM/MCP server), ask the user to add it to `.sandbox/ports` or restart
   scoder — you cannot add it yourself.
 - **Most of `$HOME`**: only specific things are actually populated — the
   project itself, a curated set of tool configs (git, cargo/rustup, mise, R,
-  Maven `.m2`, npm/pypi rc files), and whatever `.agentreadonly` explicitly
+  Maven `.m2`, npm/pypi rc files), and whatever `.sandbox/readonly` explicitly
   adds. Everything else under `$HOME` that exists on the real host may
-  simply not be there. An `.agentreadwrite` file, if the project has one,
+  simply not be there. An `.sandbox/readwrite` file, if the project has one,
   additionally opens specific `$HOME/...` directories read-write (a
   persistent cache or output location) — you can't add entries to it
-  yourself, same as `.agentreadonly`.
+  yourself, same as `.sandbox/readonly`.
 
 ## If a tool or dependency is missing
 
@@ -62,14 +62,14 @@ unbound location the moment the session ends. A `pip install --user` or
 `npm install -g` that "succeeds" now may silently vanish next session.
 
 Tell the user what's missing and ask them to install it on the host (or add
-its directory via `.agentreadonly` if it already lives under their `$HOME`)
+its directory via `.sandbox/readonly` if it already lives under their `$HOME`)
 rather than spending effort installing it inside the sandbox.
 
 ## Networking
 
 - Outbound internet works normally (DNS, API calls).
 - Host loopback (`127.0.0.1`) is blocked by default. Only ports listed in
-  `.agentports` are reachable — see above if you need one added.
+  `.sandbox/ports` are reachable — see above if you need one added.
 
 ## The display, if there is one
 
@@ -108,7 +108,7 @@ Only relevant when a GUI IDE is running alongside you (`--ide rstudio`,
 - To pick up upstream changes, use `git fetch origin` then
   `git rebase origin/main` or `git merge origin/main` explicitly — don't
   rely on `git pull`, since the sandbox branch has no upstream configured
-  for that. If a rebase/merge conflicts on a file `.agentreadonly` protects,
+  for that. If a rebase/merge conflicts on a file `.sandbox/readonly` protects,
   you can't resolve it yourself (the sandbox copy is read-only) — tell the
   user.
 
@@ -167,19 +167,19 @@ yourself.
 ## Troubleshooting
 
 **Write failed with a read-only error** — check first whether the path is
-one of the categories above (system path, `.agentreadonly`-protected,
-`AGENTS.md`, `.agentports`) before assuming the whole worktree is broken.
+one of the categories above (system path, `.sandbox/readonly`-protected,
+`AGENTS.md`, `.sandbox/ports`) before assuming the whole worktree is broken.
 Running a `mount` command will give you detailed info about what is and what is
 not bound, and what is read only.
 
 **A symlink outside the project is broken** — its target almost certainly
 isn't bound into the sandbox. Common case: a skill/config directory
 symlinked from somewhere not in the curated tool list. Ask the user to add
-it via `.agentreadonly`, or for them to install/relocate it into a location that is
+it via `.sandbox/readonly`, or for them to install/relocate it into a location that is
 already bound.
 
 **A command isn't found, or a tool behaves as if unconfigured** — see "If a
 tool or dependency is missing" above.
 
 **You need a localhost service reachable** — see "Networking" above; the
-user has to add the port to `.agentports`, you can't.
+user has to add the port to `.sandbox/ports`, you can't.

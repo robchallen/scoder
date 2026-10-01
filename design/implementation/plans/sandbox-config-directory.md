@@ -127,10 +127,13 @@ Unlike `.agentreadonly`, `.sandbox` is plausible as something a project
 already has — a test fixture directory, a Vagrant scratch area, a sandboxed
 build output. scoder would bind it read-only and write defaults into it.
 
-Mitigation: on first run, if `.sandbox/` exists and contains nothing scoder
-recognises, say so and refuse to write into it rather than assuming it is
-ours. A `.sandbox/README` written alongside the defaults also makes the
-directory self-explanatory to the next person who finds it in a diff.
+Mitigation, kept deliberately cheap: if `.sandbox/` exists and contains none
+of scoder's own files, warn once that it is about to be bound read-only and
+written into. A warning rather than a refusal, because refusing would block a
+session over a directory that is probably fine, and the warning is enough to
+explain an otherwise baffling build failure. A `.sandbox/README` written
+alongside the defaults also makes the directory self-explanatory to the next
+person who finds it in a diff.
 
 Alternatives considered: `.scoder/` is unambiguous but ties project
 configuration to one tool's name, which is the opposite of where `AGENTS.md`
@@ -141,13 +144,13 @@ went. `.agent/` keeps the existing prefix and reads oddly as a directory.
 
 1. **Hoist the three filenames to constants.** No behaviour change, and it
    turns step 3 into a small diff.
-2. **Collision check and `--migrate-config`**, both of which can land before
-   anything moves.
-3. **The move itself**, including the directory bind that replaces the three
-   per-file binds, and deleting the "missing file is writable" machinery and
-   its tests.
-4. **Docs and test renames**, in the same commit as the code they describe so
-   `em doc`'s link checking stays green.
+2. **The move itself**: the new paths, the automatic migration, and the
+   directory bind that replaces the three per-file binds, deleting the
+   "missing file is writable" machinery with it.
+3. **Docs**, in the same commit as the code they describe so `em doc`'s link
+   checking stays green.
+4. **Test renames**, scripted, in a commit of their own so the mechanical
+   change is reviewable apart from the behavioural one.
 5. **Then `dbus-proxy`**, which assumes `.sandbox/` exists and adds
    `.sandbox/dbus` to it.
 

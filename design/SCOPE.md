@@ -25,7 +25,7 @@ localhost services by default.
 
 [HAS_FEATURE](./features/tool-presets.md) - Built-in configuration presets for opencode, claude, copilot, pi, and rstudio with tool-specific config/data binds.
 
-[HAS_FEATURE](./features/infrastructure-protection.md) - Default and user-configurable protection of critical files (.github/, .gitignore, lockfiles) via .agentreadonly.
+[HAS_FEATURE](./features/infrastructure-protection.md) - Default and user-configurable protection of critical files (.github/, .gitignore, lockfiles) via .sandbox/readonly.
 
 [HAS_FEATURE](./features/path-mirroring.md) - Real-path mounting strategy so git cross-references work inside the sandbox without GIT_WORK_TREE.
 
@@ -51,7 +51,7 @@ localhost services by default.
 
 [HAS_FEATURE](./features/ssh-tunnel-access.md) - Opt-in `--allow-ssh user@host` opens a single pre-authenticated ssh connection outside the sandbox and multiplexes only that one connection in, with no key material or agent socket exposed.
 
-[HAS_FEATURE](./features/agent-readwrite.md) - A `.agentreadwrite` file at the project root lists `$HOME/...` directories bound read-write into the sandbox — a persistent cache, analysis output, or other area outside the project tree, validated the same way `.agentreadonly`'s own `$HOME/...` binds are.
+[HAS_FEATURE](./features/agent-readwrite.md) - A `.sandbox/readwrite` file at the project root lists `$HOME/...` directories bound read-write into the sandbox — a persistent cache, analysis output, or other area outside the project tree, validated the same way `.sandbox/readonly`'s own `$HOME/...` binds are.
 
 [HAS_FEATURE](./features/ide-companion.md) - `--ide NAME` launches NAME (must have a registered preset) as a companion in the same sandbox: NAME in the background, the primary tool in the foreground, both must exit before scoder shuts down.
 

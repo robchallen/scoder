@@ -52,9 +52,9 @@ localhost) unless explicitly allowed.
 - **DNS**: snapshots `/etc/resolv.conf`, preferring
   `/run/systemd/resolve/resolv.conf` when the host uses 127.0.0.53
   (systemd-resolved) — `resolveResolvConfSource` in
-  `src/git/protection.ts`. **Live-refreshed**, like `.agentports`: a
+  `src/git/protection.ts`. **Live-refreshed**, like `.sandbox/ports`: a
   background poll (`SCODER_RESOLVCONF_POLL_MS`, default 2000, its own
-  separate knob from `.agentports`' polling cadence — the two watch
+  separate knob from `.sandbox/ports`' polling cadence — the two watch
   unrelated things) re-reads the real host config and rewrites the
   sandbox's snapshot file in place if it changed
   (`refreshResolvConfSnapshot`). Fixes a real, reported gap: a
@@ -64,16 +64,16 @@ localhost) unless explicitly allowed.
   short of a full restart — confirmed directly that pasta's own routing
   stayed healthy throughout (a raw-IP `curl` worked), isolating the
   problem to this snapshot specifically. Much simpler than
-  `.agentports`' own live reload: no pasta/bwrap involvement at all,
+  `.sandbox/ports`' own live reload: no pasta/bwrap involvement at all,
   since `/etc/resolv.conf` inside the sandbox is a `--ro-bind` of this
   exact host file, not a copy detached from it — overwriting the file's
   content on the host is visible inside the sandbox immediately, with
   nothing to swap, restart, or fail over to.
-- **`.agentports`**: a project-root file, one port per line (`#` comments
+- **`.sandbox/ports`**: a project-root file, one port per line (`#` comments
   allowed), listing host-loopback ports forwarded into the sandbox — an MCP
   server, a locally hosted research-tool API (Zotero, say), or an LLM
   endpoint. Always bind-mounted read-only into the sandbox, like
-  `.agentreadonly` — created first (a single header comment) if missing,
+  `.sandbox/readonly` — created first (a single header comment) if missing,
   since a missing source path gets no bind mount at all, which would
   otherwise leave the path part of the regular read-write project bind and
   let the sandboxed agent create it itself, unprotected. Skipped under
@@ -82,10 +82,10 @@ localhost) unless explicitly allowed.
 - **Auto-detection**: scoder checks if port 11434 is open on localhost at
   startup (override the probed port with `SCODER_LLM_PORT`). If something
   responds (e.g. Ollama, Open WebUI), that port is appended to
-  `.agentports` — additively, and only once — so it persists for every
+  `.sandbox/ports` — additively, and only once — so it persists for every
   future session without anyone needing to remember the number. Skipped
   entirely under `--dry-run`, which stays side-effect free.
-- **Live reload**: `.agentports` is re-read on a poll interval
+- **Live reload**: `.sandbox/ports` is re-read on a poll interval
   (`SCODER_AGENTPORTS_POLL_MS`, default 2000) for the life of the session.
   Editing it from outside the sandbox reattaches pasta with the new port
   list, without restarting the session — the network namespace belongs to
@@ -94,7 +94,7 @@ localhost) unless explicitly allowed.
   [ADR 0001](/architecture/decision-records/0001-sandbox-uid-and-networking-composition.md)).
   A failed reattach falls back to the last known-good port list rather than
   leaving the sandbox with no networking.
-- There is no `--llm-port` flag — `.agentports` replaced it entirely (see
+- There is no `--llm-port` flag — `.sandbox/ports` replaced it entirely (see
   [design/implementation/plans/agentports.md](/design/implementation/plans/agentports.md)
   for why: the flag's original framing no longer matched what it was
   actually used for, and keeping both created a real ambiguity about

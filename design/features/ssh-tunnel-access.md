@@ -61,7 +61,7 @@ opening the connection before the agent ever starts, keeps the choice of
   (not blocked — blocking would also rule out testing against a local mock
   server), since it makes the flag a full, unsandboxed shell back onto the
   host.
-- `.agentreadonly` binding `$HOME/.ssh` and `--allow-ssh` together are
+- `.sandbox/readonly` binding `$HOME/.ssh` and `--allow-ssh` together are
   refused explicitly, since both would try to populate `$HOME/.ssh` and bind
   ordering would make whichever applies last win silently.
 

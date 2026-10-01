@@ -166,7 +166,7 @@ below), not independently re-verified here for the same reason.
    on the interactive launch itself ("will ultimately place you in the
    IDE"), which buys the exact same result with one less JVM startup and
    no extra moving part.
-5. **Every `.agentreadonly` `$HOME/...` entry gets its own
+5. **Every `.sandbox/readonly` `$HOME/...` entry gets its own
    `-importProject`, every launch** — solving "a Java project references
    other local projects that also need to be workspace projects" without
    a manual step. Confirmed (via the plugin's separate headless
@@ -215,7 +215,7 @@ every launch to keep it honest" both correct and cheap.
 
 Worth being explicit about, since it wasn't obvious going in: this
 decision is **not** what makes dependency projects resolve correctly.
-That's solved by Design point 5 (every `.agentreadonly` entry gets its own
+That's solved by Design point 5 (every `.sandbox/readonly` entry gets its own
 `-importProject`, every single launch) regardless of whether the workspace
 itself persists — an ephemeral, from-scratch-every-time workspace would
 import the main project and every dependency exactly the same way, just
@@ -294,7 +294,7 @@ prepareCommand?: (
 ```
 
 `dependencyDirs` — the sandbox-side destinations of every
-`.agentreadonly` `$HOME/...` entry already resolved for this session —
+`.sandbox/readonly` `$HOME/...` entry already resolved for this session —
 was genuinely useful independent of `prepareCommand`, though, and stayed:
 it's now a parameter of `resolveArgs` instead (`ToolPreset.resolveArgs`
 in `src/types.ts`), exposed as its own distinct list via
@@ -436,7 +436,7 @@ flags ahead of `existingArgs`). No `prepareCommand` hook — see Decision 4.
 ### `src/git/protection.ts`
 
 `ProtectionConfig` gained `dependencyDirs` — the sandbox-side destinations
-of every `.agentreadonly` `$HOME/...` entry, exposed as its own distinct
+of every `.sandbox/readonly` `$HOME/...` entry, exposed as its own distinct
 list.
 
 ### `src/sandbox/builder.ts`

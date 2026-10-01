@@ -42,7 +42,7 @@ One more hook is optional, and only some presets need it:
   only fills in a default when the user gave none at all; `eclipse`
   always prepends its own fixed flags ahead of whatever the user passed.
   `dependencyDirs` is the sandbox-side destinations of every
-  `.agentreadonly` `$HOME/...` entry already resolved for this session
+  `.sandbox/readonly` `$HOME/...` entry already resolved for this session
   (`ProtectionConfig.dependencyDirs` in `src/git/protection.ts`) — e.g.
   `eclipse` imports each of these as its own project. See
   `ToolPreset.resolveArgs` in `src/types.ts`.
@@ -262,7 +262,7 @@ rejected and what was verified against a real Eclipse install, is
 - `resolveArgs` always prepends, to the interactive launch, `-data
   <workspace>`, `-importProject <sandboxProjectDir>`, and one more
   `-importProject` per `dependencyDirs` entry (importing the main
-  project and every `.agentreadonly` `$HOME/...` dependency as its own
+  project and every `.sandbox/readonly` `$HOME/...` dependency as its own
   workspace project — solving "a Java project references other local
   projects that also need to be workspace projects" without a manual
   step). All of this on **every** launch, whatever args the user passed —

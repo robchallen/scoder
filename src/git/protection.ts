@@ -17,8 +17,9 @@ import {
 	toSandboxPath,
 } from "../utils/paths.ts";
 import { sessionPath, stageDir, stageFile } from "../utils/session.ts";
+import { CONFIG_DIR, CONFIG_FILES, configPath } from "./sandbox-config.ts";
 
-// EM: Infrastructure protection via .agentreadonly and AGENTS.md overlay
+// EM: Infrastructure protection via .sandbox/readonly and AGENTS.md overlay
 // EM: Implements infrastructure-protection, agents-md-overlay, and agents-skills-snapshot features
 
 const DEFAULT_PROTECTED = [
@@ -38,10 +39,10 @@ const DEFAULT_PROTECTED = [
 // fixed infra bind under $HOME, whether host-tool-wide (buildExtraBinds'
 // own list in src/sandbox/builder.ts) or a preset's own top-level dir
 // (`.claude`/`.claude.json`, `.copilot`) — plus the agent-skills snapshot.
-// Shared by both `.agentreadonly`'s and `.agentreadwrite`'s HOME-bind
-// overlap checks: a `.agentreadonly` entry landing here would fight a
+// Shared by both `.sandbox/readonly`'s and `.sandbox/readwrite`'s HOME-bind
+// overlap checks: a `.sandbox/readonly` entry landing here would fight a
 // bind a tool actually needs read-write access to (`.claude`, `.copilot`);
-// a `.agentreadwrite` entry here would silently upgrade a bind scoder
+// a `.sandbox/readwrite` entry here would silently upgrade a bind scoder
 // placed there for an unrelated reason. Parameterized by realHome, not a
 // fixed literal: the sandbox's own $HOME is the real host $HOME (see
 // path-mirroring), which varies by user and by test.
@@ -145,7 +146,7 @@ export interface ProtectionConfig {
 	 */
 	overlays: LiveOverlay[];
 	dirs?: string[];
-	// The sandbox-side destinations of every .agentreadonly $HOME/... entry
+	// The sandbox-side destinations of every .sandbox/readonly $HOME/... entry
 	// — a distinct list, not just whatever of safeBinds happens to look
 	// like one, so a preset's prepareCommand (see ToolPreset) can treat
 	// each as its own project to import without guessing which safeBinds
@@ -164,7 +165,7 @@ export async function setupProtection(
 	const safeBinds: BindMount[] = [];
 	const dirs: string[] = [];
 	const dependencyDirs: string[] = [];
-	const agentreadonlyPath = `${sourceDir}/.agentreadonly`;
+	const agentreadonlyPath = configPath(sourceDir, "readonly");
 	const agentreadonlyExists = await fileExists(agentreadonlyPath);
 
 	if (agentreadonlyExists) {
@@ -193,7 +194,7 @@ export async function setupProtection(
 		}
 	} else {
 		protectedPaths.push(...DEFAULT_PROTECTED);
-		// EM: Default .agentreadonly created with protected infrastructure paths
+		// EM: Default .sandbox/readonly created with protected infrastructure paths
 		await Bun.write(agentreadonlyPath, `${DEFAULT_PROTECTED.join("\n")}\n`);
 	}
 
@@ -214,19 +215,13 @@ export async function setupProtection(
 		}
 	}
 
-	// EM: Unconditional, not gated on agentreadonlyExists: by this point the
-	// EM: file always exists, either it did already or the else branch above
-	// EM: just wrote a default. Gating this on the pre-write flag left a
-	// EM: freshly created default writable from inside the sandbox for that
-	// EM: first session — a missing source path gets no bind mount at all,
-	// EM: leaving .agentreadonly part of the regular read-write project bind.
-	// EM: Same bug class as the .agentports fix; see
-	// EM: design/implementation/plans/agentports.md.
-	safeBinds.push({
-		type: "ro-bind",
-		source: agentreadonlyPath,
-		dest: `${sandboxProjDir}/.agentreadonly`,
-	});
+	// EM: No self-protection bind here any more. getConfigDirBind binds the
+	// EM: whole of .sandbox/ read-only, which covers this file — and covers it
+	// EM: whether or not it existed when the bind list was built. Under the old
+	// EM: per-file scheme that distinction was a bug twice over: a missing
+	// EM: source gets no bind at all, so a freshly written default stayed part
+	// EM: of the read-write project bind and the sandbox could edit the very
+	// EM: file saying what it was not allowed to touch.
 
 	// EM: Rendered here so the file exists before bwrap binds it; the watcher
 	// EM: started in launchSandbox keeps it in step thereafter.
@@ -259,13 +254,13 @@ async function registerAgentreadonlyHomeBind(
 
 	if (!sourceReal || !(await fileOrDirExists(sourceReal))) {
 		error(
-			`.agentreadonly HOME bind must reference an existing file or directory: ${homePathExpr}`,
+			`.sandbox/readonly HOME bind must reference an existing file or directory: ${homePathExpr}`,
 		);
 		process.exit(1);
 	}
 
 	if (sourceReal !== realHome && !sourceReal.startsWith(`${realHome}/`)) {
-		error(`.agentreadonly HOME bind escapes HOME: ${homePathExpr}`);
+		error(`.sandbox/readonly HOME bind escapes HOME: ${homePathExpr}`);
 		process.exit(1);
 	}
 
@@ -274,16 +269,16 @@ async function registerAgentreadonlyHomeBind(
 	for (const fixedDest of fixedBindDestinations(realHome)) {
 		if (pathsOverlap(sandboxDest, fixedDest)) {
 			error(
-				`.agentreadonly HOME bind overlaps reserved sandbox path: ${homePathExpr}`,
+				`.sandbox/readonly HOME bind overlaps reserved sandbox path: ${homePathExpr}`,
 			);
 			process.exit(1);
 		}
 	}
 
-	// EM: Ancestors only, not sandboxDest itself: unlike .agentreadwrite's
+	// EM: Ancestors only, not sandboxDest itself: unlike .sandbox/readwrite's
 	// EM: own equivalent loop, where every entry is always a directory (an
 	// EM: existing --dir scaffold at the leaf is harmless, since it's just
-	// EM: getting bind-mounted over by another directory), .agentreadonly
+	// EM: getting bind-mounted over by another directory), .sandbox/readonly
 	// EM: HOME binds can reference a FILE too (fileOrDirExists, not
 	// EM: dirExists, is the existence check below). Reported directly:
 	// EM: `$HOME/.private/apis/secrets.prop` (a file) failed with
@@ -320,19 +315,18 @@ function pathsOverlap(left: string, right: string): boolean {
 	return l === r || l.startsWith(`${r}/`) || r.startsWith(`${l}/`);
 }
 
-const AGENT_READWRITE_FILE = ".agentreadwrite";
-const AGENT_READWRITE_HEADER =
-	"# .agentreadwrite — $HOME/... directories bound read-write into the sandbox, one per line\n";
+const AGENT_READWRITE_FILE = CONFIG_FILES.readwrite.path;
+const AGENT_READWRITE_HEADER = `# ${CONFIG_FILES.readwrite.path} — $HOME/... directories bound read-write into the sandbox, one per line\n`;
 
 // ### setupReadWriteAccess
 // [IMPLEMENTS](/design/features/agent-readwrite.md)
-// .agentreadwrite lists $HOME/... directories to bind read-write into the
+// .sandbox/readwrite lists $HOME/... directories to bind read-write into the
 // sandbox — a persistent cache, analysis output, or any other directory
 // outside the project tree that needs to survive session restarts.
 // Replaces the earlier `scratch` symlink convention (see
 // design/features/agent-readwrite.md's History section): one file can
 // list any number of directories, each validated the same way
-// .agentreadonly's own $HOME/... lines already are (must resolve inside
+// .sandbox/readonly's own $HOME/... lines already are (must resolve inside
 // $HOME, cannot escape it via a symlink), rather than one symlink per
 // area and no format validation on where it's allowed to point.
 export async function setupReadWriteAccess(
@@ -344,27 +338,19 @@ export async function setupReadWriteAccess(
 	const path = `${sourceDir}/${AGENT_READWRITE_FILE}`;
 
 	if (!(await fileExists(path))) {
-		// EM: Skipped under --dry-run, same as getAgentPortsBind's own
-		// EM: equivalent file-creation — a preview must not create real
-		// EM: files. Nothing to read yet either way, so there is nothing
-		// EM: further to do this call: no bind at all shows up in the
-		// EM: preview, matching getAgentPortsBind's own shape for the
-		// EM: same missing-file-under-dry-run case.
+		// EM: Still skipped under --dry-run, which must not create real files.
 		if (dryRun) {
 			return;
 		}
-		// EM: Same bug class already fixed twice, for .agentreadonly and
-		// EM: .agentports: a missing source path gets no bind mount at
-		// EM: all, which would leave a freshly created default writable
-		// EM: from inside the very session that finds it missing.
 		await Bun.write(path, AGENT_READWRITE_HEADER);
 	}
 
-	protectionConfig.safeBinds.push({
-		type: "ro-bind",
-		source: path,
-		dest: `${sandboxProjDir}/${AGENT_READWRITE_FILE}`,
-	});
+	// EM: No per-file bind any more. The whole of .sandbox/ is bound read-only
+	// EM: by getConfigDirBind, which covers this file whether or not it
+	// EM: existed when the bind list was built — the property that removed the
+	// EM: "a missing source gets no bind, so the freshly created default is
+	// EM: writable from inside the session that created it" bug, found and
+	// EM: fixed twice under the old layout.
 
 	const content = await Bun.file(path).text();
 	const realHome = getRealHome();
@@ -395,7 +381,7 @@ async function registerReadWriteHomeBind(
 	const relativePath = homePathExpr.slice("$HOME/".length);
 	const sourcePath = `${realHome}/${relativePath}`;
 
-	// EM: Unlike .agentreadonly's HOME binds, a missing target is created
+	// EM: Unlike .sandbox/readonly's HOME binds, a missing target is created
 	// EM: rather than treated as an error — the stated use cases
 	// EM: ($HOME/.cache/<tool>, a fresh analysis-output directory) are
 	// EM: commonly directories that don't exist yet on a machine's first
@@ -429,7 +415,7 @@ async function registerReadWriteHomeBind(
 		}
 	}
 
-	// EM: dependencyDirs is exactly the set of .agentreadonly $HOME/...
+	// EM: dependencyDirs is exactly the set of .sandbox/readonly $HOME/...
 	// EM: entries' own sandbox destinations (see
 	// EM: registerAgentreadonlyHomeBind above) — reused here, not
 	// EM: duplicated, to catch the same path listed in both files with
@@ -440,7 +426,7 @@ async function registerReadWriteHomeBind(
 		)
 	) {
 		error(
-			`${homePathExpr} is listed in both .agentreadonly and .agentreadwrite — pick one`,
+			`${homePathExpr} is listed in both ${CONFIG_FILES.readonly.path} and ${AGENT_READWRITE_FILE} — pick one`,
 		);
 		process.exit(1);
 	}
@@ -467,13 +453,12 @@ async function registerReadWriteHomeBind(
 	info(`Binding ${homePathExpr} to ${sourceReal} (read-write)`);
 }
 
-const AGENT_PORTS_FILE = ".agentports";
-const AGENT_PORTS_HEADER =
-	"# .agentports — ports forwarded from host loopback into the sandbox, one per line\n";
+const AGENT_PORTS_FILE = CONFIG_FILES.ports.path;
+const AGENT_PORTS_HEADER = `# ${CONFIG_FILES.ports.path} — ports forwarded from host loopback into the sandbox, one per line\n`;
 
 // ### readAgentPorts
 // [IMPLEMENTS](/design/features/network-isolation.md)
-// Reads and validates .agentports: one port per line, blank lines and #
+// Reads and validates .sandbox/ports: one port per line, blank lines and #
 // comments (leading or trailing) skipped. Missing file -> []. A malformed
 // line throws rather than silently skipping — this is host-loopback network
 // exposure, not a workspace-protection list, so a config file that could
@@ -528,7 +513,7 @@ export async function readAgentPorts(projectRoot: string): Promise<number[]> {
 // ### appendAgentPort
 // Appends `port` if not already present, creating the file if missing.
 // Never reorders or removes existing entries — the same shape of thing
-// setupProtection already does for a missing .agentreadonly (seeding a
+// setupProtection already does for a missing .sandbox/readonly (seeding a
 // default), just additive to an existing file too, not only when absent.
 export async function appendAgentPort(
 	projectRoot: string,
@@ -556,14 +541,14 @@ export async function appendAgentPort(
 }
 
 // ### getAgentPortsBind
-// .agentports is always read-only inside the sandbox, unconditionally — the
-// same self-protection .agentreadonly already gives itself, not routed
-// through the .agentreadonly protected-paths mechanism.
+// .sandbox/ports is always read-only inside the sandbox, unconditionally — the
+// same self-protection .sandbox/readonly already gives itself, not routed
+// through the .sandbox/readonly protected-paths mechanism.
 //
 // If it doesn't exist yet, it is created first (header comment only) rather
 // than left unbound: a missing source path gets no bind mount at all, which
 // leaves that path part of the regular read-write project bind — letting the
-// sandboxed agent create .agentports itself, with whatever ports it likes
+// sandboxed agent create .sandbox/ports itself, with whatever ports it likes
 // taking effect, completely unprotected, from that point on. Creating it
 // before buildBwrapCommand runs closes this within the very same session
 // that finds it missing, not just from the next run onward.
@@ -571,24 +556,43 @@ export async function appendAgentPort(
 // Skipped under --dry-run, which never actually runs anything inside the
 // sandbox — there is nothing for the gap above to expose — and must stay
 // side-effect free, same as the auto-detect-and-append step.
-export async function getAgentPortsBind(
+export async function getConfigDirBind(
 	projectRoot: string,
 	sandboxProjDir: string,
 	dryRun: boolean,
 ): Promise<BindMount | null> {
-	const path = `${projectRoot}/${AGENT_PORTS_FILE}`;
-
-	if (!(await fileExists(path))) {
-		if (dryRun) {
-			return null;
-		}
-		await Bun.write(path, AGENT_PORTS_HEADER);
+	// EM: Writing the ports default and binding the directory are now separate
+	// EM: concerns, which they were not when this function *was* the ports
+	// EM: bind. Gating the bind on that one file's existence meant a project
+	// EM: with a readwrite file but no ports file got no bind at all — caught
+	// EM: by agentreadwrite-self-protected-readonly rather than reasoned out.
+	const portsPath = `${projectRoot}/${AGENT_PORTS_FILE}`;
+	if (!dryRun && !(await fileExists(portsPath))) {
+		await Bun.write(portsPath, AGENT_PORTS_HEADER);
 	}
 
+	// EM: dirExists, not fileExists: Bun.file(path).exists() answers "is there
+	// EM: a regular file here" and is false for a directory — the same trap
+	// EM: that made waitForXpraSocket never fire on a unix socket.
+	const dir = `${projectRoot}/${CONFIG_DIR}`;
+	if (!(await dirExists(dir))) {
+		return null;
+	}
+
+	// EM: The directory, not the file. One bind covers every configuration
+	// EM: file, including ones written later in the session and ones that do
+	// EM: not exist yet — which is what makes the whole directory
+	// EM: self-protecting with nothing to remember. It must come after the
+	// EM: project bind, since it is nested inside it; safeBinds are emitted in
+	// EM: order and after the worktree bind, so that holds.
+	// EM:
+	// EM: Read-only constrains the sandbox, not scoder: the host writes
+	// EM: through the same inodes, so appendAgentPort adding an auto-detected
+	// EM: port from outside still reaches the sandbox.
 	return {
 		type: "ro-bind",
-		source: path,
-		dest: `${sandboxProjDir}/${AGENT_PORTS_FILE}`,
+		source: `${projectRoot}/${CONFIG_DIR}`,
+		dest: `${sandboxProjDir}/${CONFIG_DIR}`,
 	};
 }
 
@@ -1034,7 +1038,7 @@ export async function setupResolvConf(): Promise<BindMount | null> {
 // [IMPLEMENTS](/design/features/network-isolation.md)
 // Re-reads the real host DNS config and rewrites it into the
 // already-bound snapshot file if it changed — no remount, no pasta
-// involvement, unlike .agentports' own live-reload: /etc/resolv.conf
+// involvement, unlike .sandbox/ports' own live-reload: /etc/resolv.conf
 // inside the sandbox is a --ro-bind of this exact host file (not a copy
 // captured once and detached from it), so overwriting its content on
 // the host is visible inside the sandbox immediately. Fixes a real,
@@ -1044,10 +1048,10 @@ export async function setupResolvConf(): Promise<BindMount | null> {
 // to recover short of a full restart — confirmed directly that pasta's
 // own routing stayed healthy throughout (a raw-IP curl worked
 // throughout), isolating the problem to this snapshot specifically, not
-// pasta's own reattach-on-.agentports-change mechanism.
+// pasta's own reattach-on-.sandbox/ports-change mechanism.
 //
 // Returns true if the file's content actually changed, so the caller
-// can log it — same shape as the .agentports watcher's own "only log on
+// can log it — same shape as the .sandbox/ports watcher's own "only log on
 // an actual change" behaviour.
 export async function refreshResolvConfSnapshot(
 	snapshotFile: string,
@@ -1067,6 +1071,14 @@ export async function refreshResolvConfSnapshot(
 
 		await Bun.write(snapshotFile, newContent);
 		return true;
+	} catch {
+		return false;
+	}
+}
+
+async function dirExists(path: string): Promise<boolean> {
+	try {
+		return (await Bun.file(path).stat()).isDirectory();
 	} catch {
 		return false;
 	}

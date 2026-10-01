@@ -193,7 +193,7 @@ sandbox path outside `~/.ssh`, e.g. `/home/scoder/.ssh-control`, with
 `ro-bind`. Kept separate from `/home/scoder/.ssh` (which holds only the
 generated `config`) so the two concerns — "where the transport lives" and
 "what ssh reads by default" — don't share a directory tree, and so a future
-`.agentreadonly` `$HOME/.ssh` bind (see Interactions to Resolve) only
+`.sandbox/readonly` `$HOME/.ssh` bind (see Interactions to Resolve) only
 conflicts with the smaller of the two.
 
 ### 4. Fail closed, not just warn
@@ -384,20 +384,20 @@ removes `identity.dir`:
 
 ## Interactions to Resolve
 
-1. **Overlap with `.agentreadonly` `$HOME/.ssh`.** A user who binds their
-   whole real `~/.ssh` via `.agentreadonly` *and* passes `--allow-ssh` would
+1. **Overlap with `.sandbox/readonly` `$HOME/.ssh`.** A user who binds their
+   whole real `~/.ssh` via `.sandbox/readonly` *and* passes `--allow-ssh` would
    have two things trying to populate `/home/scoder/.ssh` — the real
    directory (with private keys) and scoder's generated `config`. Decision 3
    keeps the control socket out of that path, but the generated `config`
    file itself still collides. `RESERVED_SANDBOX_PATHS` in
    `src/git/protection.ts` doesn't list `.ssh` today, and shouldn't gain a
    *static, unconditional* entry for it either — that would break the
-   existing, deliberately supported "opt in via `.agentreadonly`" path
+   existing, deliberately supported "opt in via `.sandbox/readonly`" path
    documented in `pasta-attach-mode-implementation.md` item 6, for sessions
    that never pass `--allow-ssh` at all. Instead, refuse the *combination*
    explicitly when both are present for a given session, at the same point
    `sshAccess.binds` would otherwise be pushed:
-   `.agentreadonly binds $HOME/.ssh, which conflicts with --allow-ssh — use one or the other`.
+   `.sandbox/readonly binds $HOME/.ssh, which conflicts with --allow-ssh — use one or the other`.
 2. **Nested sandboxes.** A sandbox that re-runs scoder with `--allow-ssh`
    would need the control socket re-forwarded from the already-forwarded
    path. Document as unsupported, same conclusion the superseded draft

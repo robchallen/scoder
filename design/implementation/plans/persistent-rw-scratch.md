@@ -6,14 +6,14 @@ tags: [plan, sandbox, scratch, filesystem]
 
 # Persistent Read-Write Scratch via a `scratch` Symlink
 
-> **Retired**, superseded by `.agentreadwrite` — see
+> **Retired**, superseded by `.sandbox/readwrite` — see
 > `design/features/agent-readwrite.md`. One symlink, one target, no format
 > validation on where it could point, and a collision with something
 > already protected silently downgraded to read-only rather than erroring.
-> `.agentreadwrite` generalizes this to any number of `$HOME/...`
-> directories in one file, reusing `.agentreadonly`'s own existing
+> `.sandbox/readwrite` generalizes this to any number of `$HOME/...`
+> directories in one file, reusing `.sandbox/readonly`'s own existing
 > `$HOME/...` validation machinery, with a genuine conflict against
-> `.agentreadonly` now a hard error instead of a silent downgrade. Kept
+> `.sandbox/readonly` now a hard error instead of a silent downgrade. Kept
 > here as the historical record of what was actually built and why; the
 > rest of this document describes that superseded design, not current
 > behaviour.
@@ -23,7 +23,7 @@ tags: [plan, sandbox, scratch, filesystem]
 > `--allow-ssh`. All decisions below landed as designed. Verified directly
 > through `buildBwrapCommand`, bypassing this environment's own `/dev/net/tun`
 > gap, for every branch: resolves read-write, resolves read-only when
-> overlapping furniture or an `.agentreadonly` entry, hard-fails outside
+> overlapping furniture or an `.sandbox/readonly` entry, hard-fails outside
 > `$HOME`, warns and continues when dangling.
 
 ## Goal
@@ -138,7 +138,7 @@ directory is too broad a target for this mechanism). Two reasons:
   under a path the sandbox already partially manages (`/home`), never an
   arbitrary point elsewhere on the host filesystem.
 - It makes Decision 3's read-only check tractable — both existing sources of
-  "this is already known to be read-only furniture" (`.agentreadonly`'s
+  "this is already known to be read-only furniture" (`.sandbox/readonly`'s
   `$HOME/...` lines, and `buildExtraBinds`' fixed list) are themselves
   `$HOME`-relative.
 
@@ -149,7 +149,7 @@ that doesn't exist *at all* is different — see Decision 4.
 ### 3. Read-only if the target overlaps something already read-only
 
 If the resolved target is, or is inside, a path scoder already treats as
-read-only furniture — an `.agentreadonly` `$HOME/...` entry, or one of
+read-only furniture — an `.sandbox/readonly` `$HOME/...` entry, or one of
 `buildExtraBinds`' fixed host-tool paths (`~/.local/bin`, `~/.gitconfig`,
 `~/.cargo/bin`, `~/.rustup`, `~/.m2`, `~/.npmrc`, `~/.pypirc`,
 `~/.config/gh`, `~/.local/share/mise`, `~/.config/mise`, `~/R`,
@@ -165,7 +165,7 @@ scoder already decided to protect.
 
 The check: does the resolved target equal, contain, or sit inside (a) any
 `ro-bind` source already present in `protectionConfig.safeBinds` at the time
-`scratch` is evaluated (this already covers `.agentreadonly`'s `$HOME/...`
+`scratch` is evaluated (this already covers `.sandbox/readonly`'s `$HOME/...`
 entries — those are computed earlier in `setupProtection`), or (b) a small
 fixed list of real paths mirroring exactly what `buildExtraBinds` binds.
 (b) has to be a parallel list rather than a call into `buildExtraBinds`
@@ -193,7 +193,7 @@ soft warning — since that's a clear, fixable misconfiguration rather than a
 
 ### 5. No new CLI flag
 
-The symlink's presence *is* the opt-in — matches `.agentreadonly`'s existing
+The symlink's presence *is* the opt-in — matches `.sandbox/readonly`'s existing
 "a file's presence changes behaviour" convention. Nothing to remember to pass,
 nothing to document as a flag. `git status`/`git ls-files` already tell you
 whether it's tracked or ignored; no new state for scoder to manage on top of
@@ -223,7 +223,7 @@ tree, not the index.
 ### `src/git/protection.ts`
 
 New exported function, called once, after `setupProtection` and after any
-`.agentreadonly` HOME binds have been resolved into `protectionConfig`
+`.sandbox/readonly` HOME binds have been resolved into `protectionConfig`
 (needed for Decision 3's overlap check against those sources):
 
 ```typescript
@@ -239,7 +239,7 @@ export async function setupScratchLink(
 ): Promise<void>;
 ```
 
-Lives alongside `.agentreadonly`'s HOME-bind handling rather than in a new
+Lives alongside `.sandbox/readonly`'s HOME-bind handling rather than in a new
 module — it's the same category of thing (a project-root marker that grants
 access to something outside the project), and reuses `realpath`/existence
 helpers already private to this file.
@@ -273,11 +273,11 @@ carries ("this list must mirror buildExtraBinds exactly").
 
 ## Interactions to Resolve
 
-1. **`.agentreadonly` protecting a path that is also the `scratch` target's
+1. **`.sandbox/readonly` protecting a path that is also the `scratch` target's
    ancestor or descendant**, in the *project* sense (not the `$HOME` sense
-   Decision 3 already covers) — e.g. `.agentreadonly` lists a pattern that
+   Decision 3 already covers) — e.g. `.sandbox/readonly` lists a pattern that
    happens to match the literal `scratch` symlink itself. Since
-   `.agentreadonly` patterns are resolved against the project tree and only
+   `.sandbox/readonly` patterns are resolved against the project tree and only
    affect what's visible *within* the project bind, and `scratch` the
    symlink is a single dirent there (not a directory scoder would recurse
    into for protection purposes), this should be inert in practice — worth a
@@ -314,7 +314,7 @@ carries ("this list must mirror buildExtraBinds exactly").
   at (or inside) one of `buildExtraBinds`' fixed paths results in `--ro-bind`
   in the dry-run output, not `--bind`.
 - `scratch-overlapping-agentreadonly-home-is-readonly`: same, for a target
-  that overlaps an `.agentreadonly` `$HOME/...` entry.
+  that overlaps an `.sandbox/readonly` `$HOME/...` entry.
 - `scratch-real-passthrough-unaffected`: with `scratch` present, editing an
   ordinary tracked project file still writes straight through to the host —
   guards against ever regressing towards the rejected overlayfs approach.

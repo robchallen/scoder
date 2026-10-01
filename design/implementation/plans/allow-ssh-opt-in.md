@@ -74,7 +74,7 @@ after the session.
 
 Binding `~/.ssh` wholesale remains possible for anyone who really wants it, via
 an existing mechanism that needs no code: a `$HOME/.ssh` line in
-`.agentreadonly`. Keeping those two paths distinct means the flag has one clear
+`.sandbox/readonly`. Keeping those two paths distinct means the flag has one clear
 meaning and the riskier option stays deliberate and separate.
 
 ### 2. Bind at a stable sandbox path, not the mirrored host path
@@ -114,7 +114,7 @@ Caveats:
 - `config` leaks hostnames and infrastructure detail. Non-secret, but not nothing.
 
 The alternative — agent only, and let the user add `$HOME/.ssh` to
-`.agentreadonly` if they need config — is simpler but means the flag alone
+`.sandbox/readonly` if they need config — is simpler but means the flag alone
 rarely works, and the fallback exposes keys. That trade is why I recommend
 including the two files, but it is your call.
 
@@ -215,10 +215,10 @@ snapshot paths.
 
 ## Interactions to Resolve
 
-1. **Overlap with `.agentreadonly` `$HOME/.ssh`.** If a user binds the whole
+1. **Overlap with `.sandbox/readonly` `$HOME/.ssh`.** If a user binds the whole
    directory *and* passes `--allow-ssh`, both try to bind under
    `/home/scoder/.ssh`. `RESERVED_SANDBOX_PATHS` in `src/git/protection.ts` does
-   not currently list `.ssh`, so the `.agentreadonly` bind is permitted today.
+   not currently list `.ssh`, so the `.sandbox/readonly` bind is permitted today.
    Decide precedence, or detect and refuse the combination. Bind ordering means
    the later one silently wins, which is the worst outcome.
 2. **Nested sandboxes.** A sandbox that re-runs scoder with `--allow-ssh` would

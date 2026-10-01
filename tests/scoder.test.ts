@@ -13,6 +13,7 @@ import {
 	removeGitExclude,
 	setupResolvConf,
 } from "../src/git/protection.ts";
+import { prepareConfigDir } from "../src/git/sandbox-config.ts";
 import {
 	getWorktreesParentDir,
 	relocateWorktree,
@@ -321,7 +322,7 @@ setupSignalCleanup();
 // (suspend/resume) that changed the host's own DNS server left the
 // sandbox's one-time /etc/resolv.conf snapshot pointing at a
 // now-unreachable server for the rest of the session, confirmed to be
-// unrecoverable by an .agentports edit (which only reattaches pasta,
+// unrecoverable by an .sandbox/ports edit (which only reattaches pasta,
 // never touching this separately-bound snapshot). refreshResolvConfSnapshot
 // (src/git/protection.ts) now re-reads the real host DNS config and
 // rewrites the snapshot in place if it changed — no pasta/bwrap
@@ -827,7 +828,7 @@ test("worktrees-parent-dir-bound-regardless-of-mode: a direct-mode session still
 		// The session itself may still fail later (pasta attaching), but the
 		// worktrees-parent dir is created while building the bwrap command,
 		// before that point is ever reached — same reasoning as
-		// agentreadonly-created-default above.
+		// sandbox-readonly-created-default above.
 		expect(await dirExists(expectedParent)).toBe(true);
 
 		const dryRunOutput = await runScoder(repoDir, [
@@ -882,14 +883,14 @@ test("gitignore-protected: Cannot modify .gitignore", async () => {
 	}
 });
 
-// ### Test: empty-agentreadonly-allows-writes
-test("empty-agentreadonly-allows-writes: Empty .agentreadonly removes default protection", async () => {
+// ### Test: empty-sandbox-readonly-allows-writes
+test("empty-sandbox-readonly-allows-writes: Empty .sandbox/readonly removes default protection", async () => {
 	const repoDir = await createTempRepo();
 	tempRepos.push(repoDir);
 
 	try {
-		// Create empty .agentreadonly
-		await Bun.write(`${repoDir}/.agentreadonly`, "");
+		// Create empty .sandbox/readonly
+		await Bun.write(`${repoDir}/.sandbox/readonly`, "");
 
 		const proc = await Bun.spawn(
 			["scoder", "-q", "/bin/bash", "-c", "touch .github/test-file"],
@@ -897,51 +898,51 @@ test("empty-agentreadonly-allows-writes: Empty .agentreadonly removes default pr
 		);
 		await proc.exited;
 
-		// Should succeed because .agentreadonly is empty (no default protection)
+		// Should succeed because .sandbox/readonly is empty (no default protection)
 		expect(proc.exitCode).toBe(0);
 	} finally {
 		await cleanupRepo(repoDir);
 	}
 });
 
-// ### Test: agentreadonly-protected
-test("agentreadonly-protected: .agentreadonly is always mounted read-only", async () => {
+// ### Test: sandbox-readonly-protected
+test("sandbox-readonly-protected: .sandbox/readonly is always mounted read-only", async () => {
 	const repoDir = await createTempRepo();
 	tempRepos.push(repoDir);
 
 	try {
-		// Create .agentreadonly with some content
-		await Bun.write(`${repoDir}/.agentreadonly`, "# test");
+		// Create .sandbox/readonly with some content
+		await Bun.write(`${repoDir}/.sandbox/readonly`, "# test");
 
-		// Try to modify .agentreadonly inside the sandbox
+		// Try to modify .sandbox/readonly inside the sandbox
 		const proc = await Bun.spawn(
 			[
 				"scoder",
 				"-q",
 				"/bin/bash",
 				"-c",
-				"echo '# modified' >> .agentreadonly",
+				"echo '# modified' >> .sandbox/readonly",
 			],
 			{ cwd: repoDir, stdout: "pipe", stderr: "pipe" },
 		);
 		await proc.exited;
 
-		// Should fail because .agentreadonly is bind-mounted read-only
+		// Should fail because .sandbox/readonly is bind-mounted read-only
 		expect(proc.exitCode).not.toBe(0);
 	} finally {
 		await cleanupRepo(repoDir);
 	}
 });
 
-// EM: ### Tests for the missing-.agentreadonly escape
+// EM: ### Tests for the missing-.sandbox/readonly escape
 // EM: A missing source path gets no bind mount at all, which otherwise
 // EM: leaves that path part of the regular read-write project bind —
-// EM: letting the sandboxed agent create or edit .agentreadonly itself.
-// EM: Same bug class as .agentports; see
+// EM: letting the sandboxed agent create or edit .sandbox/readonly itself.
+// EM: Same bug class as .sandbox/ports; see
 // EM: design/implementation/plans/agentports.md.
 
-// ### Test: agentreadonly-created-if-missing
-test("agentreadonly-created-if-missing: a real session creates .agentreadonly with the default protected list", async () => {
+// ### Test: sandbox-readonly-created-if-missing
+test("sandbox-readonly-created-if-missing: a real session creates .sandbox/readonly with the default protected list", async () => {
 	const repoDir = await createTempRepo();
 	tempRepos.push(repoDir);
 
@@ -955,15 +956,15 @@ test("agentreadonly-created-if-missing: a real session creates .agentreadonly wi
 
 		// The session itself may still fail later (pasta attaching), but the
 		// file is created before that point is ever reached.
-		const content = await Bun.file(`${repoDir}/.agentreadonly`).text();
+		const content = await Bun.file(`${repoDir}/.sandbox/readonly`).text();
 		expect(content).toContain(".github/");
 	} finally {
 		await cleanupRepo(repoDir);
 	}
 });
 
-// ### Test: agentreadonly-missing-file-not-writable-from-sandbox
-test("agentreadonly-missing-file-not-writable-from-sandbox: a session with no pre-existing .agentreadonly still protects it read-only", async () => {
+// ### Test: sandbox-readonly-missing-file-not-writable-from-sandbox
+test("sandbox-readonly-missing-file-not-writable-from-sandbox: a session with no pre-existing .sandbox/readonly still protects it read-only", async () => {
 	const repoDir = await createTempRepo();
 	tempRepos.push(repoDir);
 
@@ -974,7 +975,7 @@ test("agentreadonly-missing-file-not-writable-from-sandbox: a session with no pr
 				"-q",
 				"/bin/bash",
 				"-c",
-				"echo '# modified' >> .agentreadonly",
+				"echo '# modified' >> .sandbox/readonly",
 			],
 			{ cwd: repoDir, stdout: "pipe", stderr: "pipe" },
 		);
@@ -995,15 +996,15 @@ test("agentreadonly-missing-file-not-writable-from-sandbox: a session with no pr
 		// not just protected starting the next run.
 		expect(proc.exitCode).not.toBe(0);
 
-		const content = await Bun.file(`${repoDir}/.agentreadonly`).text();
+		const content = await Bun.file(`${repoDir}/.sandbox/readonly`).text();
 		expect(content).not.toContain("modified");
 	} finally {
 		await cleanupRepo(repoDir);
 	}
 });
 
-// ### Test: agentreadonly-home-directory-readonly
-test("agentreadonly-home-directory-readonly: .agentreadonly HOME bind is read-only", async () => {
+// ### Test: sandbox-readonly-home-directory-readonly
+test("sandbox-readonly-home-directory-readonly: .sandbox/readonly HOME bind is read-only", async () => {
 	// Create a test directory in home
 	const testHomeDir = `${process.env.HOME}/.scoder-test-home-bind`;
 	await Bun.spawn(["mkdir", "-p", testHomeDir]).exited;
@@ -1015,9 +1016,9 @@ test("agentreadonly-home-directory-readonly: .agentreadonly HOME bind is read-on
 	tempRepos.push(repoDir);
 
 	try {
-		// Create .agentreadonly with HOME bind
+		// Create .sandbox/readonly with HOME bind
 		await Bun.write(
-			`${repoDir}/.agentreadonly`,
+			`${repoDir}/.sandbox/readonly`,
 			`$HOME/.scoder-test-home-bind/`,
 		);
 
@@ -1063,8 +1064,8 @@ test("agentreadonly-home-directory-readonly: .agentreadonly HOME bind is read-on
 	}
 });
 
-// ### Test: agentreadonly-home-file-bind-does-not-create-conflicting-dir
-// Regression test: reported directly, an .agentreadonly $HOME/... entry
+// ### Test: sandbox-readonly-home-file-bind-does-not-create-conflicting-dir
+// Regression test: reported directly, an .sandbox/readonly $HOME/... entry
 // pointing at a FILE (not a directory) failed with
 // `bwrap: Can't create file at <path>: Is a directory`.
 // fileOrDirExists (not dirExists) is the existence check
@@ -1077,7 +1078,7 @@ test("agentreadonly-home-directory-readonly: .agentreadonly HOME bind is read-on
 // ancestors get a --dir entry now, matching how a --ro-bind of a
 // directory never needed one for itself either (bwrap creates whatever
 // mountpoint type matches the source automatically).
-test("agentreadonly-home-file-bind-does-not-create-conflicting-dir: a file target binds without a bwrap directory-vs-file conflict", async () => {
+test("sandbox-readonly-home-file-bind-does-not-create-conflicting-dir: a file target binds without a bwrap directory-vs-file conflict", async () => {
 	const testHomeDir = `${process.env.HOME}/.scoder-test-home-file-bind`;
 	const testFile = `${testHomeDir}/nested/secret.txt`;
 	await Bun.spawn(["mkdir", "-p", `${testHomeDir}/nested`]).exited;
@@ -1088,7 +1089,7 @@ test("agentreadonly-home-file-bind-does-not-create-conflicting-dir: a file targe
 
 	try {
 		await Bun.write(
-			`${repoDir}/.agentreadonly`,
+			`${repoDir}/.sandbox/readonly`,
 			`$HOME/${testFile.slice(`${process.env.HOME}/`.length)}\n`,
 		);
 
@@ -1118,14 +1119,17 @@ test("agentreadonly-home-file-bind-does-not-create-conflicting-dir: a file targe
 	}
 });
 
-// ### Test: agentreadonly-home-directory-must-exist
-test("agentreadonly-home-directory-must-exist: Non-existent HOME bind path fails with error", async () => {
+// ### Test: sandbox-readonly-home-directory-must-exist
+test("sandbox-readonly-home-directory-must-exist: Non-existent HOME bind path fails with error", async () => {
 	const repoDir = await createTempRepo();
 	tempRepos.push(repoDir);
 
 	try {
-		// Create .agentreadonly with non-existent path
-		await Bun.write(`${repoDir}/.agentreadonly`, `$HOME/.non-existent-path/`);
+		// Create .sandbox/readonly with non-existent path
+		await Bun.write(
+			`${repoDir}/.sandbox/readonly`,
+			`$HOME/.non-existent-path/`,
+		);
 
 		// Should fail with error message
 		const proc = await Bun.spawn(
@@ -1144,7 +1148,7 @@ test("agentreadonly-home-directory-must-exist: Non-existent HOME bind path fails
 	}
 });
 
-// ### Test: agentreadonly-home-nested-namespace-path-allowed
+// ### Test: sandbox-readonly-home-nested-namespace-path-allowed
 // Regression test: reported directly, $HOME/.local/share/fonts was
 // rejected outright with "overlaps reserved sandbox path" even though
 // nothing was bound at the bare $HOME/.local umbrella it nested under at
@@ -1155,9 +1159,9 @@ test("agentreadonly-home-directory-must-exist: Non-existent HOME bind path fails
 // Uses $HOME/.local/share/icons rather than the originally reported
 // .../fonts, since fonts has since become a fixed destination itself
 // (buildExtraBinds now binds it by default — see
-// agentreadonly-home-fonts-directory-now-redundant below) and so no
+// sandbox-readonly-home-fonts-directory-now-redundant below) and so no
 // longer illustrates "safely nested, not itself fixed."
-test("agentreadonly-home-nested-namespace-path-allowed: $HOME/.local/share/icons is not rejected as a reserved path", async () => {
+test("sandbox-readonly-home-nested-namespace-path-allowed: $HOME/.local/share/icons is not rejected as a reserved path", async () => {
 	const repoDir = await createTempRepo();
 	tempRepos.push(repoDir);
 	const iconsDir = `${process.env.HOME}/.local/share/icons`;
@@ -1167,7 +1171,10 @@ test("agentreadonly-home-nested-namespace-path-allowed: $HOME/.local/share/icons
 		if (!iconsDirPreexisted) {
 			await Bun.spawn(["mkdir", "-p", iconsDir]).exited;
 		}
-		await Bun.write(`${repoDir}/.agentreadonly`, "$HOME/.local/share/icons\n");
+		await Bun.write(
+			`${repoDir}/.sandbox/readonly`,
+			"$HOME/.local/share/icons\n",
+		);
 
 		const output = await runScoder(repoDir, ["--dry-run", "/bin/bash"]);
 		expect(output).toContain(`--ro-bind ${iconsDir} ${iconsDir}`);
@@ -1180,12 +1187,12 @@ test("agentreadonly-home-nested-namespace-path-allowed: $HOME/.local/share/icons
 	}
 });
 
-// ### Test: agentreadonly-home-fonts-directory-now-redundant
-// Fonts is now a fixed default bind (buildExtraBinds) — an .agentreadonly
+// ### Test: sandbox-readonly-home-fonts-directory-now-redundant
+// Fonts is now a fixed default bind (buildExtraBinds) — an .sandbox/readonly
 // entry for the exact same path is therefore a redundant re-declaration
 // of something scoder already handles, correctly rejected the same way
 // $HOME/.claude or $HOME/.config already are.
-test("agentreadonly-home-fonts-directory-now-redundant: $HOME/.local/share/fonts is rejected as a fixed destination", async () => {
+test("sandbox-readonly-home-fonts-directory-now-redundant: $HOME/.local/share/fonts is rejected as a fixed destination", async () => {
 	const repoDir = await createTempRepo();
 	tempRepos.push(repoDir);
 	const fontsDir = `${process.env.HOME}/.local/share/fonts`;
@@ -1195,7 +1202,10 @@ test("agentreadonly-home-fonts-directory-now-redundant: $HOME/.local/share/fonts
 		if (!fontsDirPreexisted) {
 			await Bun.spawn(["mkdir", "-p", fontsDir]).exited;
 		}
-		await Bun.write(`${repoDir}/.agentreadonly`, "$HOME/.local/share/fonts\n");
+		await Bun.write(
+			`${repoDir}/.sandbox/readonly`,
+			"$HOME/.local/share/fonts\n",
+		);
 
 		const proc = Bun.spawn([SCODER_PATH, "--dry-run", "/bin/bash"], {
 			cwd: repoDir,
@@ -1370,15 +1380,15 @@ test("worktrunk-user-config-bound-readonly: ~/.config/worktrunk/config.toml is b
 	}
 });
 
-// ### Test: agentreadonly-home-ancestor-of-fixed-bind-still-rejected
+// ### Test: sandbox-readonly-home-ancestor-of-fixed-bind-still-rejected
 // The other half of the same fix: a bare umbrella is only safe to allow
 // when nothing fixed lives under it. $HOME/.config is an ancestor of
 // real fixed sub-binds (.config/mise, .config/gh — see buildExtraBinds
 // in src/sandbox/builder.ts), so it must still be rejected — the overlap
-// check is bidirectional (an .agentreadonly entry that is an ancestor OF
+// check is bidirectional (an .sandbox/readonly entry that is an ancestor OF
 // a fixed destination collides just as much as one that is a descendant
 // of it).
-test("agentreadonly-home-ancestor-of-fixed-bind-still-rejected: $HOME/.config is still rejected", async () => {
+test("sandbox-readonly-home-ancestor-of-fixed-bind-still-rejected: $HOME/.config is still rejected", async () => {
 	const repoDir = await createTempRepo();
 	tempRepos.push(repoDir);
 	const configDir = `${process.env.HOME}/.config`;
@@ -1390,7 +1400,7 @@ test("agentreadonly-home-ancestor-of-fixed-bind-still-rejected: $HOME/.config is
 		if (!configDirPreexisted) {
 			await Bun.spawn(["mkdir", "-p", configDir]).exited;
 		}
-		await Bun.write(`${repoDir}/.agentreadonly`, "$HOME/.config\n");
+		await Bun.write(`${repoDir}/.sandbox/readonly`, "$HOME/.config\n");
 
 		const proc = Bun.spawn([SCODER_PATH, "--dry-run", "/bin/bash"], {
 			cwd: repoDir,
@@ -1415,7 +1425,7 @@ test("agentreadonly-home-ancestor-of-fixed-bind-still-rejected: $HOME/.config is
 // below: GUI presets (rstudio, eclipse) need real host fonts to render
 // text at all, not just cleanly. buildExtraBinds (src/sandbox/builder.ts)
 // binds it unconditionally, like every other host-tool-binding entry, not
-// gated behind a preset or an .agentreadonly entry — no config needed.
+// gated behind a preset or an .sandbox/readonly entry — no config needed.
 test("fonts-directory-bound-readonly-by-default: ~/.local/share/fonts is bound read-only when present", async () => {
 	const repoDir = await createTempRepo();
 	tempRepos.push(repoDir);
@@ -1658,6 +1668,68 @@ test("sandbox-agents-md-overlay-visible: AGENTS.md overlay is visible in sandbox
 	}
 });
 
+// ### Test: legacy-config-migrated-automatically
+// EM: The upgrade path. Automatic and unconditional, because every
+// EM: alternative is worse at this project's scale: hard-failing breaks
+// EM: existing projects, a read-both compat shim outlives everyone, and a
+// EM: command the user has to discover means a legacy .agentreadonly is
+// EM: silently ignored until they find it — protections quietly ceasing to
+// EM: apply, which is a security regression presented as an upgrade.
+test("legacy-config-migrated-automatically: .agent* files move into .sandbox/ on first run", async () => {
+	const repoDir = await createTempRepo();
+	tempRepos.push(repoDir);
+
+	try {
+		await Bun.write(`${repoDir}/.agentreadonly`, ".github/\n");
+		await Bun.write(`${repoDir}/.agentports`, "# mine\n11434\n");
+
+		await prepareConfigDir(repoDir);
+
+		// Moved, not copied: a legacy file left behind would be read by
+		// nothing and would invite someone to edit the wrong one.
+		expect(await fileExists(`${repoDir}/.agentreadonly`)).toBe(false);
+		expect(await fileExists(`${repoDir}/.agentports`)).toBe(false);
+
+		// Content preserved exactly — this is someone's protection list.
+		expect(await Bun.file(`${repoDir}/.sandbox/readonly`).text()).toBe(
+			".github/\n",
+		);
+		expect(await Bun.file(`${repoDir}/.sandbox/ports`).text()).toBe(
+			"# mine\n11434\n",
+		);
+		expect(await fileExists(`${repoDir}/.sandbox/README.md`)).toBe(true);
+	} finally {
+		await cleanupRepo(repoDir);
+	}
+});
+
+// ### Test: legacy-config-never-overwrites
+// EM: Both layouts present means a half-finished migration, or two people
+// EM: with different versions. The new file wins and the legacy one is left
+// EM: alone — reconciling two configurations that disagree is how a project
+// EM: ends up with a protection list nobody wrote.
+test("legacy-config-never-overwrites: an existing .sandbox/ file is not replaced by its legacy counterpart", async () => {
+	const repoDir = await createTempRepo();
+	tempRepos.push(repoDir);
+
+	try {
+		await Bun.write(`${repoDir}/.agentreadonly`, "legacy\n");
+		await Bun.write(`${repoDir}/.sandbox/readonly`, "current\n");
+
+		await prepareConfigDir(repoDir);
+
+		expect(await Bun.file(`${repoDir}/.sandbox/readonly`).text()).toBe(
+			"current\n",
+		);
+		// Left in place rather than deleted: scoder is rewriting someone's
+		// repository here, and discarding a file it decided not to use would
+		// be a step too far.
+		expect(await fileExists(`${repoDir}/.agentreadonly`)).toBe(true);
+	} finally {
+		await cleanupRepo(repoDir);
+	}
+});
+
 // ### Test: overlay-tracks-host-edits
 // EM: The point of live-file-overlays. AGENTS.md used to be rendered once at
 // EM: startup, so correcting an agent's instructions meant restarting its
@@ -1892,12 +1964,12 @@ test("host-loopback-blocked: Host localhost HTTP server is unreachable", async (
 	}
 });
 
-// EM: ### Tests for `.agentports`
+// EM: ### Tests for `.sandbox/ports`
 // EM: See design/implementation/plans/agentports.md. Replaces the old
 // EM: --llm-port flag entirely — llm-port-auto-detect and
 // EM: llm-port-allows-host-loopback lived here before; their functional
-// EM: coverage now lives in agentports-auto-detect-appends and
-// EM: agentports-forwards-listed-port below.
+// EM: coverage now lives in sandbox-ports-auto-detect-appends and
+// EM: sandbox-ports-forwards-listed-port below.
 
 // ### Test: llm-port-flag-removed
 test("llm-port-flag-removed: --llm-port is an unknown option", async () => {
@@ -1920,8 +1992,8 @@ test("llm-port-flag-removed: --llm-port is an unknown option", async () => {
 	}
 });
 
-// ### Test: agentports-forwards-listed-port
-test("agentports-forwards-listed-port: a port listed in .agentports is reachable without any flag", async () => {
+// ### Test: sandbox-ports-forwards-listed-port
+test("sandbox-ports-forwards-listed-port: a port listed in .sandbox/ports is reachable without any flag", async () => {
 	const repoDir = await createTempRepo();
 	tempRepos.push(repoDir);
 
@@ -1934,7 +2006,7 @@ test("agentports-forwards-listed-port: a port listed in .agentports is reachable
 	testServers.push(server);
 
 	try {
-		await Bun.write(`${repoDir}/.agentports`, "19998\n");
+		await Bun.write(`${repoDir}/.sandbox/ports`, "19998\n");
 
 		const proc = Bun.spawn(
 			[
@@ -1957,13 +2029,13 @@ test("agentports-forwards-listed-port: a port listed in .agentports is reachable
 	}
 });
 
-// ### Test: agentports-malformed-line-fails
-test("agentports-malformed-line-fails: a non-numeric line exits 1 naming the bad line", async () => {
+// ### Test: sandbox-ports-malformed-line-fails
+test("sandbox-ports-malformed-line-fails: a non-numeric line exits 1 naming the bad line", async () => {
 	const repoDir = await createTempRepo();
 	tempRepos.push(repoDir);
 
 	try {
-		await Bun.write(`${repoDir}/.agentports`, "11434\nnotaport\n");
+		await Bun.write(`${repoDir}/.sandbox/ports`, "11434\nnotaport\n");
 
 		const proc = Bun.spawn([SCODER_PATH, "--dry-run", "/bin/bash"], {
 			cwd: repoDir,
@@ -1974,37 +2046,37 @@ test("agentports-malformed-line-fails: a non-numeric line exits 1 naming the bad
 
 		expect(proc.exitCode).not.toBe(0);
 		const stderr = await new Response(proc.stderr).text();
-		expect(stderr).toContain('.agentports has an invalid line: "notaport"');
+		expect(stderr).toContain('.sandbox/ports has an invalid line: "notaport"');
 	} finally {
 		await cleanupRepo(repoDir);
 	}
 });
 
-// ### Test: agentports-is-readonly
-test("agentports-is-readonly: --dry-run shows a ro-bind for .agentports, not a bind", async () => {
+// ### Test: sandbox-ports-is-readonly
+test("sandbox-ports-is-readonly: --dry-run shows a ro-bind for .sandbox/ports, not a bind", async () => {
 	const repoDir = await createTempRepo();
 	tempRepos.push(repoDir);
 
 	try {
-		await Bun.write(`${repoDir}/.agentports`, "8080\n");
+		await Bun.write(`${repoDir}/.sandbox/ports`, "8080\n");
 
 		const output = await runScoder(repoDir, ["--dry-run", "/bin/bash"]);
 		// EM: repoDir (under TEST_BASE, "/tmp/scoder-test-repos") is not under
 		// EM: $HOME, so it's mirrored unchanged at its own real path — no
 		// EM: sandbox-home prefix, now that $HOME isn't a separate namespace.
 		expect(output).toContain(
-			`--ro-bind ${repoDir}/.agentports ${repoDir}/.agentports`,
+			`--ro-bind ${repoDir}/.sandbox ${repoDir}/.sandbox`,
 		);
 		expect(output).not.toContain(
-			`--bind ${repoDir}/.agentports ${repoDir}/.agentports`,
+			`--bind ${repoDir}/.sandbox/ports ${repoDir}/.sandbox/ports`,
 		);
 	} finally {
 		await cleanupRepo(repoDir);
 	}
 });
 
-// ### Test: agentports-auto-detect-appends
-test("agentports-auto-detect-appends: an auto-detected port is written to .agentports, once", async () => {
+// ### Test: sandbox-ports-auto-detect-appends
+test("sandbox-ports-auto-detect-appends: an auto-detected port is written to .sandbox/ports, once", async () => {
 	const repoDir = await createTempRepo();
 	tempRepos.push(repoDir);
 	const testPort = 19997;
@@ -2039,7 +2111,7 @@ test("agentports-auto-detect-appends: an auto-detected port is written to .agent
 		const output = await new Response(first.stdout).text();
 		expect(output.trim()).toBe("auto-detected-ok");
 
-		const afterFirst = await Bun.file(`${repoDir}/.agentports`).text();
+		const afterFirst = await Bun.file(`${repoDir}/.sandbox/ports`).text();
 		expect(afterFirst.trim()).toBe(testPort.toString());
 
 		// Second run: the port is already listed, so it must not duplicate.
@@ -2055,15 +2127,15 @@ test("agentports-auto-detect-appends: an auto-detected port is written to .agent
 		await second.exited;
 		expect(second.exitCode).toBe(0);
 
-		const afterSecond = await Bun.file(`${repoDir}/.agentports`).text();
+		const afterSecond = await Bun.file(`${repoDir}/.sandbox/ports`).text();
 		expect(afterSecond.trim()).toBe(testPort.toString());
 	} finally {
 		await cleanupRepo(repoDir);
 	}
 });
 
-// ### Test: agentports-auto-detect-skips-under-dry-run
-test("agentports-auto-detect-skips-under-dry-run: --dry-run with a detectable port does not write .agentports", async () => {
+// ### Test: sandbox-ports-auto-detect-skips-under-dry-run
+test("sandbox-ports-auto-detect-skips-under-dry-run: --dry-run with a detectable port does not write .sandbox/ports", async () => {
 	const repoDir = await createTempRepo();
 	tempRepos.push(repoDir);
 	const testPort = 19996;
@@ -2086,34 +2158,34 @@ test("agentports-auto-detect-skips-under-dry-run: --dry-run with a detectable po
 		await proc.exited;
 		expect(proc.exitCode).toBe(0);
 
-		expect(await fileExists(`${repoDir}/.agentports`)).toBe(false);
+		expect(await fileExists(`${repoDir}/.sandbox/ports`)).toBe(false);
 	} finally {
 		await cleanupRepo(repoDir);
 	}
 });
 
-// ### Test: agentports-not-created-under-dry-run
-test("agentports-not-created-under-dry-run: --dry-run with no .agentports does not create one", async () => {
+// ### Test: sandbox-ports-not-created-under-dry-run
+test("sandbox-ports-not-created-under-dry-run: --dry-run with no .sandbox/ports does not create one", async () => {
 	const repoDir = await createTempRepo();
 	tempRepos.push(repoDir);
 
 	try {
 		const output = await runScoder(repoDir, ["--dry-run", "/bin/bash"]);
-		expect(output).not.toContain(".agentports");
-		expect(await fileExists(`${repoDir}/.agentports`)).toBe(false);
+		expect(output).not.toContain(".sandbox/ports");
+		expect(await fileExists(`${repoDir}/.sandbox/ports`)).toBe(false);
 	} finally {
 		await cleanupRepo(repoDir);
 	}
 });
 
-// EM: ### Test for the missing-.agentports escape
+// EM: ### Test for the missing-.sandbox/ports escape
 // EM: A missing source path gets no bind mount at all, which otherwise
 // EM: leaves that path part of the regular read-write project bind — letting
-// EM: the sandboxed agent create .agentports itself, with whatever ports it
+// EM: the sandboxed agent create .sandbox/ports itself, with whatever ports it
 // EM: likes, unprotected, from that point on.
 
-// ### Test: agentports-created-if-missing
-test("agentports-created-if-missing: a real session creates .agentports with a header comment", async () => {
+// ### Test: sandbox-ports-created-if-missing
+test("sandbox-ports-created-if-missing: a real session creates .sandbox/ports with a header comment", async () => {
 	const repoDir = await createTempRepo();
 	tempRepos.push(repoDir);
 
@@ -2127,21 +2199,21 @@ test("agentports-created-if-missing: a real session creates .agentports with a h
 
 		// The session itself may still fail later (pasta attaching), but the
 		// file is created before that point is ever reached.
-		const content = await Bun.file(`${repoDir}/.agentports`).text();
-		expect(content).toContain("# .agentports");
+		const content = await Bun.file(`${repoDir}/.sandbox/ports`).text();
+		expect(content).toContain("# .sandbox/ports");
 	} finally {
 		await cleanupRepo(repoDir);
 	}
 });
 
-// ### Test: agentports-missing-file-not-writable-from-sandbox
-test("agentports-missing-file-not-writable-from-sandbox: a session with no pre-existing .agentports still protects it read-only", async () => {
+// ### Test: sandbox-ports-missing-file-not-writable-from-sandbox
+test("sandbox-ports-missing-file-not-writable-from-sandbox: a session with no pre-existing .sandbox/ports still protects it read-only", async () => {
 	const repoDir = await createTempRepo();
 	tempRepos.push(repoDir);
 
 	try {
 		const proc = Bun.spawn(
-			[SCODER_PATH, "-q", "/bin/bash", "-c", "echo 1234 > .agentports"],
+			[SCODER_PATH, "-q", "/bin/bash", "-c", "echo 1234 > .sandbox/ports"],
 			{ cwd: repoDir, stdout: "pipe", stderr: "pipe" },
 		);
 		await proc.exited;
@@ -2161,9 +2233,9 @@ test("agentports-missing-file-not-writable-from-sandbox: a session with no pre-e
 		// not just protected starting the next run.
 		expect(proc.exitCode).not.toBe(0);
 
-		const content = await Bun.file(`${repoDir}/.agentports`).text();
+		const content = await Bun.file(`${repoDir}/.sandbox/ports`).text();
 		expect(content).not.toContain("1234");
-		expect(content).toContain("# .agentports");
+		expect(content).toContain("# .sandbox/ports");
 	} finally {
 		await cleanupRepo(repoDir);
 	}
@@ -4707,7 +4779,7 @@ test.skipIf(!python3Available)(
 // EM: alternatives-managed binary being "not found", though the binary
 // EM: itself always ran fine; only update-alternatives' own view of it was
 // EM: broken. Reuses createFakePastaShim (defined below, for the
-// EM: .agentports live-reload tests) so the real scoder binary can run this
+// EM: .sandbox/ports live-reload tests) so the real scoder binary can run this
 // EM: end-to-end, same reasoning as terminal-signals-forwarded-to-sandbox
 // EM: above: this environment's own lack of /dev/net/tun would make a real
 // EM: pasta attach non-deterministic here, when what's under test is a
@@ -4855,7 +4927,7 @@ test.skipIf(!optExists)(
 	},
 );
 
-// EM: ### Tests for .agentports live-reload
+// EM: ### Tests for .sandbox/ports live-reload
 // EM: See design/implementation/plans/agentports.md. A fake pasta that
 // EM: mimics real pasta's daemonize-then-exit shape (writes its own pid to
 // EM: --pid, then keeps running detached) lets the watcher's swap logic be
@@ -4909,15 +4981,15 @@ async function createFakePastaShim(
 	return shimDir;
 }
 
-// ### Test: agentports-live-reload-adds-port
-test("agentports-live-reload-adds-port: editing .agentports mid-session reattaches with the new ports", async () => {
+// ### Test: sandbox-ports-live-reload-adds-port
+test("sandbox-ports-live-reload-adds-port: editing .sandbox/ports mid-session reattaches with the new ports", async () => {
 	const repoDir = await createTempRepo();
 	tempRepos.push(repoDir);
 	const logPath = `${repoDir}-pasta.log`;
 	const shimDir = await createFakePastaShim(logPath);
 
 	try {
-		await Bun.write(`${repoDir}/.agentports`, "11434\n");
+		await Bun.write(`${repoDir}/.sandbox/ports`, "11434\n");
 
 		const proc = Bun.spawn([SCODER_PATH, "-q", "/bin/bash", "-c", "sleep 3"], {
 			cwd: repoDir,
@@ -4932,7 +5004,7 @@ test("agentports-live-reload-adds-port: editing .agentports mid-session reattach
 
 		// Give the initial attach time to land before editing.
 		await Bun.sleep(800);
-		await Bun.write(`${repoDir}/.agentports`, "11434\n23119\n");
+		await Bun.write(`${repoDir}/.sandbox/ports`, "11434\n23119\n");
 
 		await proc.exited;
 		expect(proc.exitCode).toBe(0);
@@ -4955,8 +5027,8 @@ test("agentports-live-reload-adds-port: editing .agentports mid-session reattach
 	}
 });
 
-// ### Test: agentports-live-reload-bad-edit-keeps-old-config
-test("agentports-live-reload-bad-edit-keeps-old-config: a failed reattach falls back to the previous ports", async () => {
+// ### Test: sandbox-ports-live-reload-bad-edit-keeps-old-config
+test("sandbox-ports-live-reload-bad-edit-keeps-old-config: a failed reattach falls back to the previous ports", async () => {
 	const repoDir = await createTempRepo();
 	tempRepos.push(repoDir);
 	const logPath = `${repoDir}-pasta.log`;
@@ -4965,7 +5037,7 @@ test("agentports-live-reload-bad-edit-keeps-old-config: a failed reattach falls 
 	const shimDir = await createFakePastaShim(logPath, 2);
 
 	try {
-		await Bun.write(`${repoDir}/.agentports`, "11434\n");
+		await Bun.write(`${repoDir}/.sandbox/ports`, "11434\n");
 
 		const proc = Bun.spawn([SCODER_PATH, "-q", "/bin/bash", "-c", "sleep 3"], {
 			cwd: repoDir,
@@ -4979,7 +5051,7 @@ test("agentports-live-reload-bad-edit-keeps-old-config: a failed reattach falls 
 		});
 
 		await Bun.sleep(800);
-		await Bun.write(`${repoDir}/.agentports`, "11434\n23119\n");
+		await Bun.write(`${repoDir}/.sandbox/ports`, "11434\n23119\n");
 
 		await proc.exited;
 		expect(proc.exitCode).toBe(0);
@@ -4988,11 +5060,13 @@ test("agentports-live-reload-bad-edit-keeps-old-config: a failed reattach falls 
 		expect(stderr).toContain(
 			"reload failed to attach — restoring the previous port configuration",
 		);
-		expect(stderr).toContain("restored the previous .agentports configuration");
+		expect(stderr).toContain(
+			"restored the previous .sandbox/ports configuration",
+		);
 
 		// Only the second invocation is forced to fail, so once the restore
 		// (the third invocation) puts the watcher back on the old ports, the
-		// next poll tick sees .agentports still asking for the new ones and
+		// next poll tick sees .sandbox/ports still asking for the new ones and
 		// retries — which now succeeds. That retry-on-a-transient-failure
 		// behaviour is correct, not a bug, so this only pins down the first
 		// three invocations (the fail-then-restore sequence itself), not the
@@ -5016,7 +5090,7 @@ test("agentports-live-reload-bad-edit-keeps-old-config: a failed reattach falls 
 	}
 });
 
-// EM: ### Tests for `.agentreadwrite`
+// EM: ### Tests for `.sandbox/readwrite`
 // EM: See design/features/agent-readwrite.md. Replaces the earlier
 // EM: `scratch` symlink tests. Targets live under a throwaway directory in
 // EM: the real $HOME (the feature requires targets to resolve inside
@@ -5026,8 +5100,8 @@ function readwriteTargetPath(): string {
 	return `${process.env.HOME}/.scoder-test-readwrite-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
 }
 
-// ### Test: agentreadwrite-resolves-rw
-test("agentreadwrite-resolves-rw: reads and writes through an .agentreadwrite entry reach the real target", async () => {
+// ### Test: sandbox-readwrite-resolves-rw
+test("sandbox-readwrite-resolves-rw: reads and writes through an .sandbox/readwrite entry reach the real target", async () => {
 	const repoDir = await createTempRepo();
 	tempRepos.push(repoDir);
 	const target = readwriteTargetPath();
@@ -5036,7 +5110,7 @@ test("agentreadwrite-resolves-rw: reads and writes through an .agentreadwrite en
 	try {
 		await Bun.spawn(["mkdir", "-p", target]).exited;
 		await Bun.write(`${target}/existing.txt`, "pre-existing\n");
-		await Bun.write(`${repoDir}/.agentreadwrite`, `$HOME/${relative}\n`);
+		await Bun.write(`${repoDir}/.sandbox/readwrite`, `$HOME/${relative}\n`);
 
 		const output = await runScoder(repoDir, [
 			"-q",
@@ -5053,12 +5127,12 @@ test("agentreadwrite-resolves-rw: reads and writes through an .agentreadwrite en
 	}
 });
 
-// ### Test: agentreadwrite-created-if-missing
-// Same bug class already fixed twice, for .agentreadonly and .agentports —
+// ### Test: sandbox-readwrite-created-if-missing
+// Same bug class already fixed twice, for .sandbox/readonly and .sandbox/ports —
 // a missing source path gets no bind mount at all, which would leave a
 // freshly created default writable from inside the very session that
 // finds it missing.
-test("agentreadwrite-created-if-missing: a missing .agentreadwrite is created and protected in the same session", async () => {
+test("sandbox-readwrite-created-if-missing: a missing .sandbox/readwrite is created and protected in the same session", async () => {
 	const repoDir = await createTempRepo();
 	tempRepos.push(repoDir);
 
@@ -5069,7 +5143,7 @@ test("agentreadwrite-created-if-missing: a missing .agentreadwrite is created an
 				"-q",
 				"/bin/bash",
 				"-c",
-				"echo modified >> .agentreadwrite",
+				"echo modified >> .sandbox/readwrite",
 			],
 			{ cwd: repoDir, stdout: "pipe", stderr: "pipe" },
 		);
@@ -5087,39 +5161,42 @@ test("agentreadwrite-created-if-missing: a missing .agentreadwrite is created an
 		expect(stderr).not.toContain("pasta failed to attach");
 		expect(proc.exitCode).not.toBe(0);
 
-		const content = await Bun.file(`${repoDir}/.agentreadwrite`).text();
+		const content = await Bun.file(`${repoDir}/.sandbox/readwrite`).text();
 		expect(content).not.toContain("modified");
 	} finally {
 		await cleanupRepo(repoDir);
 	}
 });
 
-// ### Test: agentreadwrite-self-protected-readonly
-test("agentreadwrite-self-protected-readonly: .agentreadwrite itself is always read-only inside the sandbox", async () => {
+// ### Test: sandbox-readwrite-self-protected-readonly
+test("sandbox-readwrite-self-protected-readonly: .sandbox/readwrite itself is always read-only inside the sandbox", async () => {
 	const repoDir = await createTempRepo();
 	tempRepos.push(repoDir);
 
 	try {
-		await Bun.write(`${repoDir}/.agentreadwrite`, "");
+		await Bun.write(`${repoDir}/.sandbox/readwrite`, "");
 
 		const output = await runScoder(repoDir, ["--dry-run", "/bin/bash"]);
 		expect(output).toContain(
-			`--ro-bind ${repoDir}/.agentreadwrite ${repoDir}/.agentreadwrite`,
+			// EM: The directory, not the file. Every config file is covered by
+			// EM: the one .sandbox/ bind now, which is what removed the
+			// EM: "missing file is writable" class this test was written for.
+			`--ro-bind ${repoDir}/.sandbox ${repoDir}/.sandbox`,
 		);
 	} finally {
 		await cleanupRepo(repoDir);
 	}
 });
 
-// ### Test: agentreadwrite-missing-target-created
-test("agentreadwrite-missing-target-created: a not-yet-existing target is created rather than left dangling", async () => {
+// ### Test: sandbox-readwrite-missing-target-created
+test("sandbox-readwrite-missing-target-created: a not-yet-existing target is created rather than left dangling", async () => {
 	const repoDir = await createTempRepo();
 	tempRepos.push(repoDir);
 	const target = readwriteTargetPath(); // deliberately never created
 	const relative = target.slice(`${process.env.HOME}/`.length);
 
 	try {
-		await Bun.write(`${repoDir}/.agentreadwrite`, `$HOME/${relative}\n`);
+		await Bun.write(`${repoDir}/.sandbox/readwrite`, `$HOME/${relative}\n`);
 
 		const proc = Bun.spawn(
 			["scoder", "-q", "--no-worktree", "/bin/bash", "-c", "true"],
@@ -5130,7 +5207,7 @@ test("agentreadwrite-missing-target-created: a not-yet-existing target is create
 		// The session itself may still fail later (pasta attaching), but the
 		// target directory is created while building the bwrap command,
 		// before that point is ever reached — same reasoning as
-		// agentreadonly-created-default.
+		// sandbox-readonly-created-default.
 		expect(await dirExists(target)).toBe(true);
 	} finally {
 		await Bun.spawn(["rm", "-rf", target]).exited;
@@ -5138,15 +5215,15 @@ test("agentreadwrite-missing-target-created: a not-yet-existing target is create
 	}
 });
 
-// ### Test: agentreadwrite-missing-target-not-created-under-dry-run
-test("agentreadwrite-missing-target-not-created-under-dry-run: --dry-run stays side-effect free", async () => {
+// ### Test: sandbox-readwrite-missing-target-not-created-under-dry-run
+test("sandbox-readwrite-missing-target-not-created-under-dry-run: --dry-run stays side-effect free", async () => {
 	const repoDir = await createTempRepo();
 	tempRepos.push(repoDir);
 	const target = readwriteTargetPath();
 	const relative = target.slice(`${process.env.HOME}/`.length);
 
 	try {
-		await Bun.write(`${repoDir}/.agentreadwrite`, `$HOME/${relative}\n`);
+		await Bun.write(`${repoDir}/.sandbox/readwrite`, `$HOME/${relative}\n`);
 
 		const output = await runScoder(repoDir, ["--dry-run", "/bin/bash"]);
 		expect(output).toContain(`--bind ${target} ${target}`);
@@ -5157,13 +5234,13 @@ test("agentreadwrite-missing-target-not-created-under-dry-run: --dry-run stays s
 	}
 });
 
-// ### Test: agentreadwrite-outside-home-rejected
-test("agentreadwrite-outside-home-rejected: a line not starting with $HOME/ exits non-zero with a clear error", async () => {
+// ### Test: sandbox-readwrite-outside-home-rejected
+test("sandbox-readwrite-outside-home-rejected: a line not starting with $HOME/ exits non-zero with a clear error", async () => {
 	const repoDir = await createTempRepo();
 	tempRepos.push(repoDir);
 
 	try {
-		await Bun.write(`${repoDir}/.agentreadwrite`, "/tmp\n");
+		await Bun.write(`${repoDir}/.sandbox/readwrite`, "/tmp\n");
 
 		const proc = Bun.spawn([SCODER_PATH, "--dry-run", "/bin/bash"], {
 			cwd: repoDir,
@@ -5180,8 +5257,8 @@ test("agentreadwrite-outside-home-rejected: a line not starting with $HOME/ exit
 	}
 });
 
-// ### Test: agentreadwrite-escape-via-symlink-rejected
-test("agentreadwrite-escape-via-symlink-rejected: a $HOME entry that resolves outside $HOME via a symlink is rejected", async () => {
+// ### Test: sandbox-readwrite-escape-via-symlink-rejected
+test("sandbox-readwrite-escape-via-symlink-rejected: a $HOME entry that resolves outside $HOME via a symlink is rejected", async () => {
 	const repoDir = await createTempRepo();
 	tempRepos.push(repoDir);
 	const linkName = `.scoder-test-readwrite-escape-${Date.now()}`;
@@ -5189,7 +5266,7 @@ test("agentreadwrite-escape-via-symlink-rejected: a $HOME entry that resolves ou
 
 	try {
 		await Bun.spawn(["ln", "-s", "/tmp", linkPath]).exited;
-		await Bun.write(`${repoDir}/.agentreadwrite`, `$HOME/${linkName}\n`);
+		await Bun.write(`${repoDir}/.sandbox/readwrite`, `$HOME/${linkName}\n`);
 
 		const proc = Bun.spawn([SCODER_PATH, "--dry-run", "/bin/bash"], {
 			cwd: repoDir,
@@ -5207,16 +5284,16 @@ test("agentreadwrite-escape-via-symlink-rejected: a $HOME entry that resolves ou
 	}
 });
 
-// ### Test: agentreadwrite-overlapping-fixed-bind-rejected
+// ### Test: sandbox-readwrite-overlapping-fixed-bind-rejected
 const localBinExists = await dirExists(`${process.env.HOME}/.local/bin`);
 test.skipIf(!localBinExists)(
-	"agentreadwrite-overlapping-fixed-bind-rejected: an entry matching a fixed scoder bind is a hard error",
+	"sandbox-readwrite-overlapping-fixed-bind-rejected: an entry matching a fixed scoder bind is a hard error",
 	async () => {
 		const repoDir = await createTempRepo();
 		tempRepos.push(repoDir);
 
 		try {
-			await Bun.write(`${repoDir}/.agentreadwrite`, "$HOME/.local/bin\n");
+			await Bun.write(`${repoDir}/.sandbox/readwrite`, "$HOME/.local/bin\n");
 
 			const proc = Bun.spawn([SCODER_PATH, "--dry-run", "/bin/bash"], {
 				cwd: repoDir,
@@ -5234,20 +5311,20 @@ test.skipIf(!localBinExists)(
 	},
 );
 
-// ### Test: agentreadwrite-nested-under-namespace-umbrella-allowed
-// The one deliberate difference from .agentreadonly's own overlap check:
+// ### Test: sandbox-readwrite-nested-under-namespace-umbrella-allowed
+// The one deliberate difference from .sandbox/readonly's own overlap check:
 // nesting under a bare namespace umbrella (.cache, here) that is never
 // actually populated by a real bind, just scaffolded empty by builder.ts's
 // own --dir list, is allowed — this is the feature's own motivating use
 // case ($HOME/.cache/<tool>).
-test("agentreadwrite-nested-under-namespace-umbrella-allowed: $HOME/.cache/<tool> is not rejected", async () => {
+test("sandbox-readwrite-nested-under-namespace-umbrella-allowed: $HOME/.cache/<tool> is not rejected", async () => {
 	const repoDir = await createTempRepo();
 	tempRepos.push(repoDir);
 	const target = `${process.env.HOME}/.cache/.scoder-test-readwrite-${Date.now()}`;
 
 	try {
 		const relative = target.slice(`${process.env.HOME}/`.length);
-		await Bun.write(`${repoDir}/.agentreadwrite`, `$HOME/${relative}\n`);
+		await Bun.write(`${repoDir}/.sandbox/readwrite`, `$HOME/${relative}\n`);
 
 		const output = await runScoder(repoDir, ["--dry-run", "/bin/bash"]);
 		expect(output).toContain(`--bind ${target} ${target}`);
@@ -5257,8 +5334,8 @@ test("agentreadwrite-nested-under-namespace-umbrella-allowed: $HOME/.cache/<tool
 	}
 });
 
-// ### Test: agentreadwrite-overlapping-agentreadonly-rejected
-test("agentreadwrite-overlapping-agentreadonly-rejected: the same $HOME path in both files is a hard error", async () => {
+// ### Test: sandbox-readwrite-overlapping-readonly-rejected
+test("sandbox-readwrite-overlapping-readonly-rejected: the same $HOME path in both files is a hard error", async () => {
 	const repoDir = await createTempRepo();
 	tempRepos.push(repoDir);
 	const target = readwriteTargetPath();
@@ -5266,8 +5343,8 @@ test("agentreadwrite-overlapping-agentreadonly-rejected: the same $HOME path in 
 	try {
 		await Bun.spawn(["mkdir", "-p", target]).exited;
 		const relative = target.slice(`${process.env.HOME}/`.length);
-		await Bun.write(`${repoDir}/.agentreadonly`, `$HOME/${relative}\n`);
-		await Bun.write(`${repoDir}/.agentreadwrite`, `$HOME/${relative}\n`);
+		await Bun.write(`${repoDir}/.sandbox/readonly`, `$HOME/${relative}\n`);
+		await Bun.write(`${repoDir}/.sandbox/readwrite`, `$HOME/${relative}\n`);
 
 		const proc = Bun.spawn([SCODER_PATH, "--dry-run", "/bin/bash"], {
 			cwd: repoDir,
@@ -5279,7 +5356,7 @@ test("agentreadwrite-overlapping-agentreadonly-rejected: the same $HOME path in 
 		expect(proc.exitCode).not.toBe(0);
 		const stderr = await new Response(proc.stderr).text();
 		expect(stderr).toContain(
-			"is listed in both .agentreadonly and .agentreadwrite",
+			"is listed in both .sandbox/readonly and .sandbox/readwrite",
 		);
 	} finally {
 		await Bun.spawn(["rm", "-rf", target]).exited;
@@ -5287,8 +5364,8 @@ test("agentreadwrite-overlapping-agentreadonly-rejected: the same $HOME path in 
 	}
 });
 
-// ### Test: agentreadwrite-real-passthrough-unaffected
-test("agentreadwrite-real-passthrough-unaffected: an ordinary tracked file still writes straight through with .agentreadwrite present", async () => {
+// ### Test: sandbox-readwrite-real-passthrough-unaffected
+test("sandbox-readwrite-real-passthrough-unaffected: an ordinary tracked file still writes straight through with .sandbox/readwrite present", async () => {
 	const repoDir = await createTempRepo();
 	tempRepos.push(repoDir);
 	const target = readwriteTargetPath();
@@ -5296,7 +5373,7 @@ test("agentreadwrite-real-passthrough-unaffected: an ordinary tracked file still
 	try {
 		await Bun.spawn(["mkdir", "-p", target]).exited;
 		const relative = target.slice(`${process.env.HOME}/`.length);
-		await Bun.write(`${repoDir}/.agentreadwrite`, `$HOME/${relative}\n`);
+		await Bun.write(`${repoDir}/.sandbox/readwrite`, `$HOME/${relative}\n`);
 
 		await runScoder(repoDir, [
 			"-q",
@@ -5313,8 +5390,8 @@ test("agentreadwrite-real-passthrough-unaffected: an ordinary tracked file still
 	}
 });
 
-// ### Test: agentreadwrite-survives-fresh-worktree
-test("agentreadwrite-survives-fresh-worktree: a tracked .agentreadwrite still resolves rw after worktree creation", async () => {
+// ### Test: sandbox-readwrite-survives-fresh-worktree
+test("sandbox-readwrite-survives-fresh-worktree: a tracked .sandbox/readwrite still resolves rw after worktree creation", async () => {
 	const repoDir = await createTempRepo();
 	tempRepos.push(repoDir);
 	const target = readwriteTargetPath();
@@ -5322,8 +5399,9 @@ test("agentreadwrite-survives-fresh-worktree: a tracked .agentreadwrite still re
 	try {
 		await Bun.spawn(["mkdir", "-p", target]).exited;
 		const relative = target.slice(`${process.env.HOME}/`.length);
-		await Bun.write(`${repoDir}/.agentreadwrite`, `$HOME/${relative}\n`);
-		await Bun.spawn(["git", "add", ".agentreadwrite"], { cwd: repoDir }).exited;
+		await Bun.write(`${repoDir}/.sandbox/readwrite`, `$HOME/${relative}\n`);
+		await Bun.spawn(["git", "add", ".sandbox/readwrite"], { cwd: repoDir })
+			.exited;
 		await Bun.spawn(
 			[
 				"git",
@@ -5333,7 +5411,7 @@ test("agentreadwrite-survives-fresh-worktree: a tracked .agentreadwrite still re
 				"user.name=t",
 				"commit",
 				"-m",
-				"add .agentreadwrite",
+				"add .sandbox/readwrite",
 			],
 			{ cwd: repoDir, stdout: "pipe", stderr: "pipe" },
 		).exited;

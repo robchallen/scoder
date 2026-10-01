@@ -147,7 +147,7 @@ sandbox should not hold credentials for reaching other systems, and binding
 `~/.ssh` would put private keys inside an environment an agent controls.
 
 A user who wants it opts in explicitly with a `$HOME/.ssh` line in
-`.agentreadonly`, which already binds host directories read-only at the mirrored
+`.sandbox/readonly`, which already binds host directories read-only at the mirrored
 path. That is the whole mechanism — no scoder change required.
 
 Explicit opt-in *without* binding key material is now planned:

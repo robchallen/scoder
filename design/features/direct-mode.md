@@ -32,7 +32,7 @@ projects, and testing benefit from faster startup and simpler cleanup.
 - No git worktree created
 - No branch created
 - Sandboxed execution in current directory
-- `.agentreadonly` protection still applies
+- `.sandbox/readonly` protection still applies
 - AGENTS.md overlay still created
 - No commit on exit
 - Changes are immediate in the working directory

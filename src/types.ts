@@ -49,7 +49,7 @@ export interface ToolPreset {
 	// be present, whatever else the user passed), or something else
 	// entirely. existingArgs is `[]` for the --ide companion, which has no
 	// way for the user to supply its own args directly. dependencyDirs is
-	// the sandbox-side destinations of every .agentreadonly $HOME/... entry
+	// the sandbox-side destinations of every .sandbox/readonly $HOME/... entry
 	// already resolved for this session (see ProtectionConfig.dependencyDirs)
 	// — e.g. eclipse imports each of these as its own project, alongside
 	// the main one, so cross-project references resolve inside the sandbox.

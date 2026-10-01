@@ -320,10 +320,49 @@ It is also worth noting beyond the GPU: **any group-gated device or file is
 invisible to a sandboxed tool in the same way.** That is arguably correct
 for an isolation tool, but it is undocumented and fails silently.
 
-Two routes, neither yet tested:
+**Route 1 has now been tested and did not help.** Run with
 
-1. **Let Chromium use the render node directly via EGL**, instead of GLX on
-   Xvfb. `/dev/dri` is already bound, so this needs no sandbox change —
+```
+RSTUDIO_CHROMIUM_ARGUMENTS="--ignore-gpu-blocklist --enable-gpu-rasterization --use-gl=egl"
+```
+
+the flags demonstrably reached Chromium (`--use-gl=egl` visible on its child
+processes) and the render node was open, and the scrolling was unchanged. So
+Chromium-level GPU configuration is not the answer either, and the list of
+eliminated causes now covers the transport, the event rate, inotify, and
+every GPU flag worth trying.
+
+### The experiment that should come next
+
+Everything so far has varied settings *within* the scoder + xpra + Electron
+stack. What has never been tested is whether scoder is involved at all.
+**Run RStudio under xpra on the host, with no sandbox:**
+
+```bash
+xpra start --bind=/tmp/xpra-bare.sock --daemon=no --exit-with-children=yes \
+  --input-method=keep --notifications=no --printing=no \
+  --audio=no --speaker=no --microphone=no --webcam=no --pulseaudio=no \
+  --start-child=rstudio &
+
+xpra attach socket:///tmp/xpra-bare.sock --daemon=no --audio=no --printing=no --webcam=no
+```
+
+(Verified to work as written, with `xclock` standing in for RStudio.)
+
+It partitions the remaining space in half, and either answer is useful:
+
+- **Still laggy** — the problem is an xpra/Electron interaction and has
+  nothing to do with the sandbox. Nothing in scoder can fix it; the honest
+  position is that GUI presets work well for Eclipse and that RStudio has an
+  upstream problem worth reporting to xpra with this reproducer.
+- **Smooth** — the sandbox is implicated after all, and the search narrows
+  to what bwrap changes for a Chromium process: a missing device, `/proc`
+  or `/sys` visibility, shared memory, or the IPC namespace.
+
+Two routes were considered before that, neither now worth trying first:
+
+1. ~~**Let Chromium use the render node directly via EGL**~~ — tested, see
+   above. `/dev/dri` is already bound, so this needs no sandbox change —
    only flags. Chromium also blocklists software/unknown GL configurations,
    hence `--ignore-gpu-blocklist`:
 

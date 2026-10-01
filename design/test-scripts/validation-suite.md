@@ -122,23 +122,23 @@ Attempts to create a file inside `.github/`. Must fail (default protected).
 
 Attempts to modify `.gitignore`. Must fail (default protected).
 
-### 7. empty-agentreadonly-allows-writes
+### 7. empty-sandbox-readonly-allows-writes
 [TESTED_BY](/tests/scoder.test.ts#testEmptyAgentreadonlyAllowsWrites)
 
 Empty `.sandbox/readonly` removes default workspace protection. Write to `.github/` must succeed.
 
-### 8. agentreadonly-protected
-[TESTED_BY](/tests/scoder.test.ts#testAgentreadonlyProtected)
+### 8. sandbox-readonly-protected
+[TESTED_BY](/tests/scoder.test.ts#testSandboxReadonlyProtected)
 
 `.sandbox/readonly` is always mounted read-only, even when empty.
 
-### 9. agentreadonly-home-directory-readonly
-[TESTED_BY](/tests/scoder.test.ts#testAgentreadonlyHomeDirectoryReadonly)
+### 9. sandbox-readonly-home-directory-readonly
+[TESTED_BY](/tests/scoder.test.ts#testSandboxReadonlyHomeDirectoryReadonly)
 
 `$HOME/Git/other-project` in `.sandbox/readonly` binds a host directory read-only. Can read but not write.
 
-### 10. agentreadonly-home-file-bind-does-not-create-conflicting-dir
-[TESTED_BY](/tests/scoder.test.ts#testAgentreadonlyHomeFileBindDoesNotCreateConflictingDir)
+### 10. sandbox-readonly-home-file-bind-does-not-create-conflicting-dir
+[TESTED_BY](/tests/scoder.test.ts#testSandboxReadonlyHomeFileBindDoesNotCreateConflictingDir)
 
 Regression test: reported directly, an `.sandbox/readonly` `$HOME/...` entry
 pointing at a *file* (not a directory) failed with `bwrap: Can't create
@@ -151,13 +151,13 @@ path too, not just its real ancestors. `bwrap` processes `--dir` before
 needed a file mountpoint instead. Fixed by excluding the leaf from that
 loop.
 
-### 11. agentreadonly-home-directory-must-exist
-[TESTED_BY](/tests/scoder.test.ts#testAgentreadonlyHomeDirectoryMustExist)
+### 11. sandbox-readonly-home-directory-must-exist
+[TESTED_BY](/tests/scoder.test.ts#testSandboxReadonlyHomeDirectoryMustExist)
 
 References to non-existent paths via `$HOME/...` must fail with a clear error about the directory missing.
 
-### 12. agentreadonly-home-nested-namespace-path-allowed
-[TESTED_BY](/tests/scoder.test.ts#testAgentreadonlyHomeNestedNamespacePathAllowed)
+### 12. sandbox-readonly-home-nested-namespace-path-allowed
+[TESTED_BY](/tests/scoder.test.ts#testSandboxReadonlyHomeNestedNamespacePathAllowed)
 
 Regression test: reported directly, `$HOME/.local/share/fonts` was
 rejected outright with "overlaps reserved sandbox path" even though
@@ -171,16 +171,16 @@ destinations, not the bare umbrellas they happen to live under. Uses
 `.../fonts`, since fonts has since become a fixed destination itself
 (case 15) and no longer illustrates "safely nested, not itself fixed."
 
-### 13. agentreadonly-home-fonts-directory-now-redundant
-[TESTED_BY](/tests/scoder.test.ts#testAgentreadonlyHomeFontsDirectoryNowRedundant)
+### 13. sandbox-readonly-home-fonts-directory-now-redundant
+[TESTED_BY](/tests/scoder.test.ts#testSandboxReadonlyHomeFontsDirectoryNowRedundant)
 
 Fonts is now a fixed default bind (`buildExtraBinds` — see case 15) — an
 `.sandbox/readonly` entry for the exact same path is therefore a redundant
 re-declaration of something scoder already handles, correctly rejected
 the same way `$HOME/.claude` or `$HOME/.config` already are.
 
-### 14. agentreadonly-home-ancestor-of-fixed-bind-still-rejected
-[TESTED_BY](/tests/scoder.test.ts#testAgentreadonlyHomeAncestorOfFixedBindStillRejected)
+### 14. sandbox-readonly-home-ancestor-of-fixed-bind-still-rejected
+[TESTED_BY](/tests/scoder.test.ts#testSandboxReadonlyHomeAncestorOfFixedBindStillRejected)
 
 The other half of the same fix: a bare umbrella is only safe to allow
 when nothing fixed lives under it. `$HOME/.config` is an ancestor of
@@ -239,8 +239,8 @@ AGENTS.md overlay in direct mode does not include worktree-specific messages.
 
 Host localhost HTTP server is unreachable from the sandbox via pasta's default loopback blocking.
 
-### 24. agentports-forwards-listed-port
-[TESTED_BY](/tests/scoder.test.ts#testAgentportsForwardsListedPort)
+### 24. sandbox-ports-forwards-listed-port
+[TESTED_BY](/tests/scoder.test.ts#testSandboxPortsForwardsListedPort)
 
 A port listed in a project's `.sandbox/ports` file is reachable inside the
 sandbox without any CLI flag — `.sandbox/ports` replaced `--llm-port` entirely.
@@ -317,8 +317,8 @@ Forwarding shim passes all arguments through to the underlying tool.
 symlink surviving. Running it in isolation only passes if a previous full run
 left the artifact behind. It should create its own fixture.
 
-### 33. agentports-auto-detect-appends
-[TESTED_BY](/tests/scoder.test.ts#testAgentportsAutoDetectAppends)
+### 33. sandbox-ports-auto-detect-appends
+[TESTED_BY](/tests/scoder.test.ts#testSandboxPortsAutoDetectAppends)
 
 When `SCODER_LLM_PORT` is set and the port is open on localhost, scoder
 auto-detects it, reaches it immediately, and appends it to `.sandbox/ports` —
@@ -589,8 +589,8 @@ bwrap forks internally even without `--unshare-pid`, and killing only the
 outer, tracked pid left the inner one — the one actually holding the
 namespaces — running forever, reparented to pid 1.
 
-### 65. agentreadwrite-resolves-rw
-[TESTED_BY](/tests/scoder.test.ts#testAgentreadwriteResolvesRw)
+### 65. sandbox-readwrite-resolves-rw
+[TESTED_BY](/tests/scoder.test.ts#testSandboxReadwriteResolvesRw)
 
 With `.sandbox/readwrite` listing a directory under a throwaway location in
 the real `$HOME`, reading pre-existing content and writing new content
@@ -598,54 +598,54 @@ through it inside the sandbox both work, and the write is visible on the
 host afterward — the real end-to-end proof the bind works, replacing the
 `scratch` symlink this feature superseded.
 
-### 66. agentreadwrite-created-if-missing
-[TESTED_BY](/tests/scoder.test.ts#testAgentreadwriteCreatedIfMissing)
+### 66. sandbox-readwrite-created-if-missing
+[TESTED_BY](/tests/scoder.test.ts#testSandboxReadwriteCreatedIfMissing)
 
 Same bug class already fixed twice, for `.sandbox/readonly` and
 `.sandbox/ports`: a missing `.sandbox/readwrite` is created and protected
 read-only in the very same session that finds it missing, not just from
 the next run onward.
 
-### 67. agentreadwrite-self-protected-readonly
-[TESTED_BY](/tests/scoder.test.ts#testAgentreadwriteSelfProtectedReadonly)
+### 67. sandbox-readwrite-self-protected-readonly
+[TESTED_BY](/tests/scoder.test.ts#testSandboxReadwriteSelfProtectedReadonly)
 
 `.sandbox/readwrite` itself is always bound read-only inside the sandbox,
 the same self-protection `.sandbox/readonly` and `.sandbox/ports` already give
 themselves.
 
-### 68. agentreadwrite-missing-target-created
-[TESTED_BY](/tests/scoder.test.ts#testAgentreadwriteMissingTargetCreated)
+### 68. sandbox-readwrite-missing-target-created
+[TESTED_BY](/tests/scoder.test.ts#testSandboxReadwriteMissingTargetCreated)
 
 A listed directory that doesn't exist yet is created (`mkdir -p`) rather
 than left dangling or treated as an error — the deliberate difference
 from `.sandbox/readonly`'s own `$HOME/...` binds, which require the target
 to already exist. The real `mkdir` happens while building the bwrap
 command, before pasta ever gets a chance to fail, same reasoning as
-`agentreadonly-created-default`'s "file exists before that point is
+`sandbox-readonly-created-default`'s "file exists before that point is
 reached" pattern.
 
-### 69. agentreadwrite-missing-target-not-created-under-dry-run
-[TESTED_BY](/tests/scoder.test.ts#testAgentreadwriteMissingTargetNotCreatedUnderDryRun)
+### 69. sandbox-readwrite-missing-target-not-created-under-dry-run
+[TESTED_BY](/tests/scoder.test.ts#testSandboxReadwriteMissingTargetNotCreatedUnderDryRun)
 
 `--dry-run` stays side-effect free: the intended bind still appears in
 the preview, but the real `mkdir` is skipped.
 
-### 70. agentreadwrite-outside-home-rejected
-[TESTED_BY](/tests/scoder.test.ts#testAgentreadwriteOutsideHomeRejected)
+### 70. sandbox-readwrite-outside-home-rejected
+[TESTED_BY](/tests/scoder.test.ts#testSandboxReadwriteOutsideHomeRejected)
 
 A line not starting with `$HOME/` exits non-zero with a clear diagnostic
 — unlike `.sandbox/readonly`, which also accepts local gitignore-style
 patterns for its own protected-paths mode, `.sandbox/readwrite` supports
 nothing outside `$HOME` at all.
 
-### 71. agentreadwrite-escape-via-symlink-rejected
-[TESTED_BY](/tests/scoder.test.ts#testAgentreadwriteEscapeViaSymlinkRejected)
+### 71. sandbox-readwrite-escape-via-symlink-rejected
+[TESTED_BY](/tests/scoder.test.ts#testSandboxReadwriteEscapeViaSymlinkRejected)
 
 A `$HOME/...` entry that resolves outside `$HOME` via a symlink is
 rejected the same way `.sandbox/readonly`'s own HOME binds already are.
 
-### 72. agentreadwrite-overlapping-fixed-bind-rejected
-[TESTED_BY](/tests/scoder.test.ts#testAgentreadwriteOverlappingFixedBindRejected)
+### 72. sandbox-readwrite-overlapping-fixed-bind-rejected
+[TESTED_BY](/tests/scoder.test.ts#testSandboxReadwriteOverlappingFixedBindRejected)
 
 An entry matching one of `buildExtraBinds`' fixed host-tool paths
 (`~/.local/bin`, here) is a hard error, not a silent downgrade to
@@ -653,8 +653,8 @@ read-only the way the retired `scratch` symlink handled the same
 collision. Skips if `~/.local/bin` doesn't exist on the machine running
 the suite.
 
-### 73. agentreadwrite-nested-under-namespace-umbrella-allowed
-[TESTED_BY](/tests/scoder.test.ts#testAgentreadwriteNestedUnderNamespaceUmbrellaAllowed)
+### 73. sandbox-readwrite-nested-under-namespace-umbrella-allowed
+[TESTED_BY](/tests/scoder.test.ts#testSandboxReadwriteNestedUnderNamespaceUmbrellaAllowed)
 
 The one deliberate difference from `.sandbox/readonly`'s own overlap check:
 `$HOME/.cache/<tool>` — nested under a bare namespace umbrella that is
@@ -663,21 +663,21 @@ never actually populated by a real bind, just scaffolded empty by
 feature's own motivating use case, and blocking it would reject a
 perfectly safe entry for no real protection.
 
-### 74. agentreadwrite-overlapping-agentreadonly-rejected
-[TESTED_BY](/tests/scoder.test.ts#testAgentreadwriteOverlappingAgentreadonlyRejected)
+### 74. sandbox-readwrite-overlapping-readonly-rejected
+[TESTED_BY](/tests/scoder.test.ts#testSandboxReadwriteOverlappingAgentreadonlyRejected)
 
 The same `$HOME/...` path listed in both `.sandbox/readonly` and
 `.sandbox/readwrite` — directly opposite intents, protect vs. open for
 writing — is a hard error naming the conflicting path.
 
-### 75. agentreadwrite-real-passthrough-unaffected
-[TESTED_BY](/tests/scoder.test.ts#testAgentreadwriteRealPassthroughUnaffected)
+### 75. sandbox-readwrite-real-passthrough-unaffected
+[TESTED_BY](/tests/scoder.test.ts#testSandboxReadwriteRealPassthroughUnaffected)
 
 With `.sandbox/readwrite` present, editing an ordinary tracked project file
 still writes straight through to the host.
 
-### 76. agentreadwrite-survives-fresh-worktree
-[TESTED_BY](/tests/scoder.test.ts#testAgentreadwriteSurvivesFreshWorktree)
+### 76. sandbox-readwrite-survives-fresh-worktree
+[TESTED_BY](/tests/scoder.test.ts#testSandboxReadwriteSurvivesFreshWorktree)
 
 A tracked `.sandbox/readwrite` still resolves its listed directory
 read-write after a fresh worktree checkout — unlike the retired
@@ -692,25 +692,25 @@ own symlink-as-blob behaviour.
 favour of `.sandbox/ports`. See
 [design/implementation/plans/agentports.md](/design/implementation/plans/agentports.md).
 
-### 78. agentports-malformed-line-fails
-[TESTED_BY](/tests/scoder.test.ts#testAgentportsMalformedLineFails)
+### 78. sandbox-ports-malformed-line-fails
+[TESTED_BY](/tests/scoder.test.ts#testSandboxPortsMalformedLineFails)
 
 A non-numeric line in `.sandbox/ports` exits non-zero, naming the bad line.
 
-### 79. agentports-is-readonly
-[TESTED_BY](/tests/scoder.test.ts#testAgentportsIsReadonly)
+### 79. sandbox-ports-is-readonly
+[TESTED_BY](/tests/scoder.test.ts#testSandboxPortsIsReadonly)
 
 `.sandbox/ports` is always bind-mounted read-only inside the sandbox, the same
 self-protection `.sandbox/readonly` gives itself.
 
-### 80. agentports-auto-detect-skips-under-dry-run
-[TESTED_BY](/tests/scoder.test.ts#testAgentportsAutoDetectSkipsUnderDryRun)
+### 80. sandbox-ports-auto-detect-skips-under-dry-run
+[TESTED_BY](/tests/scoder.test.ts#testSandboxPortsAutoDetectSkipsUnderDryRun)
 
 `--dry-run` with a detectable port does not write `.sandbox/ports` — dry-run
 stays entirely side-effect free.
 
-### 81. agentports-live-reload-adds-port
-[TESTED_BY](/tests/scoder.test.ts#testAgentportsLiveReloadAddsPort)
+### 81. sandbox-ports-live-reload-adds-port
+[TESTED_BY](/tests/scoder.test.ts#testSandboxPortsLiveReloadAddsPort)
 
 Editing `.sandbox/ports` mid-session reattaches pasta with the updated port
 list, without restarting the session. Uses a fake `pasta` that mimics real
@@ -721,8 +721,8 @@ non-deterministic here, when what's actually under test is the watcher's
 swap logic, not pasta's own forwarding. Verified manually against this exact
 shim shape before being committed to the suite.
 
-### 82. agentports-live-reload-bad-edit-keeps-old-config
-[TESTED_BY](/tests/scoder.test.ts#testAgentportsLiveReloadBadEditKeepsOldConfig)
+### 82. sandbox-ports-live-reload-bad-edit-keeps-old-config
+[TESTED_BY](/tests/scoder.test.ts#testSandboxPortsLiveReloadBadEditKeepsOldConfig)
 
 A reattach that fails to attach falls back to re-attaching the last
 known-good port list, rather than leaving the sandbox with no networking.
@@ -731,23 +731,23 @@ pasta invocations); a later poll tick retrying the same edit and succeeding
 is correct behaviour for a transient failure, not something this case
 constrains.
 
-### 83. agentports-not-created-under-dry-run
-[TESTED_BY](/tests/scoder.test.ts#testAgentportsNotCreatedUnderDryRun)
+### 83. sandbox-ports-not-created-under-dry-run
+[TESTED_BY](/tests/scoder.test.ts#testSandboxPortsNotCreatedUnderDryRun)
 
 `--dry-run` with no pre-existing `.sandbox/ports` does not create one — dry-run
 never runs anything inside the sandbox, so there is nothing for a missing
 bind to expose, and dry-run must stay side-effect free regardless.
 
-### 84. agentports-created-if-missing
-[TESTED_BY](/tests/scoder.test.ts#testAgentportsCreatedIfMissing)
+### 84. sandbox-ports-created-if-missing
+[TESTED_BY](/tests/scoder.test.ts#testSandboxPortsCreatedIfMissing)
 
 A real session with no pre-existing `.sandbox/ports` creates one on the host,
 containing a header comment, before the sandbox is ever built — closing the
 bind-mount gap described below regardless of whether the rest of the
 session goes on to succeed or fail.
 
-### 85. agentports-missing-file-not-writable-from-sandbox
-[TESTED_BY](/tests/scoder.test.ts#testAgentportsMissingFileNotWritableFromSandbox)
+### 85. sandbox-ports-missing-file-not-writable-from-sandbox
+[TESTED_BY](/tests/scoder.test.ts#testSandboxPortsMissingFileNotWritableFromSandbox)
 
 A missing source path gets no bind mount at all, which otherwise leaves that
 path part of the regular read-write project bind — letting the sandboxed
@@ -760,15 +760,15 @@ pasta-attach failure (this suite's own dev environment lacks
 cannot pass trivially just because the sandbox failed to launch for a
 different reason.
 
-### 86. agentreadonly-created-if-missing
-[TESTED_BY](/tests/scoder.test.ts#testAgentreadonlyCreatedIfMissing)
+### 86. sandbox-readonly-created-if-missing
+[TESTED_BY](/tests/scoder.test.ts#testSandboxReadonlyCreatedIfMissing)
 
 A real session with no pre-existing `.sandbox/readonly` creates one on the
 host, containing the default protected-path list, before the sandbox is
 ever built.
 
-### 87. agentreadonly-missing-file-not-writable-from-sandbox
-[TESTED_BY](/tests/scoder.test.ts#testAgentreadonlyMissingFileNotWritableFromSandbox)
+### 87. sandbox-readonly-missing-file-not-writable-from-sandbox
+[TESTED_BY](/tests/scoder.test.ts#testSandboxReadonlyMissingFileNotWritableFromSandbox)
 
 A missing source path gets no bind mount at all, which otherwise leaves
 that path part of the regular read-write project bind — letting the
@@ -1073,7 +1073,7 @@ worktrees from within a direct-mode session in future (see
 git-worktree-isolation). Runs a direct-mode (`--no-worktree`) session and
 checks the directory exists on disk afterward — the real `mkdir` happens
 while building the bwrap command, before pasta ever gets a chance to fail,
-same reasoning as `agentreadonly-created-default`'s "file exists before that
+same reasoning as `sandbox-readonly-created-default`'s "file exists before that
 point is reached" pattern — then a separate `--dry-run` invocation checks the
 expected `--bind <dir> <dir>` entry appears in the built command. `--dry-run`
 itself stays side-effect free (matching `getAgentPortsBind`'s auto-detect
@@ -1155,10 +1155,10 @@ gap, unrelated to this specific fix.)*
 ## Current Network Coverage
 
 - Host loopback access is blocked (`host-loopback-blocked`)
-- A port listed in `.sandbox/ports` can be reached (`agentports-forwards-listed-port`)
-- Auto-detection of an open LLM port appends it to `.sandbox/ports` (`agentports-auto-detect-appends`)
-- Editing `.sandbox/ports` mid-session live-reloads pasta (`agentports-live-reload-adds-port`, `agentports-live-reload-bad-edit-keeps-old-config`)
-- A missing `.sandbox/ports` is created and stays protected in the same session (`agentports-created-if-missing`, `agentports-missing-file-not-writable-from-sandbox`)
+- A port listed in `.sandbox/ports` can be reached (`sandbox-ports-forwards-listed-port`)
+- Auto-detection of an open LLM port appends it to `.sandbox/ports` (`sandbox-ports-auto-detect-appends`)
+- Editing `.sandbox/ports` mid-session live-reloads pasta (`sandbox-ports-live-reload-adds-port`, `sandbox-ports-live-reload-bad-edit-keeps-old-config`)
+- A missing `.sandbox/ports` is created and stays protected in the same session (`sandbox-ports-created-if-missing`, `sandbox-ports-missing-file-not-writable-from-sandbox`)
 - Outbound DNS resolution works (`outbound-dns-works`)
 - Terminal signals (resize, Ctrl-C) reach the sandboxed process despite `--new-session` (`terminal-signals-forwarded-to-sandbox`)
 

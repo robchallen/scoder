@@ -828,7 +828,7 @@ test("worktrees-parent-dir-bound-regardless-of-mode: a direct-mode session still
 		// The session itself may still fail later (pasta attaching), but the
 		// worktrees-parent dir is created while building the bwrap command,
 		// before that point is ever reached — same reasoning as
-		// agentreadonly-created-default above.
+		// sandbox-readonly-created-default above.
 		expect(await dirExists(expectedParent)).toBe(true);
 
 		const dryRunOutput = await runScoder(repoDir, [
@@ -883,8 +883,8 @@ test("gitignore-protected: Cannot modify .gitignore", async () => {
 	}
 });
 
-// ### Test: empty-agentreadonly-allows-writes
-test("empty-agentreadonly-allows-writes: Empty .sandbox/readonly removes default protection", async () => {
+// ### Test: empty-sandbox-readonly-allows-writes
+test("empty-sandbox-readonly-allows-writes: Empty .sandbox/readonly removes default protection", async () => {
 	const repoDir = await createTempRepo();
 	tempRepos.push(repoDir);
 
@@ -905,8 +905,8 @@ test("empty-agentreadonly-allows-writes: Empty .sandbox/readonly removes default
 	}
 });
 
-// ### Test: agentreadonly-protected
-test("agentreadonly-protected: .sandbox/readonly is always mounted read-only", async () => {
+// ### Test: sandbox-readonly-protected
+test("sandbox-readonly-protected: .sandbox/readonly is always mounted read-only", async () => {
 	const repoDir = await createTempRepo();
 	tempRepos.push(repoDir);
 
@@ -941,8 +941,8 @@ test("agentreadonly-protected: .sandbox/readonly is always mounted read-only", a
 // EM: Same bug class as .sandbox/ports; see
 // EM: design/implementation/plans/agentports.md.
 
-// ### Test: agentreadonly-created-if-missing
-test("agentreadonly-created-if-missing: a real session creates .sandbox/readonly with the default protected list", async () => {
+// ### Test: sandbox-readonly-created-if-missing
+test("sandbox-readonly-created-if-missing: a real session creates .sandbox/readonly with the default protected list", async () => {
 	const repoDir = await createTempRepo();
 	tempRepos.push(repoDir);
 
@@ -963,8 +963,8 @@ test("agentreadonly-created-if-missing: a real session creates .sandbox/readonly
 	}
 });
 
-// ### Test: agentreadonly-missing-file-not-writable-from-sandbox
-test("agentreadonly-missing-file-not-writable-from-sandbox: a session with no pre-existing .sandbox/readonly still protects it read-only", async () => {
+// ### Test: sandbox-readonly-missing-file-not-writable-from-sandbox
+test("sandbox-readonly-missing-file-not-writable-from-sandbox: a session with no pre-existing .sandbox/readonly still protects it read-only", async () => {
 	const repoDir = await createTempRepo();
 	tempRepos.push(repoDir);
 
@@ -1003,8 +1003,8 @@ test("agentreadonly-missing-file-not-writable-from-sandbox: a session with no pr
 	}
 });
 
-// ### Test: agentreadonly-home-directory-readonly
-test("agentreadonly-home-directory-readonly: .sandbox/readonly HOME bind is read-only", async () => {
+// ### Test: sandbox-readonly-home-directory-readonly
+test("sandbox-readonly-home-directory-readonly: .sandbox/readonly HOME bind is read-only", async () => {
 	// Create a test directory in home
 	const testHomeDir = `${process.env.HOME}/.scoder-test-home-bind`;
 	await Bun.spawn(["mkdir", "-p", testHomeDir]).exited;
@@ -1064,7 +1064,7 @@ test("agentreadonly-home-directory-readonly: .sandbox/readonly HOME bind is read
 	}
 });
 
-// ### Test: agentreadonly-home-file-bind-does-not-create-conflicting-dir
+// ### Test: sandbox-readonly-home-file-bind-does-not-create-conflicting-dir
 // Regression test: reported directly, an .sandbox/readonly $HOME/... entry
 // pointing at a FILE (not a directory) failed with
 // `bwrap: Can't create file at <path>: Is a directory`.
@@ -1078,7 +1078,7 @@ test("agentreadonly-home-directory-readonly: .sandbox/readonly HOME bind is read
 // ancestors get a --dir entry now, matching how a --ro-bind of a
 // directory never needed one for itself either (bwrap creates whatever
 // mountpoint type matches the source automatically).
-test("agentreadonly-home-file-bind-does-not-create-conflicting-dir: a file target binds without a bwrap directory-vs-file conflict", async () => {
+test("sandbox-readonly-home-file-bind-does-not-create-conflicting-dir: a file target binds without a bwrap directory-vs-file conflict", async () => {
 	const testHomeDir = `${process.env.HOME}/.scoder-test-home-file-bind`;
 	const testFile = `${testHomeDir}/nested/secret.txt`;
 	await Bun.spawn(["mkdir", "-p", `${testHomeDir}/nested`]).exited;
@@ -1119,8 +1119,8 @@ test("agentreadonly-home-file-bind-does-not-create-conflicting-dir: a file targe
 	}
 });
 
-// ### Test: agentreadonly-home-directory-must-exist
-test("agentreadonly-home-directory-must-exist: Non-existent HOME bind path fails with error", async () => {
+// ### Test: sandbox-readonly-home-directory-must-exist
+test("sandbox-readonly-home-directory-must-exist: Non-existent HOME bind path fails with error", async () => {
 	const repoDir = await createTempRepo();
 	tempRepos.push(repoDir);
 
@@ -1148,7 +1148,7 @@ test("agentreadonly-home-directory-must-exist: Non-existent HOME bind path fails
 	}
 });
 
-// ### Test: agentreadonly-home-nested-namespace-path-allowed
+// ### Test: sandbox-readonly-home-nested-namespace-path-allowed
 // Regression test: reported directly, $HOME/.local/share/fonts was
 // rejected outright with "overlaps reserved sandbox path" even though
 // nothing was bound at the bare $HOME/.local umbrella it nested under at
@@ -1159,9 +1159,9 @@ test("agentreadonly-home-directory-must-exist: Non-existent HOME bind path fails
 // Uses $HOME/.local/share/icons rather than the originally reported
 // .../fonts, since fonts has since become a fixed destination itself
 // (buildExtraBinds now binds it by default — see
-// agentreadonly-home-fonts-directory-now-redundant below) and so no
+// sandbox-readonly-home-fonts-directory-now-redundant below) and so no
 // longer illustrates "safely nested, not itself fixed."
-test("agentreadonly-home-nested-namespace-path-allowed: $HOME/.local/share/icons is not rejected as a reserved path", async () => {
+test("sandbox-readonly-home-nested-namespace-path-allowed: $HOME/.local/share/icons is not rejected as a reserved path", async () => {
 	const repoDir = await createTempRepo();
 	tempRepos.push(repoDir);
 	const iconsDir = `${process.env.HOME}/.local/share/icons`;
@@ -1187,12 +1187,12 @@ test("agentreadonly-home-nested-namespace-path-allowed: $HOME/.local/share/icons
 	}
 });
 
-// ### Test: agentreadonly-home-fonts-directory-now-redundant
+// ### Test: sandbox-readonly-home-fonts-directory-now-redundant
 // Fonts is now a fixed default bind (buildExtraBinds) — an .sandbox/readonly
 // entry for the exact same path is therefore a redundant re-declaration
 // of something scoder already handles, correctly rejected the same way
 // $HOME/.claude or $HOME/.config already are.
-test("agentreadonly-home-fonts-directory-now-redundant: $HOME/.local/share/fonts is rejected as a fixed destination", async () => {
+test("sandbox-readonly-home-fonts-directory-now-redundant: $HOME/.local/share/fonts is rejected as a fixed destination", async () => {
 	const repoDir = await createTempRepo();
 	tempRepos.push(repoDir);
 	const fontsDir = `${process.env.HOME}/.local/share/fonts`;
@@ -1380,7 +1380,7 @@ test("worktrunk-user-config-bound-readonly: ~/.config/worktrunk/config.toml is b
 	}
 });
 
-// ### Test: agentreadonly-home-ancestor-of-fixed-bind-still-rejected
+// ### Test: sandbox-readonly-home-ancestor-of-fixed-bind-still-rejected
 // The other half of the same fix: a bare umbrella is only safe to allow
 // when nothing fixed lives under it. $HOME/.config is an ancestor of
 // real fixed sub-binds (.config/mise, .config/gh — see buildExtraBinds
@@ -1388,7 +1388,7 @@ test("worktrunk-user-config-bound-readonly: ~/.config/worktrunk/config.toml is b
 // check is bidirectional (an .sandbox/readonly entry that is an ancestor OF
 // a fixed destination collides just as much as one that is a descendant
 // of it).
-test("agentreadonly-home-ancestor-of-fixed-bind-still-rejected: $HOME/.config is still rejected", async () => {
+test("sandbox-readonly-home-ancestor-of-fixed-bind-still-rejected: $HOME/.config is still rejected", async () => {
 	const repoDir = await createTempRepo();
 	tempRepos.push(repoDir);
 	const configDir = `${process.env.HOME}/.config`;
@@ -1968,8 +1968,8 @@ test("host-loopback-blocked: Host localhost HTTP server is unreachable", async (
 // EM: See design/implementation/plans/agentports.md. Replaces the old
 // EM: --llm-port flag entirely — llm-port-auto-detect and
 // EM: llm-port-allows-host-loopback lived here before; their functional
-// EM: coverage now lives in agentports-auto-detect-appends and
-// EM: agentports-forwards-listed-port below.
+// EM: coverage now lives in sandbox-ports-auto-detect-appends and
+// EM: sandbox-ports-forwards-listed-port below.
 
 // ### Test: llm-port-flag-removed
 test("llm-port-flag-removed: --llm-port is an unknown option", async () => {
@@ -1992,8 +1992,8 @@ test("llm-port-flag-removed: --llm-port is an unknown option", async () => {
 	}
 });
 
-// ### Test: agentports-forwards-listed-port
-test("agentports-forwards-listed-port: a port listed in .sandbox/ports is reachable without any flag", async () => {
+// ### Test: sandbox-ports-forwards-listed-port
+test("sandbox-ports-forwards-listed-port: a port listed in .sandbox/ports is reachable without any flag", async () => {
 	const repoDir = await createTempRepo();
 	tempRepos.push(repoDir);
 
@@ -2029,8 +2029,8 @@ test("agentports-forwards-listed-port: a port listed in .sandbox/ports is reacha
 	}
 });
 
-// ### Test: agentports-malformed-line-fails
-test("agentports-malformed-line-fails: a non-numeric line exits 1 naming the bad line", async () => {
+// ### Test: sandbox-ports-malformed-line-fails
+test("sandbox-ports-malformed-line-fails: a non-numeric line exits 1 naming the bad line", async () => {
 	const repoDir = await createTempRepo();
 	tempRepos.push(repoDir);
 
@@ -2052,8 +2052,8 @@ test("agentports-malformed-line-fails: a non-numeric line exits 1 naming the bad
 	}
 });
 
-// ### Test: agentports-is-readonly
-test("agentports-is-readonly: --dry-run shows a ro-bind for .sandbox/ports, not a bind", async () => {
+// ### Test: sandbox-ports-is-readonly
+test("sandbox-ports-is-readonly: --dry-run shows a ro-bind for .sandbox/ports, not a bind", async () => {
 	const repoDir = await createTempRepo();
 	tempRepos.push(repoDir);
 
@@ -2075,8 +2075,8 @@ test("agentports-is-readonly: --dry-run shows a ro-bind for .sandbox/ports, not 
 	}
 });
 
-// ### Test: agentports-auto-detect-appends
-test("agentports-auto-detect-appends: an auto-detected port is written to .sandbox/ports, once", async () => {
+// ### Test: sandbox-ports-auto-detect-appends
+test("sandbox-ports-auto-detect-appends: an auto-detected port is written to .sandbox/ports, once", async () => {
 	const repoDir = await createTempRepo();
 	tempRepos.push(repoDir);
 	const testPort = 19997;
@@ -2134,8 +2134,8 @@ test("agentports-auto-detect-appends: an auto-detected port is written to .sandb
 	}
 });
 
-// ### Test: agentports-auto-detect-skips-under-dry-run
-test("agentports-auto-detect-skips-under-dry-run: --dry-run with a detectable port does not write .sandbox/ports", async () => {
+// ### Test: sandbox-ports-auto-detect-skips-under-dry-run
+test("sandbox-ports-auto-detect-skips-under-dry-run: --dry-run with a detectable port does not write .sandbox/ports", async () => {
 	const repoDir = await createTempRepo();
 	tempRepos.push(repoDir);
 	const testPort = 19996;
@@ -2164,8 +2164,8 @@ test("agentports-auto-detect-skips-under-dry-run: --dry-run with a detectable po
 	}
 });
 
-// ### Test: agentports-not-created-under-dry-run
-test("agentports-not-created-under-dry-run: --dry-run with no .sandbox/ports does not create one", async () => {
+// ### Test: sandbox-ports-not-created-under-dry-run
+test("sandbox-ports-not-created-under-dry-run: --dry-run with no .sandbox/ports does not create one", async () => {
 	const repoDir = await createTempRepo();
 	tempRepos.push(repoDir);
 
@@ -2184,8 +2184,8 @@ test("agentports-not-created-under-dry-run: --dry-run with no .sandbox/ports doe
 // EM: the sandboxed agent create .sandbox/ports itself, with whatever ports it
 // EM: likes, unprotected, from that point on.
 
-// ### Test: agentports-created-if-missing
-test("agentports-created-if-missing: a real session creates .sandbox/ports with a header comment", async () => {
+// ### Test: sandbox-ports-created-if-missing
+test("sandbox-ports-created-if-missing: a real session creates .sandbox/ports with a header comment", async () => {
 	const repoDir = await createTempRepo();
 	tempRepos.push(repoDir);
 
@@ -2206,8 +2206,8 @@ test("agentports-created-if-missing: a real session creates .sandbox/ports with 
 	}
 });
 
-// ### Test: agentports-missing-file-not-writable-from-sandbox
-test("agentports-missing-file-not-writable-from-sandbox: a session with no pre-existing .sandbox/ports still protects it read-only", async () => {
+// ### Test: sandbox-ports-missing-file-not-writable-from-sandbox
+test("sandbox-ports-missing-file-not-writable-from-sandbox: a session with no pre-existing .sandbox/ports still protects it read-only", async () => {
 	const repoDir = await createTempRepo();
 	tempRepos.push(repoDir);
 
@@ -4981,8 +4981,8 @@ async function createFakePastaShim(
 	return shimDir;
 }
 
-// ### Test: agentports-live-reload-adds-port
-test("agentports-live-reload-adds-port: editing .sandbox/ports mid-session reattaches with the new ports", async () => {
+// ### Test: sandbox-ports-live-reload-adds-port
+test("sandbox-ports-live-reload-adds-port: editing .sandbox/ports mid-session reattaches with the new ports", async () => {
 	const repoDir = await createTempRepo();
 	tempRepos.push(repoDir);
 	const logPath = `${repoDir}-pasta.log`;
@@ -5027,8 +5027,8 @@ test("agentports-live-reload-adds-port: editing .sandbox/ports mid-session reatt
 	}
 });
 
-// ### Test: agentports-live-reload-bad-edit-keeps-old-config
-test("agentports-live-reload-bad-edit-keeps-old-config: a failed reattach falls back to the previous ports", async () => {
+// ### Test: sandbox-ports-live-reload-bad-edit-keeps-old-config
+test("sandbox-ports-live-reload-bad-edit-keeps-old-config: a failed reattach falls back to the previous ports", async () => {
 	const repoDir = await createTempRepo();
 	tempRepos.push(repoDir);
 	const logPath = `${repoDir}-pasta.log`;
@@ -5100,8 +5100,8 @@ function readwriteTargetPath(): string {
 	return `${process.env.HOME}/.scoder-test-readwrite-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
 }
 
-// ### Test: agentreadwrite-resolves-rw
-test("agentreadwrite-resolves-rw: reads and writes through an .sandbox/readwrite entry reach the real target", async () => {
+// ### Test: sandbox-readwrite-resolves-rw
+test("sandbox-readwrite-resolves-rw: reads and writes through an .sandbox/readwrite entry reach the real target", async () => {
 	const repoDir = await createTempRepo();
 	tempRepos.push(repoDir);
 	const target = readwriteTargetPath();
@@ -5127,12 +5127,12 @@ test("agentreadwrite-resolves-rw: reads and writes through an .sandbox/readwrite
 	}
 });
 
-// ### Test: agentreadwrite-created-if-missing
+// ### Test: sandbox-readwrite-created-if-missing
 // Same bug class already fixed twice, for .sandbox/readonly and .sandbox/ports —
 // a missing source path gets no bind mount at all, which would leave a
 // freshly created default writable from inside the very session that
 // finds it missing.
-test("agentreadwrite-created-if-missing: a missing .sandbox/readwrite is created and protected in the same session", async () => {
+test("sandbox-readwrite-created-if-missing: a missing .sandbox/readwrite is created and protected in the same session", async () => {
 	const repoDir = await createTempRepo();
 	tempRepos.push(repoDir);
 
@@ -5168,8 +5168,8 @@ test("agentreadwrite-created-if-missing: a missing .sandbox/readwrite is created
 	}
 });
 
-// ### Test: agentreadwrite-self-protected-readonly
-test("agentreadwrite-self-protected-readonly: .sandbox/readwrite itself is always read-only inside the sandbox", async () => {
+// ### Test: sandbox-readwrite-self-protected-readonly
+test("sandbox-readwrite-self-protected-readonly: .sandbox/readwrite itself is always read-only inside the sandbox", async () => {
 	const repoDir = await createTempRepo();
 	tempRepos.push(repoDir);
 
@@ -5188,8 +5188,8 @@ test("agentreadwrite-self-protected-readonly: .sandbox/readwrite itself is alway
 	}
 });
 
-// ### Test: agentreadwrite-missing-target-created
-test("agentreadwrite-missing-target-created: a not-yet-existing target is created rather than left dangling", async () => {
+// ### Test: sandbox-readwrite-missing-target-created
+test("sandbox-readwrite-missing-target-created: a not-yet-existing target is created rather than left dangling", async () => {
 	const repoDir = await createTempRepo();
 	tempRepos.push(repoDir);
 	const target = readwriteTargetPath(); // deliberately never created
@@ -5207,7 +5207,7 @@ test("agentreadwrite-missing-target-created: a not-yet-existing target is create
 		// The session itself may still fail later (pasta attaching), but the
 		// target directory is created while building the bwrap command,
 		// before that point is ever reached — same reasoning as
-		// agentreadonly-created-default.
+		// sandbox-readonly-created-default.
 		expect(await dirExists(target)).toBe(true);
 	} finally {
 		await Bun.spawn(["rm", "-rf", target]).exited;
@@ -5215,8 +5215,8 @@ test("agentreadwrite-missing-target-created: a not-yet-existing target is create
 	}
 });
 
-// ### Test: agentreadwrite-missing-target-not-created-under-dry-run
-test("agentreadwrite-missing-target-not-created-under-dry-run: --dry-run stays side-effect free", async () => {
+// ### Test: sandbox-readwrite-missing-target-not-created-under-dry-run
+test("sandbox-readwrite-missing-target-not-created-under-dry-run: --dry-run stays side-effect free", async () => {
 	const repoDir = await createTempRepo();
 	tempRepos.push(repoDir);
 	const target = readwriteTargetPath();
@@ -5234,8 +5234,8 @@ test("agentreadwrite-missing-target-not-created-under-dry-run: --dry-run stays s
 	}
 });
 
-// ### Test: agentreadwrite-outside-home-rejected
-test("agentreadwrite-outside-home-rejected: a line not starting with $HOME/ exits non-zero with a clear error", async () => {
+// ### Test: sandbox-readwrite-outside-home-rejected
+test("sandbox-readwrite-outside-home-rejected: a line not starting with $HOME/ exits non-zero with a clear error", async () => {
 	const repoDir = await createTempRepo();
 	tempRepos.push(repoDir);
 
@@ -5257,8 +5257,8 @@ test("agentreadwrite-outside-home-rejected: a line not starting with $HOME/ exit
 	}
 });
 
-// ### Test: agentreadwrite-escape-via-symlink-rejected
-test("agentreadwrite-escape-via-symlink-rejected: a $HOME entry that resolves outside $HOME via a symlink is rejected", async () => {
+// ### Test: sandbox-readwrite-escape-via-symlink-rejected
+test("sandbox-readwrite-escape-via-symlink-rejected: a $HOME entry that resolves outside $HOME via a symlink is rejected", async () => {
 	const repoDir = await createTempRepo();
 	tempRepos.push(repoDir);
 	const linkName = `.scoder-test-readwrite-escape-${Date.now()}`;
@@ -5284,10 +5284,10 @@ test("agentreadwrite-escape-via-symlink-rejected: a $HOME entry that resolves ou
 	}
 });
 
-// ### Test: agentreadwrite-overlapping-fixed-bind-rejected
+// ### Test: sandbox-readwrite-overlapping-fixed-bind-rejected
 const localBinExists = await dirExists(`${process.env.HOME}/.local/bin`);
 test.skipIf(!localBinExists)(
-	"agentreadwrite-overlapping-fixed-bind-rejected: an entry matching a fixed scoder bind is a hard error",
+	"sandbox-readwrite-overlapping-fixed-bind-rejected: an entry matching a fixed scoder bind is a hard error",
 	async () => {
 		const repoDir = await createTempRepo();
 		tempRepos.push(repoDir);
@@ -5311,13 +5311,13 @@ test.skipIf(!localBinExists)(
 	},
 );
 
-// ### Test: agentreadwrite-nested-under-namespace-umbrella-allowed
+// ### Test: sandbox-readwrite-nested-under-namespace-umbrella-allowed
 // The one deliberate difference from .sandbox/readonly's own overlap check:
 // nesting under a bare namespace umbrella (.cache, here) that is never
 // actually populated by a real bind, just scaffolded empty by builder.ts's
 // own --dir list, is allowed — this is the feature's own motivating use
 // case ($HOME/.cache/<tool>).
-test("agentreadwrite-nested-under-namespace-umbrella-allowed: $HOME/.cache/<tool> is not rejected", async () => {
+test("sandbox-readwrite-nested-under-namespace-umbrella-allowed: $HOME/.cache/<tool> is not rejected", async () => {
 	const repoDir = await createTempRepo();
 	tempRepos.push(repoDir);
 	const target = `${process.env.HOME}/.cache/.scoder-test-readwrite-${Date.now()}`;
@@ -5334,8 +5334,8 @@ test("agentreadwrite-nested-under-namespace-umbrella-allowed: $HOME/.cache/<tool
 	}
 });
 
-// ### Test: agentreadwrite-overlapping-agentreadonly-rejected
-test("agentreadwrite-overlapping-agentreadonly-rejected: the same $HOME path in both files is a hard error", async () => {
+// ### Test: sandbox-readwrite-overlapping-readonly-rejected
+test("sandbox-readwrite-overlapping-readonly-rejected: the same $HOME path in both files is a hard error", async () => {
 	const repoDir = await createTempRepo();
 	tempRepos.push(repoDir);
 	const target = readwriteTargetPath();
@@ -5364,8 +5364,8 @@ test("agentreadwrite-overlapping-agentreadonly-rejected: the same $HOME path in 
 	}
 });
 
-// ### Test: agentreadwrite-real-passthrough-unaffected
-test("agentreadwrite-real-passthrough-unaffected: an ordinary tracked file still writes straight through with .sandbox/readwrite present", async () => {
+// ### Test: sandbox-readwrite-real-passthrough-unaffected
+test("sandbox-readwrite-real-passthrough-unaffected: an ordinary tracked file still writes straight through with .sandbox/readwrite present", async () => {
 	const repoDir = await createTempRepo();
 	tempRepos.push(repoDir);
 	const target = readwriteTargetPath();
@@ -5390,8 +5390,8 @@ test("agentreadwrite-real-passthrough-unaffected: an ordinary tracked file still
 	}
 });
 
-// ### Test: agentreadwrite-survives-fresh-worktree
-test("agentreadwrite-survives-fresh-worktree: a tracked .sandbox/readwrite still resolves rw after worktree creation", async () => {
+// ### Test: sandbox-readwrite-survives-fresh-worktree
+test("sandbox-readwrite-survives-fresh-worktree: a tracked .sandbox/readwrite still resolves rw after worktree creation", async () => {
 	const repoDir = await createTempRepo();
 	tempRepos.push(repoDir);
 	const target = readwriteTargetPath();

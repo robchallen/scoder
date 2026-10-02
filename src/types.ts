@@ -7,6 +7,10 @@ export interface ScoderOptions {
 	worktree: boolean;
 	sshTarget: string | null;
 	ide: string | null;
+	// EM: --native-display: GUI presets draw on the host's X session directly
+	// EM: instead of under an xpra server. A warned opt-out (ADR 0005), not a
+	// EM: fallback — the default stays xpra.
+	nativeDisplay: boolean;
 }
 
 /**

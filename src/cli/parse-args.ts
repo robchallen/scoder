@@ -35,7 +35,16 @@ Options:
                             shuts down. e.g. scoder pi --ide rstudio
                             GUI presets need xpra — their windows are
                             forwarded from a virtual display inside the
-                            sandbox, not drawn on the host's X server
+                            sandbox, not drawn on the host's X server;
+                            --native-display opts out of that
+       --native-display    For a session running a GUI preset, draw on the
+                            host's X session directly instead of forwarding
+                            windows from a private virtual display: sandboxed
+                            programs can then read the screen and inject
+                            input into OTHER windows on the display (ADR 0005).
+                            xpra stays the default; this is the warned
+                            opt-out for when xpra's translation costs more
+                            than its isolation buys
        --dry-run           Print the bwrap command without executing
 
 Setup (run once, requires sudo):
@@ -71,6 +80,7 @@ export function parseArgs(args: string[]): ParseResult {
 		worktree: false,
 		sshTarget: null,
 		ide: null,
+		nativeDisplay: false,
 	};
 
 	let toolName: string | null = null;
@@ -112,6 +122,16 @@ export function parseArgs(args: string[]): ParseResult {
 
 		if (arg === "--dry-run") {
 			options.dryRun = true;
+			i++;
+			continue;
+		}
+
+		// EM: --native-display is parsed before the tool name only, unlike
+		// EM: --ide: it is a display grant the operator chooses, not the
+		// EM: tool's business, and there is no `scoder rstudio --native-display`
+		// EM: spelling — after the tool name it is the tool's own argv.
+		if (arg === "--native-display") {
+			options.nativeDisplay = true;
 			i++;
 			continue;
 		}

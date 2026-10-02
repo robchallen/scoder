@@ -3044,6 +3044,388 @@ test.skipIf(!xpraTestToolsAvailable)(
 	60_000,
 );
 
+// EM: ### Tests for --native-display (ADR 0005)
+// EM: The mirror image of the xpra tests above: there, host X11 access is
+// EM: the thing asserted ABSENT; here it is the thing asserted present — but
+// EM: only under the flag, which is exactly why both halves exist. The
+// EM: default-mode tests (gui-preset-binds-xpra-socket-not-host-x11 above,
+// EM: ide-flag-merges-companion-binds below) are the regression guard for
+// EM: "xpra is still the default" and are deliberately not edited.
+// EM:
+// EM: Placed after FAKE_RSTUDIO_MARKER/realRstudioInstalled (module-level
+// EM: const in skipIf guards would hit their TDZ earlier in the file), and
+// EM: before the --ide tests it also depends on nothing.
+
+function flattenDryRun(output: string): string {
+	// printBwrapCommand breaks lines at every --flag (" \\\n  " between
+	// them); assertions that span a flag and its operands need the command
+	// on one line. The match starts at the backslash, so the space before
+	// it survives and wrapped segments come back joined by two spaces —
+	// assertions spanning a wrap must use \s+ for that reason (operands on
+	// one printed line keep their single space).
+	return output.replace(/\\\n\s+/g, " ");
+}
+
+async function runScoderRaw(
+	repoDir: string,
+	args: string[],
+	env?: Record<string, string>,
+): Promise<{ code: number; stdout: string; stderr: string }> {
+	const proc = await Bun.spawn([SCODER_PATH, ...args], {
+		cwd: repoDir,
+		env: { ...process.env, ...env },
+		stdin: "ignore",
+		stdout: "pipe",
+		stderr: "pipe",
+	});
+	const stdout = await new Response(proc.stdout).text();
+	const stderr = await new Response(proc.stderr).text();
+	const code = await proc.exited;
+	return { code, stdout, stderr };
+}
+
+// EM: The native grants are conditional on host state a headless CI
+// EM: container does not have: a desktop has /tmp/.X11-unix and an xauth
+// EM: cookie, and scoder refuses the flag without a DISPLAY (checked by its
+// EM: own test). Synthesising the pieces rather than skipping keeps these
+// EM: assertions running in CI; create-if-missing / remove-if-we-made-it
+// EM: leaves a real desktop host running the suite untouched.
+async function createFakeX11HostState(): Promise<{
+	cookiePath: string;
+	cleanup: () => Promise<void>;
+}> {
+	const createdX11Dir = !(await dirExists("/tmp/.X11-unix"));
+	if (createdX11Dir) {
+		await Bun.spawn(["mkdir", "-p", "/tmp/.X11-unix"]).exited;
+	}
+	const cookieDir = `/tmp/scoder-fake-xauth-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
+	await Bun.spawn(["mkdir", "-p", cookieDir]).exited;
+	const cookiePath = `${cookieDir}/cookie`;
+	await Bun.write(cookiePath, "fake-xauth-cookie\n");
+	return {
+		cookiePath,
+		cleanup: async () => {
+			await Bun.spawn(["rm", "-rf", cookieDir]).exited;
+			if (createdX11Dir) {
+				await Bun.spawn(["rm", "-rf", "/tmp/.X11-unix"]).exited;
+			}
+		},
+	};
+}
+
+// ### Test: native-display-grants-host-x11-with-private-bus
+// EM: The direct form (`scoder rstudio`, no --ide): the X11 grant comes back
+// EM: exactly as ADR 0002 shipped it and ADR 0003 withdrew it — plus the one
+// EM: thing that was never allowed then and still is not: no host session
+// EM: bus (ADR 0004). The cookie bind is the single-file carve-out ADR 0005
+// EM: names; the two XAUTHORITY tests ADR 0003 deleted asserted its absence,
+// EM: this one asserts its presence, and only under the flag.
+test("native-display-grants-host-x11-with-private-bus: the flag grants host X11 to a GUI preset, wraps the tool in dbus-run-session, and keeps every /run and bus invariant", async () => {
+	const repoDir = await createTempRepo();
+	tempRepos.push(repoDir);
+	const fakeBinDir = await createFakeToolDir("rstudio");
+	const x11 = await createFakeX11HostState();
+
+	try {
+		const output = await runScoder(
+			repoDir,
+			["--native-display", "--dry-run", "rstudio"],
+			{
+				PATH: `${fakeBinDir}:${process.env.PATH}`,
+				DISPLAY: ":42",
+				XAUTHORITY: x11.cookiePath,
+			},
+		);
+		const flat = flattenDryRun(output);
+
+		// The grant: socket directory and cookie, both read-only; the cookie
+		// normalised to one stable spelling in the sandbox's $HOME whatever
+		// the host's path is (the GDM /run/user case).
+		expect(flat).toContain("--ro-bind /tmp/.X11-unix /tmp/.X11-unix");
+		expect(flat).toContain(
+			`--ro-bind ${x11.cookiePath} ${SANDBOX_HOME}/.Xauthority`,
+		);
+		expect(flat).toContain("--setenv DISPLAY :42");
+		expect(flat).toContain(`--setenv XAUTHORITY ${SANDBOX_HOME}/.Xauthority`);
+
+		// Direct form: the private session bus is a wrap of the exec vector,
+		// never an environment grant — and its wrapper is present.
+		expect(flat).toMatch(/-- dbus-run-session\s+--\s+\S*rstudio/);
+		expect(flat).not.toContain("--setenv DBUS_SESSION_BUS_ADDRESS");
+
+		// The /run invariant the whole plan started from: tmpfs still there,
+		// fresh /run/user/<uid> still created, and with the test cookie under
+		// /tmp not one host /run path enters the command — the named
+		// carve-out is a single file, never a directory, and never here.
+		expect(flat).toContain("--tmpfs /run");
+		expect(flat).toMatch(/--dir \/run\/user\/\d+/);
+		expect(flat).not.toMatch(/--ro-bind \/run\//);
+		expect(flat).not.toMatch(/--bind \/run\//);
+
+		// xpra is entirely out of this path: no socket dir, no env, and no
+		// entry point — the direct form still direct-execs, so the
+		// `if (ideBin || xpra)` gate did not grow for it.
+		expect(flat).not.toContain("XPRA_SOCKET");
+		expect(flat).not.toContain("XPRA_MMAP");
+		expect(flat).not.toMatch(/--bind \/tmp\/scoder-[0-9a-f]{8}\/xpra/);
+		expect(flat).not.toContain("scoder-entrypoint.sh");
+	} finally {
+		await x11.cleanup();
+		await Bun.spawn(["rm", "-rf", fakeBinDir]).exited;
+		await cleanupRepo(repoDir);
+	}
+});
+
+// ### Test: native-display-companion-bus-is-env-knob-not-argv-wrap
+// EM: The companion form (`scoder pi --ide rstudio`): the bus moves from the
+// EM: exec vector into the entry point's DBUS_BUS knob, because the measured
+// EM: ENTER-handshake signals $! directly and dbus-run-session forwards no
+// EM: signals (orphaning the child) — $! has to stay the IDE's real pid for
+// EM: the per-IDE shutdown values to keep meaning what they measured. The
+// EM: harness's argv stays exactly as composed.
+test("native-display-companion-bus-is-env-knob-not-argv-wrap: --ide with the flag sets DBUS_BUS, wraps nothing, and passes no bus address", async () => {
+	const repoDir = await createTempRepo();
+	tempRepos.push(repoDir);
+	const piDir = await createFakeToolDir("pi");
+	const rstudioDir = await createFakeToolDir("rstudio");
+	const x11 = await createFakeX11HostState();
+
+	try {
+		const output = await runScoder(
+			repoDir,
+			[
+				"--native-display",
+				"--dry-run",
+				"--no-worktree",
+				"pi",
+				"--ide",
+				"rstudio",
+			],
+			{
+				PATH: `${piDir}:${rstudioDir}:${process.env.PATH}`,
+				DISPLAY: ":42",
+				XAUTHORITY: x11.cookiePath,
+			},
+		);
+		const flat = flattenDryRun(output);
+
+		expect(flat).toContain("--setenv DBUS_BUS ide");
+		expect(flat).not.toContain("dbus-run-session");
+		// pi alone in the harness vector: the bus did not prepend anything
+		// to the primary tool's argv.
+		expect(flat).toContain("--setenv HARNESS_ARGC 1");
+
+		// The companion gets the same native X11 grant the direct form does,
+		// and xpra nothing at all.
+		expect(flat).toContain("--ro-bind /tmp/.X11-unix /tmp/.X11-unix");
+		expect(flat).toContain("--setenv DISPLAY :42");
+		expect(flat).not.toContain("XPRA_SOCKET");
+		expect(flat).not.toContain("XPRA_TARGET");
+		expect(flat).not.toContain("--setenv DBUS_SESSION_BUS_ADDRESS");
+		expect(flat).toContain("--tmpfs /run");
+	} finally {
+		await x11.cleanup();
+		await Bun.spawn(["rm", "-rf", piDir, rstudioDir]).exited;
+		await cleanupRepo(repoDir);
+	}
+});
+
+// ### Test: native-display-requires-a-gui-preset
+// EM: Silently accepting a flag that widens access is worse than refusing
+// EM: it: the flag exists to NAME what it gives up, so in a session with no
+// EM: GUI in it there is nothing for it to mean.
+test("native-display-requires-a-gui-preset: a non-GUI session with the flag is a named error", async () => {
+	const repoDir = await createTempRepo();
+	tempRepos.push(repoDir);
+	const fakeBinDir = await createFakeToolDir("pi");
+
+	try {
+		const { code, stderr } = await runScoderRaw(
+			repoDir,
+			["--native-display", "--dry-run", "pi"],
+			{ PATH: `${fakeBinDir}:${process.env.PATH}` },
+		);
+
+		expect(code).toBe(1);
+		expect(stderr).toContain(
+			"--native-display only applies to a session running a GUI preset",
+		);
+		expect(stderr).toContain("rstudio");
+	} finally {
+		await Bun.spawn(["rm", "-rf", fakeBinDir]).exited;
+		await cleanupRepo(repoDir);
+	}
+});
+
+// ### Test: native-display-warns-calibrated-to-the-display
+// EM: The warning is ADR 0005's pricing section rendered at run time, and
+// EM: the price differs by what is behind DISPLAY: Xorg grants read+XTEST
+// EM: over every window (measured, ADR 0002); under XWayland the compositor
+// EM: isolates Wayland-native windows and the grant covers the X ones. An
+// EM: empty WAYLAND_DISPLAY takes the Xorg wording — falsy is falsy for the
+// EM: branch, and the test environment may legitimately carry either.
+test("native-display-warns-calibrated-to-the-display: the grant is named on both Xorg and XWayland hosts", async () => {
+	const repoDir = await createTempRepo();
+	tempRepos.push(repoDir);
+	const fakeBinDir = await createFakeToolDir("rstudio");
+	const x11 = await createFakeX11HostState();
+
+	try {
+		const baseEnv = {
+			PATH: `${fakeBinDir}:${process.env.PATH}`,
+			DISPLAY: ":42",
+			XAUTHORITY: x11.cookiePath,
+		};
+
+		const xorg = await runScoderRaw(
+			repoDir,
+			["--native-display", "--dry-run", "rstudio"],
+			{ ...baseEnv, WAYLAND_DISPLAY: "" },
+		);
+		expect(xorg.code).toBe(0);
+		expect(xorg.stderr).toContain(
+			"the GUI runs on the host's own X session, not a private one",
+		);
+		expect(xorg.stderr).toContain(
+			"inject input into every window on this X session",
+		);
+
+		const wayland = await runScoderRaw(
+			repoDir,
+			["--native-display", "--dry-run", "rstudio"],
+			{ ...baseEnv, WAYLAND_DISPLAY: "wayland-0" },
+		);
+		expect(wayland.code).toBe(0);
+		expect(wayland.stderr).toContain("XWayland");
+		// The alternative is named in both spellings — the flag is an
+		// opt-out, not a recommendation.
+		expect(wayland.stderr).toContain(
+			"xpra forwards only this session's windows",
+		);
+	} finally {
+		await x11.cleanup();
+		await Bun.spawn(["rm", "-rf", fakeBinDir]).exited;
+		await cleanupRepo(repoDir);
+	}
+});
+
+// ### Test: entrypoint-invocation-dbus-bus-knob
+test("entrypoint-invocation-dbus-bus-knob: DBUS_BUS reaches the entry point only for the native companion form, and changes no argv", () => {
+	const plain = buildEntrypointInvocation("pi", [], "rstudio", []);
+	expect(plain.env.DBUS_BUS).toBeUndefined();
+
+	const busied = buildEntrypointInvocation(
+		"pi",
+		[],
+		"rstudio",
+		[],
+		DEFAULT_IDE_SHUTDOWN,
+		undefined,
+		"ide",
+	);
+	expect(busied.env.DBUS_BUS).toBe("ide");
+	expect(busied.argv).toEqual(plain.argv);
+});
+
+// ### Test: native-display-entrypoint-bus-beside-ide
+// EM: The script-level contract of Decision 5: beside the IDE, not above
+// EM: it. The bus address prefixes the IDE's launch line only (so the
+// EM: harness stays bus-less and $! stays the IDE's real pid), and the
+// EM: daemon is killed once the IDE is gone.
+test("native-display-entrypoint-bus-beside-ide: the companion bus is an env prefix on the IDE's line, never an export and never a wrapper", async () => {
+	const script = await Bun.file(ENTRYPOINT_SRC).text();
+
+	// biome-ignore-start lint/suspicious/noTemplateCurlyInString: these are
+	// literal bash "${...}" references from entrypoint.sh, not forgotten JS
+	// template placeholders — plain strings, never interpolated.
+	expect(script).toContain('DBUS_SESSION_BUS_ADDRESS="$BUS_ADDRESS"');
+	expect(script).not.toContain("export DBUS_SESSION_BUS_ADDRESS");
+	expect(script).toContain('kill "$BUS_PID"');
+	// The measured no-signal-forwarding wrapper must not be *invoked*
+	// here (the rationale comment names it, so presence is not the
+	// test — being the start of a command line is) — that is the direct
+	// form's mechanism only.
+	expect(script).not.toMatch(/^\s*dbus-run-session/m);
+	// biome-ignore-end lint/suspicious/noTemplateCurlyInString: see above
+});
+
+// ### Test: native-display-private-bus-runs-in-sandbox
+// EM: The runtime half of the direct form, where the container allows it:
+// EM: a real sandbox launch of a fake GUI tool through the dbus-run-session
+// EM: wrap, asserting the child really got a private bus and that its exit
+// EM: status survived the wrap (the property that makes the wrapper safe in
+// EM: the direct form and, per the measurement, unsafe in the companion
+// EM: one). DISPLAY :42 has no server — the fake never connects; what's
+// EM: under test is the bus and the status, not the display round-trip,
+// EM: which the real-desktop checklist carries.
+test.skipIf(
+	!(await commandAvailable("bwrap")) ||
+		!(await commandAvailable("dbus-run-session")) ||
+		(await realRstudioInstalled()),
+)(
+	"native-display-private-bus-runs-in-sandbox: the wrapped child gets a private bus and its exit status propagates",
+	async () => {
+		const repoDir = await createTempRepo();
+		tempRepos.push(repoDir);
+		const shimDir = await createFakePastaShim(
+			`/tmp/scoder-native-e2e-${Date.now()}.log`,
+		);
+		const x11 = await createFakeX11HostState();
+		const fakeRstudioPath = `${process.env.HOME}/.local/bin/rstudio`;
+
+		try {
+			await Bun.write(
+				fakeRstudioPath,
+				[
+					"#!/bin/bash",
+					FAKE_RSTUDIO_MARKER,
+					`echo "$DBUS_SESSION_BUS_ADDRESS" > ${repoDir}/dbus-env.txt`,
+					`echo "display=$DISPLAY" > ${repoDir}/display.txt`,
+					"exit 42",
+				].join("\n"),
+			);
+			await Bun.spawn(["chmod", "+x", fakeRstudioPath]).exited;
+
+			const { code } = await runScoderRaw(
+				repoDir,
+				["--native-display", "--no-worktree", "rstudio"],
+				{
+					PATH: `${shimDir}:${process.env.PATH}`,
+					DISPLAY: ":42",
+					XAUTHORITY: x11.cookiePath,
+				},
+			);
+
+			// 42 travelled child -> dbus-run-session -> bwrap -> scoder.
+			// The measurement, run through the real stack this time.
+			expect(code).toBe(42);
+
+			const busAddress = (await Bun.file(`${repoDir}/dbus-env.txt`)).text();
+			const address = (await busAddress).trim();
+			expect(address.length).toBeGreaterThan(0);
+			expect(address).toStartWith("unix:");
+			// Private: wherever it landed (the sandbox's own /run/user on the
+			// tmpfs, or its /tmp fallback), it is a sandbox path — the host
+			// session bus address was never passed in, and the container's
+			// environment does not even have one to echo.
+			expect(
+				(address.includes("/tmp/") && address.includes("dbus")) ||
+					address.includes("/run/user/"),
+			).toBe(true);
+
+			expect(await Bun.file(`${repoDir}/display.txt`).text()).toContain(
+				"display=:42",
+			);
+		} finally {
+			await Bun.spawn(["rm", "-f", fakeRstudioPath]).exited;
+			await Bun.spawn(["rm", "-rf", shimDir]).exited;
+			await x11.cleanup();
+			await cleanupRepo(repoDir);
+		}
+	},
+	30_000,
+);
+
 // EM: ### Tests for --ide (companion IDE alongside the primary tool)
 // EM: See design/features/ide-companion.md. Uses fake pi/rstudio binaries
 // EM: (same reasoning as the rstudio-preset dry-run tests above — what's

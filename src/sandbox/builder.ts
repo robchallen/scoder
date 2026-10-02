@@ -63,6 +63,16 @@ export interface SandboxConfig {
 	// EM: Set when this session runs a GUI preset, as either the primary tool
 	// EM: or the --ide companion. See design/features/xpra-gui-isolation.md.
 	xpra?: XpraWrap;
+	// EM: --native-display (ADR 0005): which side's GUI program gets a
+	// EM: private session bus in place of xpra's --dbus-launch. The harness
+	// EM: form wraps its exec vector with dbus-run-session; the ide form
+	// EM: hands DBUS_BUS to the entry point, which starts the bus BESIDE the
+	// EM: IDE — a wrapper above $! is disqualifying there (measured:
+	// EM: dbus-run-session forwards no signals and orphans its child, so the
+	// EM: ENTER handshake's first press would kill the wrapper and orphan the
+	// EM: IDE). The bus address never reaches this command's env: it is born
+	// EM: inside the sandbox and dies there.
+	nativeDBus?: "harness" | "ide";
 	protectionConfig?: ProtectionConfig;
 }
 
@@ -90,6 +100,7 @@ export async function buildBwrapCommand(
 		ideArgs,
 		ideShutdown,
 		xpra,
+		nativeDBus,
 		protectionConfig,
 	} = config;
 
@@ -459,18 +470,37 @@ export async function buildBwrapCommand(
 	// EM: `--` marks end-of-options, so a tool path beginning with `-` cannot be
 	// EM: mistaken for a bwrap flag. Previously this separated pasta's options
 	// EM: from the command; bwrap accepts it in the same role.
+	// EM: --native-display's private session bus, harness form (ADR 0005):
+	// EM: dbus-run-session starts a bus per command, its socket lands on the
+	// EM: sandbox's own /tmp tmpfs, and its address exists only inside the
+	// EM: sandbox — nothing here adds DBUS_SESSION_BUS_ADDRESS to the built
+	// EM: command. Safe as an exec-vector wrapper because the child's exit
+	// EM: status propagates (measured, dbus 1.16.2: child exit 42 -> runner
+	// EM: exit 42) and Ctrl-C reaches everyone via installSignalForwarding's
+	// EM: process-group kill, which no wrapper can stand in the way of. The
+	// EM: ide form must NOT do this — the ENTER handshake signals $!
+	// EM: directly, and the same build forwards no signals (measured); it
+	// EM: gets DBUS_BUS below instead, with $! left as the IDE's real pid.
+	const harnessBin = nativeDBus === "harness" ? "dbus-run-session" : toolBin;
+	const harnessArgs =
+		nativeDBus === "harness" ? ["--", toolBin, ...toolArgs] : toolArgs;
+
 	// EM: The entry point is used whenever anything beyond "exec the tool"
 	// EM: has to happen inside the sandbox — a companion IDE to background, or
 	// EM: an xpra server to start. `scoder rstudio` with no --ide hits the
 	// EM: second case alone, which is why this is not simply `if (ideBin)`.
+	// EM: Native mode with no companion is deliberately NOT a third case:
+	// EM: its whole bus mechanism is the exec-vector prepend above, so the
+	// EM: direct-exec path still applies (plan native-display.md, Decision 5).
 	if (ideBin || xpra) {
 		const entry = buildEntrypointInvocation(
-			toolBin,
-			toolArgs,
+			harnessBin,
+			harnessArgs,
 			ideBin,
 			ideArgs ?? [],
 			ideShutdown ?? DEFAULT_IDE_SHUTDOWN,
 			xpra,
+			nativeDBus === "ide" ? "ide" : undefined,
 		);
 		for (const [name, value] of Object.entries(entry.env)) {
 			cmd.push("--setenv", name, value);
@@ -485,7 +515,7 @@ export async function buildBwrapCommand(
 		// EM: that mode carrying an executable bit through the bind.
 		cmd.push("--", "bash", ENTRYPOINT_DEST, ...entry.argv);
 	} else {
-		cmd.push("--", toolBin, ...toolArgs);
+		cmd.push("--", harnessBin, ...harnessArgs);
 	}
 
 	// EM: Everything above is the INNER layer. Wrapping it in the outer /dev
@@ -704,6 +734,7 @@ export function buildEntrypointInvocation(
 	ideArgs: string[],
 	ideShutdown: IdeShutdown = DEFAULT_IDE_SHUTDOWN,
 	xpra?: XpraWrap,
+	dbusBus?: "ide",
 ): { env: Record<string, string>; argv: string[] } {
 	const ideArgv = ideBin ? [ideBin, ...ideArgs] : [];
 
@@ -714,6 +745,21 @@ export function buildEntrypointInvocation(
 		IDE_SIG: ideShutdown.signal,
 		IDE_ORDER: ideShutdown.order,
 	};
+
+	// EM: Presence is the switch, like XPRA_SOCKET above: unset for every
+	// EM: xpra session and every native non-GUI session, so the script's
+	// EM: dbus block is a no-op there and --dry-run output stays honest
+	// EM: about which path a session takes. This is the companion form of
+	// EM: --native-display's private session bus (ADR 0005): the script
+	// EM: starts `dbus-launch` beside the IDE and prefixes its address onto
+	// EM: the IDE's launch line only, so $! remains the IDE's real pid and
+	// EM: the measured per-IDE shutdown signals keep working — a
+	// EM: dbus-run-session wrapper here would forward none of them
+	// EM: (measured, dbus 1.16.2). Never set together with xpra: native
+	// EM: mode and an xpra server are mutually exclusive per session.
+	if (dbusBus) {
+		env.DBUS_BUS = dbusBus;
+	}
 
 	// EM: Presence is the switch, so a non-GUI session sets nothing and the
 	// EM: script takes the direct-exec path for both programs. Never set to an

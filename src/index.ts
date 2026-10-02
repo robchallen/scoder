@@ -31,7 +31,11 @@ import {
 	setupGitWorktree,
 } from "./git/worktree.ts";
 import type { XpraWrap } from "./sandbox/builder.ts";
-import { buildBwrapCommand, collectBindDests } from "./sandbox/builder.ts";
+import {
+	buildBwrapCommand,
+	collectBindDests,
+	entrypointLogDest,
+} from "./sandbox/builder.ts";
 import {
 	getSandboxGid,
 	getSandboxUid,
@@ -60,6 +64,7 @@ import {
 	resolveHomePrefixes,
 	toSandboxPath,
 } from "./utils/paths.ts";
+import { sessionPath } from "./utils/session.ts";
 
 // EM: Nested sandbox detection - check if already in a worktree or running in scoder
 const GIT_DIR = ".git";
@@ -740,6 +745,21 @@ async function main(): Promise<void> {
 	} else if (!options.worktree) {
 		info(`Running in direct mode (no worktree isolation)`);
 		info(`Working directory: ${process.cwd()}`);
+	}
+
+	// EM: Where the entry point's log lands, for the human at the terminal.
+	// EM: The sandbox's /tmp is a private tmpfs, so "the log is at
+	// EM: /tmp/scoder-ide.log" used to name a file the user could only read
+	// EM: by going inside — from the very session whose GUI they were
+	// EM: debugging. The log is now a host file bound at that same sandbox
+	// EM: path (builder.ts, stageEntrypointLog), so printing the host half is
+	// EM: a path that opens; it lives under the session staging root and so
+	// EM: dies with the session, which is the deal being disclosed here.
+	if (ideBin || xpra) {
+		const logDest = entrypointLogDest(xpra);
+		info(
+			`${xpra ? "xpra" : "IDE"} log on the host: ${sessionPath(logDest)} — at ${logDest} inside the sandbox, removed when the session ends`,
+		);
 	}
 
 	if (options.dryRun) {

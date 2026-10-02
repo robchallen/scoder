@@ -586,7 +586,9 @@ async function requireGuiDisplay(): Promise<boolean> {
 // ### requireHostX11
 // --native-display's preflight: fail up front and by name, because a native
 // misfire without one surfaces as `cannot open display` in sandbox stderr
-// or, with --ide, in $IDE_LOG where nobody looks — ADR 0003's "failures get
+// or, with --ide, in the IDE's log on the host — host-visible and printed
+// at startup since 2.7.0, but still a launch that quietly produced no
+// window rather than a refusal that says why. ADR 0003's "failures get
 // quieter" note applies with more force here, since there is no server log
 // even to quiet into.
 async function requireHostX11(): Promise<boolean> {

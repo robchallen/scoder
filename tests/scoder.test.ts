@@ -3698,6 +3698,100 @@ test("entrypoint-invocation-dbus-bus-knob: DBUS_BUS reaches the entry point only
 	expect(busied.argv).toEqual(plain.argv);
 });
 
+// ### Test: entrypoint-log-host-visible
+// EM: The log used to live only on the sandbox's private /tmp tmpfs — the
+// EM: one file holding a misbehaving GUI's output, readable only from
+// EM: inside the session whose GUI was misbehaving. Now it is a staged
+// EM: file bound rw at the same sandbox dest: the same path inside, a real
+// EM: path outside, and the startup banner names the host half. One log
+// EM: per session shape (builder.ts, entrypointLogDest): xpra swallows the
+// EM: IDE's output into its own log, so the xpra form stages only that.
+test("entrypoint-log-host-visible: the session log is a staged file bound at its sandbox path and named on the host at startup", async () => {
+	const repoDir = await createTempRepo();
+	tempRepos.push(repoDir);
+	const piDir = await createFakeToolDir("pi");
+	const rstudioDir = await createFakeToolDir("rstudio");
+	const x11 = await createFakeX11HostState();
+	const kept: string[] = [];
+
+	try {
+		// EM: The xpra form (GUI preset, no --native-display).
+		const xpraRun = await runScoderRaw(
+			repoDir,
+			["--dry-run", "--no-worktree", "rstudio"],
+			{
+				PATH: `${rstudioDir}:${process.env.PATH}`,
+				SCODER_KEEP_SESSION_TMP: "1",
+			},
+		);
+		const flat = flattenDryRun(xpraRun.stdout);
+		const bind = flat.match(
+			/--bind (\/tmp\/scoder-[0-9a-f]{8}\/tmp\/scoder-xpra\.log) \/tmp\/scoder-xpra\.log/,
+		);
+		expect(bind).not.toBeNull();
+		kept.push(bind![1]);
+		// EM: Ordering is load-bearing: the bind must land on the sandbox's
+		// EM: own tmpfs /tmp, not be shadowed by it.
+		expect(flat.indexOf("--tmpfs /tmp")).toBeLessThan(flat.indexOf(bind![0]));
+		// EM: Bound and staged, not just named in the command: the source
+		// EM: exists for bwrap before bwrap runs.
+		expect(await Bun.file(bind![1]).exists()).toBe(true);
+		// EM: xpra's log covers the IDE too: no IDE-log bind. (The IDE_LOG
+		// EM: env stays set — entrypoint.sh takes defaults for everything and
+		// EM: ignores it under xpra — so the assertion is about the bind.)
+		expect(flat).not.toMatch(/--bind \S+scoder-ide\.log/);
+		expect(xpraRun.stderr).toContain("xpra log on the host:");
+		expect(xpraRun.stderr).toContain("/tmp/scoder-xpra.log");
+
+		// EM: The native companion form: no xpra, so the IDE log is the one.
+		const nativeRun = await runScoderRaw(
+			repoDir,
+			[
+				"--native-display",
+				"--dry-run",
+				"--no-worktree",
+				"pi",
+				"--ide",
+				"rstudio",
+			],
+			{
+				PATH: `${piDir}:${rstudioDir}:${process.env.PATH}`,
+				DISPLAY: ":42",
+				XAUTHORITY: x11.cookiePath,
+				SCODER_KEEP_SESSION_TMP: "1",
+			},
+		);
+		const nativeFlat = flattenDryRun(nativeRun.stdout);
+		const ideBind = nativeFlat.match(
+			/--bind (\/tmp\/scoder-[0-9a-f]{8}\/tmp\/scoder-ide\.log) \/tmp\/scoder-ide\.log/,
+		);
+		expect(ideBind).not.toBeNull();
+		kept.push(ideBind![1]);
+		expect(await Bun.file(ideBind![1]).exists()).toBe(true);
+		expect(nativeFlat).not.toMatch(/--bind \S+scoder-xpra\.log/);
+		expect(nativeRun.stderr).toContain("IDE log on the host:");
+
+		// EM: And no log bind at all where there is no entry point: a plain
+		// EM: CLI session stages neither name.
+		const cliRun = await runScoder(
+			repoDir,
+			["--dry-run", "--no-worktree", "pi"],
+			{
+				PATH: `${piDir}:${process.env.PATH}`,
+			},
+		);
+		expect(cliRun).not.toContain("scoder-ide.log");
+		expect(cliRun).not.toContain("scoder-xpra.log");
+	} finally {
+		for (const path of kept) {
+			await removeSessionRoot(path);
+		}
+		await x11.cleanup();
+		await Bun.spawn(["rm", "-rf", piDir, rstudioDir]).exited;
+		await cleanupRepo(repoDir);
+	}
+});
+
 // ### Test: native-display-entrypoint-bus-beside-ide
 // EM: The script-level contract of Decision 5: beside the IDE, not above
 // EM: it. The bus address prefixes the IDE's launch line only (so the

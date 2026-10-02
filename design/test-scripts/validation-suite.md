@@ -27,7 +27,7 @@ tags: [test-script, validation]
 
 `tests/scoder.test.ts` is a self-contained integration test suite that creates
 temporary git repositories under `/tmp`, runs `scoder` against them using
-`/bin/bash` as the sandboxed command, and asserts expected behaviour. 136
+`/bin/bash` as the sandboxed command, and asserts expected behaviour. 137
 tests cover all sandbox mechanics — this catalog is currently behind the
 actual implemented count (see the note under case 113) due to other,
 unrelated in-progress work; not fixed here.
@@ -1330,6 +1330,18 @@ Pure predicate behind the preset's snap refusal (`/snap/`-prefixed
 resolved paths reject, ordinary installs pass) — testable without a
 snap installed; validate()'s wiring of it is exercised by every dry-run
 test above, whose fake `code` is not under `/snap`.
+
+### 127. entrypoint-log-host-visible
+[TESTED_BY](/tests/scoder.test.ts#testEntrypointLogHostVisible)
+
+The session's one log is a staged file bound rw at its own sandbox path,
+not a prisoner of the sandbox's private `/tmp` tmpfs: three dry-runs show
+each session shape staging exactly one of the two names — the xpra form
+stages only `scoder-xpra.log` (its server swallows the IDE's output; the
+`IDE_LOG` env stays set but unbound), the native companion form only
+`scoder-ide.log`, and a plain CLI session neither — with the bind ordered
+after `--tmpfs /tmp`, the staged source existing before bwrap would run,
+and the startup line naming the host path (`… log on the host: …`).
 
 ## Current Network Coverage
 

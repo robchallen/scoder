@@ -27,13 +27,31 @@ import {
 // EM: launcher is a stub around the JVM, which is the process that actually
 // EM: has the window); confirmed directly. A preset whose IDE wants something
 // EM: else says so via ToolPreset.ideShutdown.
-// EM: Both logs live in the sandbox's own /tmp, which is a tmpfs: they exist
-// EM: for the life of the session and are readable from inside it (where the
-// EM: agent can be asked to look at them), and vanish with the sandbox. Fixed
-// EM: names rather than per-session ones so the path can be named in a
-// EM: diagnostic without the user having to find it first.
-const IDE_LOG_PATH = "/tmp/scoder-ide.log";
-const XPRA_LOG_PATH = "/tmp/scoder-xpra.log";
+// EM: Both logs are named at a fixed path inside the sandbox so the agent
+// EM: can be told where to look without a search ("it's in
+// EM: /tmp/scoder-ide.log, run tail"). They used to *only* live there — on
+// EM: the sandbox's private /tmp tmpfs, invisible from outside, so when a
+// EM: GUI misbehaved the one file holding its output could not be read from
+// EM: the terminal the user was already sitting at. Each is now instead a
+// EM: host file in the session staging root, bound rw at the same sandbox
+// EM: dest (see stageEntrypointLog), so the path is the same inside the
+// EM: sandbox and host-visible outside it — for the life of the session,
+// EM: which is what the staging root's teardown gives; the log is a
+// EM: live-tailing aid, and a post-mortem copy is what the user makes of it.
+export const IDE_LOG_PATH = "/tmp/scoder-ide.log";
+export const XPRA_LOG_PATH = "/tmp/scoder-xpra.log";
+
+// ### entrypointLogDest
+// Which of the two logs an entrypoint-wrapped session actually writes.
+//
+// EM: One file, not two: entrypoint.sh redirects the IDE into $XPRA_LOG
+// EM: whenever an xpra server is running (its stdout is the server's
+// EM: stdout), and into $IDE_LOG otherwise — the branches are
+// EM: mutually exclusive, so binding anything else would stage a file
+// EM: guaranteed to stay empty.
+export function entrypointLogDest(xpra?: XpraWrap): string {
+	return xpra ? XPRA_LOG_PATH : IDE_LOG_PATH;
+}
 
 export const DEFAULT_IDE_SHUTDOWN: IdeShutdown = {
 	signal: "TERM",
@@ -520,6 +538,13 @@ export async function buildBwrapCommand(
 		// EM: sandbox's own tmpfs rather than the host's /tmp. Read-only: see
 		// EM: ENTRYPOINT_DEST for why that is sufficient.
 		cmd.push("--ro-bind", await stageEntrypointScript(), ENTRYPOINT_DEST);
+		// EM: The session's one log file (entrypointLogDest), rw-bound at its
+		// EM: own sandbox path: the entrypoint keeps writing to the fixed
+		// EM: name it has always used, and the same bytes appear on the host
+		// EM: under the staging root — which is why the two startup messages
+		// EM: in index.ts can print a path the user can actually open.
+		const logDest = entrypointLogDest(xpra);
+		cmd.push("--bind", await stageEntrypointLog(logDest), logDest);
 		// EM: `bash <path>` rather than execing the script directly — the
 		// EM: staged file is bound read-only with whatever mode it was
 		// EM: written with, and naming the interpreter avoids depending on
@@ -703,6 +728,23 @@ export const ENTRYPOINT_DEST = "/tmp/scoder-entrypoint.sh";
 export async function stageEntrypointScript(): Promise<string> {
 	const path = await stageFile(ENTRYPOINT_DEST);
 	await Bun.write(path, entrypointScript);
+	return path;
+}
+
+// ### stageEntrypointLog
+// Create the host file a log bind is written through, and return its host
+// path (under the session staging root, mirroring the sandbox dest).
+//
+// EM: The file must exist before bwrap runs — a file bind whose source is
+// EM: missing is an error, unlike a directory bind — but must stay empty:
+// EM: the entrypoint truncates it with `>` anyway, and on the way the
+// EM: staging root's teardown at session end takes the log with every
+// EM: other staged artifact.
+export async function stageEntrypointLog(dest: string): Promise<string> {
+	const path = await stageFile(dest);
+	if (!(await Bun.file(path).exists())) {
+		await Bun.write(path, "");
+	}
 	return path;
 }
 

@@ -192,6 +192,30 @@ programs have finished, so there is nothing left and the cost is one scan of
 outright. `design/prototype/scoder-cleanup.sh` finds and removes what those
 leave behind.
 
+## The session log, readable from outside
+
+Every entry-point session writes exactly one log — the IDE's output under
+`>/tmp/scoder-ide.log`, or, whenever an xpra server is running, everything
+including the IDE's output under `/tmp/scoder-xpra.log`, because that is
+where the server's own stdout goes. Both names used to resolve to the
+sandbox's private `/tmp` tmpfs: the path was fixed so a diagnostic could
+name it, but reading it meant opening a shell inside the session whose GUI
+was misbehaving — from the terminal already showing that GUI not appearing.
+
+The log is therefore a staged file bound read-write at its own sandbox path:
+same name inside the sandbox (so `entrypoint.sh`, the agent-facing message
+and the existing tests all keep working untouched), and on the host at
+`<session staging root>/tmp/scoder-<name>.log`, which scoder prints at
+startup — `IDE log on the host: …` for a companion with no xpra, `xpra log
+on the host: …` whenever xpra is running. The host path lives under the
+session staging root, so it dies with the session like everything staged
+there; the startup line is telling you where to `tail` *while* things are
+wrong, not where the post-mortem is archived. `SCODER_KEEP_SESSION_TMP`
+keeps the whole staging root, log included, if the session already ended.
+Which of the two files a given session uses is one decision shared between
+the builder and the startup message (`entrypointLogDest`), not two
+statements that can drift.
+
 [HAS_FEATURE](./sandbox-isolation.md)
 [HAS_FEATURE](./tool-presets.md)
 

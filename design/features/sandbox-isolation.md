@@ -148,7 +148,10 @@ The sandbox shape:
   `/dev/nvidia*` nodes, not covered here; no GPU-backed host available in
   this project to verify that gap against directly.
 - `/proc` — procfs
-- `/tmp` — ephemeral tmpfs
+- `/tmp` — ephemeral tmpfs; the one entry-point log for a GUI/companion
+  session (see [ide-companion](./ide-companion.md), "The session log") is a
+  host-staged file bound over it at the same path, so a GUI's output is
+  readable from outside the sandbox for the life of the session
 - `$HOME` (the real host `$HOME`) — fresh per-session tmpfs with `.config/`, `.local/`, `.cache/` subdirs, populated by the binds below; nothing in it persists across sessions except what's explicitly bound in
 - `<project-path>` — bind mount of worktree or cwd
 - `<git-dir>` — bind mount of host `.git` directory (worktree mode only)

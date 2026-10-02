@@ -179,7 +179,18 @@ export async function buildBwrapCommand(
 	// EM: which silences the steady stream of failures xpra, its Xvfb and
 	// EM: dconf used to log against a read-only one.
 	cmd.push("--tmpfs", "/run");
-	cmd.push("--dir", `/run/user/${uid}`);
+	// EM: --perms 700 matches what pam_systemd makes of the host's runtime
+	// EM: directory, which is what the XDG spec mandates and what some of
+	// EM: the tools putting sockets here (dbus, xpra, keyring helpers)
+	// EM: expect to find. A bare --dir creates 0755 — and older bwrap
+	// EM: builds left it at 0777&~umask, which on a umask-0033 machine is
+	// EM: the 0744 XDG_RUNTIME_DIR someone reported. Nothing outside this
+	// EM: private tmpfs can read it either way, so this is fidelity rather
+	// EM: than exposure; the /run/user parent stays at the default 0755 to
+	// EM: mirror the host. --perms applies only to a directory it creates,
+	// EM: never one that already exists, hence creating the parent first.
+	cmd.push("--dir", "/run/user");
+	cmd.push("--perms", "700", "--dir", `/run/user/${uid}`);
 	cmd.push(...(await runSymlinkDirs()));
 
 	// EM: /opt is the FHS location for manually-installed, self-contained

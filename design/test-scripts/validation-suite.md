@@ -921,7 +921,12 @@ only evidence that a regression test is worth having.
 
 The host's `/run` is never bound into the sandbox: `--tmpfs /run` is present
 and neither `--ro-bind /run /run` nor `--bind /run /run` is. `--dir
-/run/user/<uid>` is, since `XDG_RUNTIME_DIR` still needs to exist.
+/run/user/<uid>` is, since `XDG_RUNTIME_DIR` still needs to exist — created
+by `--perms 700`, mode `0700` like the host's runtime directory (a bare
+`--dir` gives `0755`, and older bwrap builds left `0777&~umask` behind —
+the `0744` a user noticed); the `/run/user` parent is created first at the
+default `0755`, mirroring the host, because `--perms` only applies to a
+directory it creates.
 
 The security claim of [0004-no-host-dbus](/architecture/decision-records/0004-no-host-dbus.md),
 asserted as a negative because that is the half that matters — and, since

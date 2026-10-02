@@ -30,8 +30,10 @@ The sandbox shape:
 
 - `/usr`, `/bin`, `/lib`, `/lib64`, `/etc`, `/sys` — ro-bind from host
 - `/run` — a **tmpfs**, not the host's, with `/run/user/<uid>` created
-  writable inside it. Binding the host's read-only handed the sandbox every
-  socket under it, and permission was no obstacle: `/run/docker.sock`
+  writable inside it, mode `0700` like the host's (`--perms` — a bare
+  `--dir` gives `0755`, and older bwrap builds left `0777&~umask` in
+  place). Binding the host's read-only handed the sandbox every socket
+  under it, and permission was no obstacle: `/run/docker.sock`
   (`root:docker`) and `/run/ssh-agent.sock` both accepted `connect()`,
   because entering a user namespace changes how ids are *rendered*, not the
   credentials the kernel checks. Nothing comes back through it — in

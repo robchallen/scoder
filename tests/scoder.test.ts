@@ -1701,8 +1701,10 @@ test("run-is-a-tmpfs-not-the-host: the host's /run is never bound into the sandb
 
 		// XDG_RUNTIME_DIR still has to exist for the applications that expect
 		// it; it is now a writable tmpfs path rather than the host's
-		// directory, with none of the host's sockets in it.
-		expect(output).toMatch(/--dir \/run\/user\/\d+/);
+		// directory, with none of the host's sockets in it. Created 0700,
+		// like pam_systemd makes the host's — a bare --dir gives 0755.
+		expect(output).toMatch(/--dir \/run\/user /);
+		expect(output).toMatch(/--perms 700 \\\n\s+--dir \/run\/user\/\d+/);
 	} finally {
 		await cleanupRepo(repoDir);
 	}

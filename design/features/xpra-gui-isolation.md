@@ -8,7 +8,7 @@ tags: [feature, sandbox, x11, xpra, ide, security]
 
 ## Summary
 
-A GUI preset (`rstudio`, `eclipse`) runs under an xpra server started
+A GUI preset (`rstudio`, `eclipse`, `vscode`) runs under an xpra server started
 *inside* the sandbox. That server owns a virtual X display that exists only
 there, and forwards individual windows over a unix socket to a client
 process on the host, which draws them on the user's real desktop.

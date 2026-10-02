@@ -28,7 +28,7 @@ import {
 import { getSandboxUsername } from "../src/sandbox/identity.ts";
 import { renderOverlay } from "../src/sandbox/overlays.ts";
 import { isIpv6RoutabilityFailure } from "../src/sandbox/pasta.ts";
-import { TOOL_PRESETS } from "../src/tools/presets.ts";
+import { isSnapInstall, TOOL_PRESETS } from "../src/tools/presets.ts";
 import type { IdeShutdown } from "../src/types.ts";
 import { getRealHome } from "../src/utils/paths.ts";
 import { sessionPath } from "../src/utils/session.ts";
@@ -2838,6 +2838,270 @@ test("rstudio-resolveargs-does-not-override-explicit-args: an explicit argument 
 	}
 });
 
+// ### Test: vscode-preset-launch-args-and-binds
+// EM: The preset's whole launch contract in one dry-run: the managed
+// EM: per-project user-data-dir bound read-write at its mirrored path,
+// EM: the pinned flags ahead of the project argument, the host's
+// EM: extensions tree read-only, and — the secret-storage policy as a
+// EM: regression guard (option A, design/features/secret-storage.md) —
+// EM: no password-store flag. A future "fix" for the keyring prompt
+// EM: that persists tokens to disk has to change this test, which is
+// EM: the point: that trade should be visible, not reflexive.
+test("vscode-preset-launch-args-and-binds: managed user-data-dir rw, pinned flags, extensions ro, no password-store flag", async () => {
+	const repoDir = await createTempRepo();
+	tempRepos.push(repoDir);
+	const fakeBinDir = await createFakeToolDir("code");
+	// EM: repoDir is not under $HOME, so its projDir is just its own path
+	// EM: minus the leading slash — and unique per run, which is what makes
+	// EM: deleting the managed dir in the finally clause unconditionally
+	// EM: safe: it cannot pre-date this test.
+	const managedDir = `${SANDBOX_HOME}/.local/share/scoder-vscode-userdata/${repoDir.slice(1)}`;
+	const vscodeDir = `${SANDBOX_HOME}/.vscode`;
+	const extensionsDir = `${vscodeDir}/extensions`;
+	const vscodePreExisted = await dirExists(vscodeDir);
+	const extensionsPreExisted = await dirExists(extensionsDir);
+
+	try {
+		if (!extensionsPreExisted) {
+			await Bun.spawn(["mkdir", "-p", extensionsDir]).exited;
+		}
+
+		const output = await runScoder(
+			repoDir,
+			["--dry-run", "--no-worktree", "vscode"],
+			{ PATH: `${fakeBinDir}:${process.env.PATH}` },
+		);
+
+		// EM: The rendered command continues long lines with `\`, so the
+		// EM: exec argv arrives one-argument-per-line; flattened back to
+		// EM: one line so the assertion can be exact rather than a chain of
+		// EM: indexOf comparisons — a reordering fails on the whole line.
+		const flat = output.replace(/\\\n\s+/g, "");
+
+		// Read-write (the app writes its singleton lock, IPC socket and
+		// state into it every second), and source == dest: the mirroring
+		// the whole path-mirroring design relies on.
+		expect(flat).toContain(`--bind ${managedDir} ${managedDir}`);
+
+		// scoder's pinned flags first, user's args (none here), then the
+		// project dir — the trailing \n pins that the project dir is the
+		// last argument, i.e. the fill fired.
+		expect(flat).toContain(
+			`-- bash /tmp/scoder-entrypoint.sh ${fakeBinDir}/code` +
+				` --user-data-dir ${managedDir}` +
+				` --extensions-dir ${extensionsDir}` +
+				` --disable-updates --disable-workspace-trust ${repoDir}\n`,
+		);
+
+		expect(flat).toContain(`--ro-bind ${extensionsDir} ${extensionsDir}`);
+
+		expect(flat).not.toContain("--password-store");
+		expect(flat).not.toContain("--use-inmemory-secretstorage");
+	} finally {
+		if (!extensionsPreExisted) {
+			await Bun.spawn(["rm", "-rf", extensionsDir]).exited;
+			if (!vscodePreExisted) {
+				await Bun.spawn(["rm", "-rf", vscodeDir]).exited;
+			}
+		}
+		await Bun.spawn(["rm", "-rf", managedDir]).exited;
+		await Bun.spawn(["rm", "-rf", fakeBinDir]).exited;
+		await cleanupRepo(repoDir);
+	}
+});
+
+// ### Test: vscode-settings-seeded-once-and-never-again
+// EM: The persistence guarantee that motivated the whole managed-dir
+// EM: design (an ephemeral copy was the fallback the user rejected), plus
+// EM: the seed contract: hand-written settings cross over once, live state
+// EM: never. Runs with HOME pointed at a throwaway directory — deliberate:
+// EM: the seed source is `~/.config/Code/User`, which on a developer
+// EM: desktop is someone's real settings; writing a test sentinel there,
+// EM: even guarded, is not acceptable. With HOME overridden, everything
+// EM: the preset touches — seed source, managed dir, extensions gate —
+// EM: lives inside the throwaway, and nothing real is at risk. The dry-run
+// EM: path only assembles a command and stages host-side dirs, all of
+// EM: which honor $HOME.
+test("vscode-settings-seeded-once-and-never-again: settings copy on first creation, then the managed dir is never touched again", async () => {
+	const repoDir = await createTempRepo();
+	tempRepos.push(repoDir);
+	const fakeBinDir = await createFakeToolDir("code");
+	const fakeHome = `/tmp/scoder-vscode-fake-home-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
+	const hostUserDir = `${fakeHome}/.config/Code/User`;
+	const managedDir = `${fakeHome}/.local/share/scoder-vscode-userdata/${repoDir.slice(1)}`;
+
+	try {
+		await Bun.write(`${hostUserDir}/settings.json`, '{"theme":"first"}');
+		await Bun.write(`${hostUserDir}/keybindings.json`, "[]");
+		await Bun.write(`${hostUserDir}/snippets/markdown.json-code`, "snip");
+		// EM: Live state, not preference: must NOT cross into the managed
+		// EM: dir even at seed time.
+		await Bun.write(`${hostUserDir}/globalStorage/state.vscdb`, "NOT-COPIED");
+		await Bun.write(
+			`${hostUserDir}/workspaceStorage/x/state.vscdb`,
+			"NOT-COPIED",
+		);
+
+		const env = { PATH: `${fakeBinDir}:${process.env.PATH}`, HOME: fakeHome };
+		await runScoder(repoDir, ["--dry-run", "--no-worktree", "vscode"], env);
+
+		expect(await Bun.file(`${managedDir}/User/settings.json`).text()).toBe(
+			'{"theme":"first"}',
+		);
+		expect(await fileExists(`${managedDir}/User/keybindings.json`)).toBe(true);
+		expect(
+			await Bun.file(`${managedDir}/User/snippets/markdown.json-code`).text(),
+		).toBe("snip");
+		expect(await dirExists(`${managedDir}/User/globalStorage`)).toBe(false);
+		expect(await dirExists(`${managedDir}/User/workspaceStorage`)).toBe(false);
+
+		// EM: The "never again" half, which is the actual persistence
+		// EM: promise: a session's own edits to its settings (simulated
+		// EM: here; really made by the sandboxed editor) survive the next
+		// EM: launch, even though the host source has since changed. A
+		// EM: re-seed would silently discard one session's work.
+		await Bun.write(
+			`${managedDir}/User/settings.json`,
+			'{"theme":"session-edit"}',
+		);
+		await Bun.write(`${hostUserDir}/settings.json`, '{"theme":"host-change"}');
+
+		await runScoder(repoDir, ["--dry-run", "--no-worktree", "vscode"], env);
+
+		expect(await Bun.file(`${managedDir}/User/settings.json`).text()).toBe(
+			'{"theme":"session-edit"}',
+		);
+		// EM: And nothing ever copies back: the host's real settings are
+		// EM: not the sandbox's to write.
+		expect(await Bun.file(`${hostUserDir}/settings.json`).text()).toBe(
+			'{"theme":"host-change"}',
+		);
+	} finally {
+		await Bun.spawn(["rm", "-rf", fakeHome]).exited;
+		await Bun.spawn(["rm", "-rf", fakeBinDir]).exited;
+		await cleanupRepo(repoDir);
+	}
+});
+
+// ### Test: vscode-user-args-pass-through-untouched
+// EM: scoder's flags go in front, but they never displace or reorder the
+// EM: user's own, and any user arg at all suppresses the project-dir fill
+// EM: (guessing which args are folders vs flag-values is fragile —
+// EM: --install-extension takes a value that is not a folder).
+test("vscode-user-args-pass-through-untouched: pinned flags prepend, user args follow verbatim, no project-dir fill", async () => {
+	const repoDir = await createTempRepo();
+	tempRepos.push(repoDir);
+	const fakeBinDir = await createFakeToolDir("code");
+	const managedDir = `${SANDBOX_HOME}/.local/share/scoder-vscode-userdata/${repoDir.slice(1)}`;
+
+	try {
+		const output = await runScoder(
+			repoDir,
+			[
+				"--dry-run",
+				"--no-worktree",
+				"vscode",
+				"--install-extension",
+				"ms-python.python",
+			],
+			{ PATH: `${fakeBinDir}:${process.env.PATH}` },
+		);
+
+		// EM: Flattened line continuations, as in the first vscode test:
+		// EM: the trailing \n here pins that ms-python.python is the last
+		// EM: argument — i.e. the project-dir fill did NOT fire, because
+		// EM: any user arg at all suppresses it.
+		const flat = output.replace(/\\\n\s+/g, "");
+		expect(flat).toContain(
+			`-- bash /tmp/scoder-entrypoint.sh ${fakeBinDir}/code` +
+				` --user-data-dir ${managedDir}` +
+				` --extensions-dir ${SANDBOX_HOME}/.vscode/extensions` +
+				` --disable-updates --disable-workspace-trust` +
+				` --install-extension ms-python.python\n`,
+		);
+	} finally {
+		await Bun.spawn(["rm", "-rf", managedDir]).exited;
+		await Bun.spawn(["rm", "-rf", fakeBinDir]).exited;
+		await cleanupRepo(repoDir);
+	}
+});
+
+// ### Test: vscode-as-ide-companion
+// EM: The companion path reuses the same preset, so the same flags must
+// EM: show up when vscode is the --ide rather than the primary tool —
+// EM: with pi as primary, which also gives the bind-merge its coverage.
+test("vscode-as-ide-companion: --ide vscode gets its managed user-data-dir inside the shared sandbox", async () => {
+	const repoDir = await createTempRepo();
+	tempRepos.push(repoDir);
+	const piDir = await createFakeToolDir("pi");
+	const codeDir = await createFakeToolDir("code");
+	const managedDir = `${SANDBOX_HOME}/.local/share/scoder-vscode-userdata/${repoDir.slice(1)}`;
+
+	try {
+		const output = await runScoder(
+			repoDir,
+			["--dry-run", "--no-worktree", "pi", "--ide", "vscode"],
+			{ PATH: `${piDir}:${codeDir}:${process.env.PATH}` },
+		);
+
+		expect(output).toContain(`--bind ${managedDir} ${managedDir}`);
+		expect(output).toContain(`--user-data-dir ${managedDir}`);
+		// The companion is a GUI preset: the shared sandbox runs under xpra.
+		expect(output).toContain("--setenv XPRA_SOCKET ");
+	} finally {
+		await Bun.spawn(["rm", "-rf", managedDir]).exited;
+		await Bun.spawn(["rm", "-rf", piDir, codeDir]).exited;
+		await cleanupRepo(repoDir);
+	}
+});
+
+// ### Test: vscode-no-host-dbus-address
+// EM: The ADR 0004 invariant re-asserted at the preset most likely to be
+// EM: "fixed" with a bus passthrough — VS Code complains about no session
+// EM: bus in exactly the way RStudio once did, and RStudio's symptom was
+// EM: the one thing that kept the host bus alive for a year.
+test("vscode-no-host-dbus-address: the vscode preset never passes the host's session bus in", async () => {
+	const repoDir = await createTempRepo();
+	tempRepos.push(repoDir);
+	const fakeBinDir = await createFakeToolDir("code");
+	const managedDir = `${SANDBOX_HOME}/.local/share/scoder-vscode-userdata/${repoDir.slice(1)}`;
+
+	try {
+		const output = await runScoder(
+			repoDir,
+			["--dry-run", "--no-worktree", "vscode"],
+			{
+				PATH: `${fakeBinDir}:${process.env.PATH}`,
+				DBUS_SESSION_BUS_ADDRESS: "unix:path=/run/user/1000/bus",
+			},
+		);
+
+		// EM: Only the absence half is asserted; the XDG_RUNTIME_DIR
+		// EM: presence companion-assertion of the rstudio original is left
+		// EM: there — it depends on the variable being set in the test
+		// EM: environment at all (unset in this container, where the
+		// EM: original fails on it too), and it is not this preset's
+		// EM: behavior under test.
+		expect(output).not.toContain("DBUS_SESSION_BUS_ADDRESS");
+		expect(output).not.toContain("/run/user/1000/bus");
+	} finally {
+		await Bun.spawn(["rm", "-rf", managedDir]).exited;
+		await Bun.spawn(["rm", "-rf", fakeBinDir]).exited;
+		await cleanupRepo(repoDir);
+	}
+});
+
+// ### Test: is-snap-install-recognises-the-snap-spelling
+// EM: Pure predicate over a resolved path: the refusal itself needs no
+// EM: snap to test, and validate()'s wiring of it is exercised by the
+// EM: dry-run tests above (every fake `code` there is not under /snap).
+test("is-snap-install-recognises-the-snap-spelling: /snap paths reject, ordinary installs pass", () => {
+	expect(isSnapInstall("/snap/bin/code")).toBe(true);
+	expect(isSnapInstall("/snap/code/214/usr/share/code/code")).toBe(true);
+	expect(isSnapInstall("/usr/bin/code")).toBe(false);
+	expect(isSnapInstall("/home/user/.vscode/cli/code")).toBe(false);
+});
+
 // ### Test: gui-display-is-private-end-to-end
 // EM: Replaces rstudio-x11-connectivity-end-to-end, whose premise this
 // EM: change inverts. That test asserted a real X client inside the sandbox
@@ -3667,7 +3931,9 @@ test("ide-shutdown-process-first-leaves-children-alone: a process-first preset s
 // ### Test: ide-shutdown-presets-record-measured-signals
 // EM: These two values are measurements, not preferences — pinned here so a
 // EM: later tidy-up cannot quietly collapse them back to one shared default.
-test("ide-shutdown-presets-record-measured-signals: rstudio and eclipse keep their own shutdown specs", () => {
+// EM: And the flip side, added with the vscode preset: a preset that has
+// EM: not been measured records nothing, which is pinned too.
+test("ide-shutdown-presets-record-measured-signals: measured presets keep their own shutdown specs, unmeasured ones record nothing", () => {
 	expect(TOOL_PRESETS.rstudio?.ideShutdown).toEqual({
 		signal: "HUP",
 		order: "process-first",
@@ -3676,6 +3942,16 @@ test("ide-shutdown-presets-record-measured-signals: rstudio and eclipse keep the
 		signal: "TERM",
 		order: "children-first",
 	});
+	// EM: vscode asserted ABSENT, not guessed: the field records
+	// EM: measurements, and the plan's real-desktop checklist (item 6)
+	// EM: has not run. The expected shape — TERM, process-first, since
+	// EM: children-first would signal Electron's renderer and GPU helpers
+	// EM: out from under the main process — lives as a comment on the
+	// EM: preset; putting it here before it is measured would launder a
+	// EM: prior into a pin, which is exactly what this test exists to
+	// EM: prevent. It fails, loudly and by name, the day someone adds
+	// EM: the value without the measurement.
+	expect(TOOL_PRESETS.vscode?.ideShutdown).toBeUndefined();
 	// The fallback for any preset that has not been measured.
 	expect(DEFAULT_IDE_SHUTDOWN).toEqual({
 		signal: "TERM",

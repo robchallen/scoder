@@ -288,9 +288,13 @@ existing rw rationale.
   eclipse section: `resolveVscodeLayout` computing managed user-data-dir +
   seed-once; `configBinds` = `guiDisplayBinds` + managed dir + extensions ro
   + `piConfigBinds`; `resolveArgs` per §4; `validate` per §8).
-- `src/types.ts`: nothing new expected — `resolveArgs`' existing signature
-  covers this preset (no `dependencyDirs` use in v1; VS Code's own multi-root
-  workspaces are the user's to compose).
+- `src/types.ts`: `resolveArgs`' existing signature covers this preset (no
+  `dependencyDirs` use in v1; VS Code's own multi-root workspaces are the
+  user's to compose) — but the plan's "nothing new expected" turned out
+  wrong in one small way: every other preset's key is its binary's name,
+  and vscode's isn't ("everyone calls the editor vscode; the binary is
+  `code`"), so `ToolPreset` gained an optional `command?: string` that
+  `index.ts`'s two `which()` resolutions prefer over the preset key.
 - `src/cli/dependencies.ts` / help text: none (xpra already listed).
 - `README.md`: preset list + `scoder vscode` / `--ide vscode` example.
 - `design/features/tool-presets.md`: the vscode section once implemented
@@ -307,9 +311,14 @@ existing rw rationale.
 - `vscode-settings-seeded-once-and-never-again`: first run copies
   `settings.json` into the managed dir; host file edited; second run leaves
   the managed copy untouched (eclipse's seeding guard, re-asserted here).
-- `vscode-user-args-preserved`: `scoder --dry-run vscode -- --new-window
-  extra` keeps user args after the project arg; a user-supplied positional
-  folder replaces the auto project arg (rstudio semantics).
+- `vscode-user-args-preserved`: pinned flags prepend, the user's own args
+  follow verbatim, and any user arg at all suppresses the project-dir fill.
+  The plan originally wrote "keeps user args after the project arg", but
+  that can't be implemented cleanly: distinguishing which of the user's
+  args is a folder to open from which is a flag's value (`--install-extension
+  ext.id` has a value that is not a folder) is fragile, so the fill triggers
+  on total arg presence (the same rule rstudio uses), not on positional
+  detection. A user giving any argument takes over choosing what to open.
 - `vscode-as-ide-companion`: `scoder pi --ide vscode` dry-run shows the same
   binds/flags merged into the single bwrap command, deduplicated.
 - `vscode-no-host-dbus-address`: clone the `no-host-dbus-address-in-the-sandbox`

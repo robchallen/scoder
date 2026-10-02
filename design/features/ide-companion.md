@@ -17,8 +17,8 @@ after the primary tool's own name.
 
 ## Motivation
 
-Running an agent (`pi`, `claude`) alongside an IDE (`rstudio`, and in the
-future others like `spyder` or `vscode`) inside one sandbox, bridged via
+Running an agent (`pi`, `claude`) alongside an IDE (`rstudio`, `eclipse`,
+`vscode` — any registered preset, following the same pattern), bridged via
 MCP, only works today if the user manually launches the IDE, then
 manually launches the agent from inside the IDE's own embedded terminal.
 `--ide` makes this one command, and generalizes past `rstudio`
@@ -107,7 +107,13 @@ companion, following the same pattern.
     (`SIGTERM`, `children-first`) from `src/sandbox/builder.ts`. Both
     measured values are pinned by
     `ide-shutdown-presets-record-measured-signals`, so a later tidy-up
-    cannot quietly collapse them into one shared default.
+    cannot quietly collapse them into one shared default. `vscode` is
+    currently one that says nothing: all of Electron's children fork
+    from the main process, so the prior is TERM/`process-first` —
+    children-first would signal the renderer and GPU helpers out from
+    under main and lose its save-on-exit — but a prior is exactly what
+    this table refuses to list; the vscode plan's checklist measures it
+    into this table or the preset.
   - The read loop is **not** gated on stdin being a tty; only the prompt
     is. With stdin closed or on `/dev/null`, `read` returns EOF immediately
     and the script falls through to the same plain `wait` as before rather

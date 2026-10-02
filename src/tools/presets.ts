@@ -31,8 +31,14 @@ async function dirExists(path: string): Promise<boolean> {
 	}
 }
 
+// EM: .exited, not just the spawn: awaiting the Subprocess object resolves
+// EM: the moment it is created, before mkdir has run, so any caller that
+// EM: touches the directory on the next line (as seedVscodeSettingsFromHost
+// EM: does with its cp) raced the mkdir it had just requested. The vscode
+// EM: seed test caught this intermittently; awaiting exit makes it
+// EM: deterministic for every preset.
 async function ensureDir(path: string): Promise<void> {
-	await Bun.spawn(["mkdir", "-p", path]);
+	await Bun.spawn(["mkdir", "-p", path]).exited;
 }
 
 // ### guiDisplayBinds
@@ -373,6 +379,108 @@ async function resolveEclipseLayout(
 		workspaceHostDir,
 		workspaceSandboxDir,
 	};
+}
+
+// ### vscode
+// EM: The vscode preset borrows eclipse's managed-workspace shape for the
+// EM: opposite reason. Eclipse's managed dir protects the user's real
+// EM: workspace from a destructive flag; vscode's exists because one running
+// EM: Code instance per user-data-dir is a hard limit of the app itself —
+// EM: the directory holds the singleton lock (`SingletonLock`, a
+// EM: hostname-pid symlink), the IPC socket a second launch would hand its
+// EM: windows off through, and the SQLite global state two live writers
+// EM: would corrupt. Since scoder shares neither the PID nor the UTS
+// EM: namespace (builder.ts unshares only user+net), a dir shared with the
+// EM: host editor would let the sandboxed instance see the host's lock as
+// EM: live and connect to it across the bind — the wrong instance opening
+// EM: the file. So the sandbox gets its own user-data-dir, per project,
+// EM: persisting across sessions (host-side, like eclipse's), seeded once
+// EM: from the host's own settings.
+// EM: See design/implementation/plans/vscode-preset.md.
+const SCODER_VSCODE_USERDATA_DIRNAME = "scoder-vscode-userdata";
+
+interface VscodeLayout {
+	userDataHostDir: string;
+	userDataSandboxDir: string;
+}
+
+// EM: Seed once on first creation, never clobbered again — the same
+// EM: discipline as seedWorkspaceSettingsFromHost above, and the reason
+// EM: eclipse's version says it cannot be a symlink applies verbatim here.
+// EM: Only the files the user hand-wrote cross over: settings, keybindings,
+// EM: snippets. Deliberately NOT copied: workspaceStorage and
+// EM: globalStorage/state.vscdb (machine-scoped live state, not preference —
+// EM: and a SQLite file that is mid-write whenever the host editor runs),
+// EM: argv.json (a sandboxed session silently inheriting host Electron
+// EM: switches is the failure mode this preset avoids everywhere else), and
+// EM: anything secret-bearing — secret storage is deliberately in-memory per
+// EM: design/features/secret-storage.md, and a copied token would sit in
+// EM: plaintext in a dir bound into every future session of this project.
+async function seedVscodeSettingsFromHost(
+	hostUserDir: string,
+	userDataHostDir: string,
+): Promise<void> {
+	const destUserDir = `${userDataHostDir}/User`;
+	let seeded = false;
+
+	for (const name of ["settings.json", "keybindings.json"]) {
+		const src = `${hostUserDir}/${name}`;
+		if (await fileExists(src)) {
+			await ensureDir(destUserDir);
+			await Bun.spawn(["cp", src, destUserDir]).exited;
+			seeded = true;
+		}
+	}
+
+	const snippetsDir = `${hostUserDir}/snippets`;
+	if (await dirExists(snippetsDir)) {
+		const destSnippets = `${destUserDir}/snippets`;
+		await ensureDir(destSnippets);
+		await Bun.spawn(["cp", "-r", `${snippetsDir}/.`, destSnippets]).exited;
+		seeded = true;
+	}
+
+	if (seeded) {
+		info(`Seeded VS Code settings from ${hostUserDir}`);
+	}
+}
+
+// EM: Idempotent, like resolveEclipseLayout: both configBinds and
+// EM: resolveArgs call it, and only the first caller finds the dir absent
+// EM: and seeds it. projDir (repo root minus its leading /, or cwd outside
+// EM: a repo) scopes one managed dir per project — two checkouts of the
+// EM: same repo share it, which is right: same code, same settings.
+async function resolveVscodeLayout(
+	hostProjectDir: string,
+): Promise<VscodeLayout> {
+	const realHome = getRealHome();
+	const homePrefixes = await resolveHomePrefixes();
+	const projDir = await getProjDir(hostProjectDir);
+
+	const userDataHostDir = `${realHome}/.local/share/${SCODER_VSCODE_USERDATA_DIRNAME}/${projDir}`;
+	const isNew = !(await dirExists(userDataHostDir));
+	await ensureDir(userDataHostDir);
+	if (isNew) {
+		await seedVscodeSettingsFromHost(
+			`${realHome}/.config/Code/User`,
+			userDataHostDir,
+		);
+	}
+
+	return {
+		userDataHostDir,
+		userDataSandboxDir: toSandboxPath(userDataHostDir, homePrefixes),
+	};
+}
+
+// EM: VS Code ships as a snap on Ubuntu, and that build expects its own
+// EM: confinement's runtime dirs — stacking our bwrap on top of snap's is a
+// EM: support swamp (its launcher, its SNAP_* env, its mount layout) for no
+// EM: isolation benefit over the .deb/tarball build, which runs fine. A
+// EM: clear refusal beats a mysterious failure. Exported for unit testing:
+// EM: the predicate over a path needs no snap installed to test.
+export function isSnapInstall(resolvedPath: string): boolean {
+	return resolvedPath.startsWith("/snap/");
 }
 
 // ### requireXpra
@@ -988,6 +1096,137 @@ export const TOOL_PRESETS: Record<string, ToolPreset> = {
 				return false;
 			}
 			return await requireXpra();
+		},
+	},
+
+	// EM: VS Code. Every decision here — why a managed per-project
+	// EM: user-data-dir rather than binding the host's, why extensions bind
+	// EM: read-only, why no password-store flag, why ideShutdown is absent —
+	// EM: carries its evidence in
+	// EM: design/implementation/plans/vscode-preset.md; the short version is
+	// EM: on the vscode helper block above.
+	vscode: {
+		description: "VS Code",
+		// EM: The binary is `code`; the preset key is what users type.
+		command: "code",
+		// EM: No ideShutdown: that field records measurements, not priors
+		// EM: (see ide-shutdown-presets-record-measured-signals), and vscode
+		// EM: has none yet. The expected shape is TERM/process-first —
+		// EM: children-first would signal Electron's renderer and GPU
+		// EM: helpers out from under the main process and lose its
+		// EM: save-on-exit — but the plan's checklist item 6 converts that
+		// EM: prior into a value here only once measured on a real desktop.
+		gui: true,
+		configBinds: async (realHome, sandboxHome) => {
+			const binds: BindMount[] = [];
+			const dirs: string[] = [];
+
+			const gui = await guiDisplayBinds(realHome, sandboxHome);
+			binds.push(...(gui.binds ?? []));
+			dirs.push(...(gui.dirs ?? []));
+
+			// EM: The managed user-data-dir, read-write at its mirrored
+			// EM: path; creation and one-time seeding happen host-side in
+			// EM: resolveVscodeLayout.
+			const layout = await resolveVscodeLayout(process.cwd());
+			pushIntermediateDirs(
+				dirs,
+				sandboxHome,
+				layout.userDataSandboxDir.slice(sandboxHome.length + 1),
+			);
+			binds.push({
+				type: "bind",
+				source: layout.userDataHostDir,
+				dest: layout.userDataSandboxDir,
+			});
+
+			// EM: The whole shared extensions tree, read-only, existence-
+			// EM: gated like eclipse's SDK homes: installing and updating
+			// EM: extensions happens on the host, where it cannot surprise a
+			// EM: running session. The accepted cost — "Install" inside the
+			// EM: sandbox writes to tmpfs and vanishes — is the plan's
+			// EM: decision 3, to be revisited on real experience.
+			const extensionsDir = `${realHome}/.vscode/extensions`;
+			if (await dirExists(extensionsDir)) {
+				pushIntermediateDirs(dirs, sandboxHome, ".vscode/extensions");
+				binds.push({
+					type: "ro-bind",
+					source: extensionsDir,
+					dest: `${sandboxHome}/.vscode/extensions`,
+				});
+			}
+
+			// EM: pi's own config so the integrated terminal can run scoder,
+			// EM: for the same reason rstudio asks for it.
+			const piSpec = await piConfigBinds(realHome, sandboxHome);
+			return {
+				binds: [...binds, ...(piSpec.binds ?? [])],
+				dirs: [...dirs, ...(piSpec.dirs ?? [])],
+			};
+		},
+		validate: async () => {
+			const codePath = await resolveCommandPath("code");
+			if (!codePath) {
+				error("code not found in PATH");
+				error("Install VS Code: https://code.visualstudio.com/download");
+				return false;
+			}
+			// EM: The which-spelling catches /snap/bin/code directly; the
+			// EM: realpath catches a symlink from elsewhere into the snap.
+			let codeReal = codePath;
+			try {
+				codeReal = await realpath(codePath);
+			} catch {
+				// EM: unresolvable symlink; the which-spelling still decides.
+			}
+			if (isSnapInstall(codePath) || isSnapInstall(codeReal)) {
+				error("the VS Code snap is not supported as a scoder preset");
+				error(`  found ${codePath}`);
+				error("  its build expects snap's own confinement at runtime;");
+				error("  install the .deb, .rpm or tarball build instead");
+				return false;
+			}
+			return await requireXpra();
+		},
+		resolveArgs: async (
+			_hostProjectDir: string,
+			sandboxProjectDir: string,
+			existingArgs: string[],
+			_dependencyDirs: string[],
+		) => {
+			// EM: process.cwd(), not hostProjectDir — the layout must be the
+			// EM: dir configBinds actually bound, and that identity is the
+			// EM: launch project in both modes (eclipse's resolveEclipseLayout
+			// EM: makes the same choice for the same reason: a throwaway
+			// EM: worktree path must not fork a new per-session settings dir).
+			const layout = await resolveVscodeLayout(process.cwd());
+			const scoderArgs = [
+				"--user-data-dir",
+				layout.userDataSandboxDir,
+				"--extensions-dir",
+				`${getRealHome()}/.vscode/extensions`,
+				// EM: The sandboxed install is disposable; auto-update
+				// EM: half-upgrading it mid-session or nagging across its
+				// EM: tmpfs serves nothing — updates belong to the host
+				// EM: install the extensions were read from.
+				"--disable-updates",
+				// EM: Workspace trust protects the user's real machine from
+				// EM: untrusted folders; inside scoder that question is
+				// EM: already answered, and a fresh user-data-dir has no
+				// EM: trust state — without this every session would open
+				// EM: the project in restricted mode and run nothing.
+				"--disable-workspace-trust",
+			];
+			// EM: rstudio's fill-if-empty semantics: the user's own args pass
+			// EM: through untouched, and the project dir is added only when
+			// EM: there was nothing to open at all. Distinguishing
+			// EM: flag-values from folder arguments would be fragile —
+			// EM: `--install-extension ext.id` has a value that is not a
+			// EM: folder — so the presence of any arg suppresses the fill.
+			if (existingArgs.length > 0) {
+				return [...scoderArgs, ...existingArgs];
+			}
+			return [...scoderArgs, sandboxProjectDir];
 		},
 	},
 };

@@ -27,7 +27,7 @@ tags: [test-script, validation]
 
 `tests/scoder.test.ts` is a self-contained integration test suite that creates
 temporary git repositories under `/tmp`, runs `scoder` against them using
-`/bin/bash` as the sandboxed command, and asserts expected behaviour. 113
+`/bin/bash` as the sandboxed command, and asserts expected behaviour. 135
 tests cover all sandbox mechanics — this catalog is currently behind the
 actual implemented count (see the note under case 113) due to other,
 unrelated in-progress work; not fixed here.
@@ -1174,6 +1174,70 @@ ENTER-to-close, and shutdown-order behavior already implemented and
 tested — predate this entry and are not yet individually catalogued
 here; `em doc`'s test-count check currently reflects that pre-existing
 gap, unrelated to this specific fix.)*
+
+### 114. vscode-preset-launch-args-and-binds
+[TESTED_BY](/tests/scoder.test.ts#testVscodePresetLaunchArgsAndBinds)
+
+The vscode preset's launch contract as one dry-run: the managed
+per-project user-data-dir bound read-write at its mirrored path (the
+singleton lock, IPC socket and SQLite state VS Code keeps in its
+user-data-dir make one-instance-per-directory a hard limit of the app,
+so sharing the host editor's directory is never on the table — see
+`design/implementation/plans/vscode-preset.md`), the pinned flags
+(`--user-data-dir`, `--extensions-dir`, `--disable-updates`,
+`--disable-workspace-trust`) asserted in exact order ahead of the
+project argument, the host's `~/.vscode/extensions` bound read-only,
+and — the regression guard for the secret-storage policy
+(`design/features/secret-storage.md`, option A) — no `--password-store`
+flag anywhere.
+
+### 115. vscode-settings-seeded-once-and-never-again
+[TESTED_BY](/tests/scoder.test.ts#testVscodeSettingsSeededOnceAndNeverAgain)
+
+The persistence guarantee and the seed contract together, with `HOME`
+pointed at a throwaway directory — deliberate, since the seed source is
+`~/.config/Code/User`, which on a developer desktop is someone's real
+settings. Asserted: settings/keybindings/snippets copy in on first
+creation; live state (`globalStorage`, `workspaceStorage`) never does;
+and a second session neither re-seeds (a session's own settings edits
+survive a later host change) nor copies back. Caught a latent race in
+the shared `ensureDir` helper — `await Bun.spawn(...)` resolves before
+`mkdir` has run, which is only observable once something writes into
+the directory on the very next line.
+
+### 116. vscode-user-args-pass-through-untouched
+[TESTED_BY](/tests/scoder.test.ts#testVscodeUserArgsPassThroughUntouched)
+
+scoder's pinned flags prepend but never displace the user's own args,
+and any user arg at all suppresses the project-dir fill (rstudio's
+fill-if-empty semantics; distinguishing folder arguments from
+flag-values like `--install-extension <id>` would be fragile). The
+exact-line assertion ends at the last user argument, which pins the
+absence of the fill.
+
+### 117. vscode-as-ide-companion
+[TESTED_BY](/tests/scoder.test.ts#testVscodeAsIdeCompanion)
+
+`--ide vscode` beside a `pi` primary: the companion path reuses the
+same preset, so the managed user-data-dir bind and flags must appear in
+the merged sandbox, and the GUI companion puts the shared sandbox under
+xpra.
+
+### 118. vscode-no-host-dbus-address
+[TESTED_BY](/tests/scoder.test.ts#testVscodeNoHostDBusAddress)
+
+The ADR 0004 invariant re-asserted at the preset most likely to be
+"fixed" with a bus passthrough: VS Code complains about a missing
+session bus in exactly the way RStudio once did, and RStudio's symptom
+was the one thing that kept the host bus alive for a year.
+
+### 119. is-snap-install-recognises-the-snap-spelling
+[TESTED_BY](/tests/scoder.test.ts#testIsSnapInstallRecognisesTheSnapSpelling)
+
+Pure predicate behind the preset's snap refusal (`/snap/`-prefixed
+resolved paths reject, ordinary installs pass) — testable without a
+snap installed; validate()'s wiring of it is exercised by every dry-run
+test above, whose fake `code` is not under `/snap`.
 
 ## Current Network Coverage
 

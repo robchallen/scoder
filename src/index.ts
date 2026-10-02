@@ -214,17 +214,22 @@ async function main(): Promise<void> {
 		toolDirs = [...new Set([...toolDirs, ...ideBindSpec.dirs])];
 		toolEnv = { ...toolEnv, ...ideBindSpec.env };
 
-		hostIdeBin = await which(options.ide);
+		// EM: The preset's `command` (if set) is the real binary behind the
+		// EM: preset key the user typed — for vscode the key is "vscode" but
+		// EM: the binary is "code".
+		hostIdeBin = await which(idePreset.command ?? options.ide);
 		if (!hostIdeBin) {
-			error(`${options.ide} not found in PATH`);
+			error(`${idePreset.command ?? options.ide} not found in PATH`);
 			process.exit(1);
 		}
 	}
 
-	// EM: Resolve the tool on the host, where it actually exists...
-	const hostToolBin = await which(toolName);
+	// EM: Resolve the tool on the host, where it actually exists. A preset's
+	// EM: `command` overrides the binary the preset key names, when the two
+	// EM: disagree (see ToolPreset.command).
+	const hostToolBin = await which(preset?.command ?? toolName);
 	if (!hostToolBin) {
-		error(`${toolName} not found in PATH`);
+		error(`${preset?.command ?? toolName} not found in PATH`);
 		process.exit(1);
 	}
 

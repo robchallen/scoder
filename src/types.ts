@@ -37,6 +37,11 @@ export interface ToolPreset {
 	description: string;
 	configBinds: (realHome: string, sandboxHome: string) => Promise<ToolBindSpec>;
 	validate: () => Promise<boolean>;
+	// The binary this preset actually runs, when it differs from the
+	// TOOL_PRESETS key the user types. Only the vscode preset needs it:
+	// everyone calls the editor "vscode", but no binary of that name
+	// exists — the real one is `code`.
+	command?: string;
 	// Optional: lets a preset choose the tool's final argv once the project
 	// directory is known, rather than leaving the user to always pass it
 	// explicitly. configBinds runs before sandboxProjDir exists, so this is

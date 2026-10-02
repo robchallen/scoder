@@ -101,6 +101,11 @@ replaced is the worst available default, because the user believes they got
 isolation, did not, and nothing on screen looks different. If an opt-out is
 ever wanted it should be an explicit flag naming what it gives up.
 
+> **Since amended by [0005](./0005-native-display-opt-out.md)**, which is
+> that flag: `--native-display`, per-run, warned, default unchanged. The
+> sentence above stands — the opt-out names what it gives up, and its
+> absence is still a hard failure, never a silent fallback.
+
 **The distro's xpra is not usable.** Ubuntu 24.04 ships 3.1.5+dfsg1, about
 five years old; Ubuntu 26.04 does not package it at all. So
 `--install-dependencies` grows a repository-setup stage (key, per-codename

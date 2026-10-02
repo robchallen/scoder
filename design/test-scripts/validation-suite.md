@@ -27,7 +27,7 @@ tags: [test-script, validation]
 
 `tests/scoder.test.ts` is a self-contained integration test suite that creates
 temporary git repositories under `/tmp`, runs `scoder` against them using
-`/bin/bash` as the sandboxed command, and asserts expected behaviour. 135
+`/bin/bash` as the sandboxed command, and asserts expected behaviour. 136
 tests cover all sandbox mechanics — this catalog is currently behind the
 actual implemented count (see the note under case 113) due to other,
 unrelated in-progress work; not fixed here.
@@ -921,7 +921,12 @@ only evidence that a regression test is worth having.
 
 The host's `/run` is never bound into the sandbox: `--tmpfs /run` is present
 and neither `--ro-bind /run /run` nor `--bind /run /run` is. `--dir
-/run/user/<uid>` is, since `XDG_RUNTIME_DIR` still needs to exist.
+/run/user/<uid>` is, since `XDG_RUNTIME_DIR` still needs to exist — created
+by `--perms 700`, mode `0700` like the host's runtime directory (a bare
+`--dir` gives `0755`, and older bwrap builds left `0777&~umask` behind —
+the `0744` a user noticed); the `/run/user` parent is created first at the
+default `0755`, mirroring the host, because `--perms` only applies to a
+directory it creates.
 
 The security claim of [0004-no-host-dbus](/architecture/decision-records/0004-no-host-dbus.md),
 asserted as a negative because that is the half that matters — and, since
@@ -985,6 +990,22 @@ would not show up until the host file had been edited twice.
 leading blank line when the source is absent. The motivating case is an
 `.Rprofile`: R evaluates it top to bottom, so appending a session
 registration would be silently useless.
+
+### 96e. overlay-warns-when-a-host-save-detaches-the-bind
+[TESTED_BY](/tests/scoder.test.ts#testOverlayWarnsWhenAHostSaveDetachesTheBind)
+
+A save-by-rename on the host (temp file, `mv` over the name — how VS Code,
+vim's backup mode, `sed -i` and `git checkout` save) detaches the file the
+bind was grafted onto, and nothing outside the mount namespace can reattach
+it mid-session. The watcher records the bound file's `dev:ino` at start and
+warns **once** when the path names a different file — or none, for a plain
+delete — telling the user the agent now reads the file without scoder's
+instructions until the session restarts.
+
+Also asserts the two ways it must **not** fire: an in-place truncate-edit
+(inode-stable, the ordinary case) stays silent, and once detached, further
+edits stop claiming the sandbox was "updated" — true again only after
+restarting the session.
 
 ### 97. gui-display-is-private-end-to-end
 [TESTED_BY](/tests/scoder.test.ts#testGuiDisplayIsPrivateEndToEnd)
@@ -1175,7 +1196,78 @@ tested — predate this entry and are not yet individually catalogued
 here; `em doc`'s test-count check currently reflects that pre-existing
 gap, unrelated to this specific fix.)*
 
-### 114. vscode-preset-launch-args-and-binds
+### 114. native-display-grants-host-x11-with-private-bus
+[TESTED_BY](/tests/scoder.test.ts#testNativeDisplayGrantsHostX11WithPrivateBus)
+
+The mirror image of case 92a, under the flag: `--native-display --dry-run
+rstudio` gets the host X11 grant — ro-bound `/tmp/.X11-unix`, the xauth
+cookie bound as **one file** normalised to `$HOME/.Xauthority`, `DISPLAY` —
+plus the direct form's `dbus-run-session --` exec-vector wrap, and still
+none of: an xpra bind or env, a `DBUS_SESSION_BUS_ADDRESS` setenv (ADR
+0004), an entry-point bind, or any host `/run` path. `--tmpfs /run` and the
+fresh `--dir /run/user/<uid>` must still be present: the cookie carve-out is
+a single file, never the directory around it. The test synthesises the
+desktop-only host state (`/tmp/.X11-unix`, a cookie, `DISPLAY`) so it runs
+headless. See ADR 0005.
+
+### 115. native-display-companion-bus-is-env-knob-not-argv-wrap
+[TESTED_BY](/tests/scoder.test.ts#testNativeDisplayCompanionBusIsEnvKnobNotArgvWrap)
+
+`--ide` with the flag: the private bus moves from the exec vector to the
+entry point's `DBUS_BUS=ide` knob — `HARNESS_ARGC` still counts the primary
+tool alone, `dbus-run-session` appears nowhere, and no bus address is set in
+the command's env. The companion still gets the native X11 grant, and xpra
+nothing. This shape exists because the measured ENTER handshake signals `$!`
+directly and `dbus-run-session` forwards no signals (dbus 1.16.2): `$!` must
+stay the IDE's real pid for the measured `ideShutdown` values to keep
+working.
+
+### 116. native-display-requires-a-gui-preset
+[TESTED_BY](/tests/scoder.test.ts#testNativeDisplayRequiresAGuiPreset)
+
+A non-GUI session with the flag exits 1 naming the GUI presets: a flag that
+widens access must mean something, so it is refused rather than silently
+accepted. It is also deliberately not a `.sandbox/` setting — a repo can
+never carry the downgrade.
+
+### 117. native-display-warns-calibrated-to-the-display
+[TESTED_BY](/tests/scoder.test.ts#testNativeDisplayWarnsCalibratedToTheDisplay)
+
+The warning is ADR 0005's pricing section at run time, and its size depends
+on what is behind `DISPLAY`: the Xorg wording names screen-read and input
+injection into every window (measured, ADR 0002); the XWayland wording
+scopes it to X windows with the compositor isolating Wayland-native ones.
+Both print the xpra alternative — the flag is an opt-out, not a
+recommendation.
+
+### 118. entrypoint-invocation-dbus-bus-knob
+[TESTED_BY](/tests/scoder.test.ts#testEntrypointInvocationDBusBusKnob)
+
+Unit: `buildEntrypointInvocation` sets `DBUS_BUS=ide` only when the native
+companion mode asks for it, and changes no argv either way — the bus is an
+env knob, and both vectors stay exactly as the builder composed them.
+
+### 119. native-display-entrypoint-bus-beside-ide
+[TESTED_BY](/tests/scoder.test.ts#testNativeDisplayEntrypointBusBesideIde)
+
+The entry point's companion-bus contract, asserted against the real
+`entrypoint.sh`: the bus address is an env prefix on the IDE's launch line
+only (never exported — the harness stays bus-less), the daemon is killed
+after the IDE exits, and the no-signal-forwarding `dbus-run-session`
+wrapper is never *invoked* there.
+
+### 120. native-display-private-bus-runs-in-sandbox
+[TESTED_BY](/tests/scoder.test.ts#testNativeDisplayPrivateBusRunsInSandbox)
+
+Runtime spot-check of the direct form through the real stack (self-skips
+without `bwrap`/`dbus-run-session`, or with a real `rstudio` installed): a
+fake GUI tool run under the wrap writes its `DBUS_SESSION_BUS_ADDRESS` into
+the repo — a `unix:` address on sandbox-private storage — and its exit
+status 42 propagates child → wrapper → bwrap → scoder, the measured
+property that makes the wrap safe in the direct form. The display
+round-trip itself is on the real-desktop checklist.
+
+### 121. vscode-preset-launch-args-and-binds
 [TESTED_BY](/tests/scoder.test.ts#testVscodePresetLaunchArgsAndBinds)
 
 The vscode preset's launch contract as one dry-run: the managed
@@ -1191,7 +1283,7 @@ and — the regression guard for the secret-storage policy
 (`design/features/secret-storage.md`, option A) — no `--password-store`
 flag anywhere.
 
-### 115. vscode-settings-seeded-once-and-never-again
+### 122. vscode-settings-seeded-once-and-never-again
 [TESTED_BY](/tests/scoder.test.ts#testVscodeSettingsSeededOnceAndNeverAgain)
 
 The persistence guarantee and the seed contract together, with `HOME`
@@ -1205,7 +1297,7 @@ the shared `ensureDir` helper — `await Bun.spawn(...)` resolves before
 `mkdir` has run, which is only observable once something writes into
 the directory on the very next line.
 
-### 116. vscode-user-args-pass-through-untouched
+### 123. vscode-user-args-pass-through-untouched
 [TESTED_BY](/tests/scoder.test.ts#testVscodeUserArgsPassThroughUntouched)
 
 scoder's pinned flags prepend but never displace the user's own args,
@@ -1215,7 +1307,7 @@ flag-values like `--install-extension <id>` would be fragile). The
 exact-line assertion ends at the last user argument, which pins the
 absence of the fill.
 
-### 117. vscode-as-ide-companion
+### 124. vscode-as-ide-companion
 [TESTED_BY](/tests/scoder.test.ts#testVscodeAsIdeCompanion)
 
 `--ide vscode` beside a `pi` primary: the companion path reuses the
@@ -1223,7 +1315,7 @@ same preset, so the managed user-data-dir bind and flags must appear in
 the merged sandbox, and the GUI companion puts the shared sandbox under
 xpra.
 
-### 118. vscode-no-host-dbus-address
+### 125. vscode-no-host-dbus-address
 [TESTED_BY](/tests/scoder.test.ts#testVscodeNoHostDBusAddress)
 
 The ADR 0004 invariant re-asserted at the preset most likely to be
@@ -1231,7 +1323,7 @@ The ADR 0004 invariant re-asserted at the preset most likely to be
 session bus in exactly the way RStudio once did, and RStudio's symptom
 was the one thing that kept the host bus alive for a year.
 
-### 119. is-snap-install-recognises-the-snap-spelling
+### 126. is-snap-install-recognises-the-snap-spelling
 [TESTED_BY](/tests/scoder.test.ts#testIsSnapInstallRecognisesTheSnapSpelling)
 
 Pure predicate behind the preset's snap refusal (`/snap/`-prefixed

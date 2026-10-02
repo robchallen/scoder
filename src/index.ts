@@ -47,7 +47,7 @@ import {
 	stopSshTunnel,
 } from "./sandbox/ssh.ts";
 import { xpraMmapPath, xpraSocketPath } from "./sandbox/xpra.ts";
-import { TOOL_PRESETS } from "./tools/presets.ts";
+import { setNativeDisplay, TOOL_PRESETS } from "./tools/presets.ts";
 import type { BindMount, GitWorktreeInfo } from "./types.ts";
 import {
 	checkBwrapUserns,
@@ -166,6 +166,15 @@ async function main(): Promise<void> {
 	const realHome = getRealHome();
 	const preset = TOOL_PRESETS[toolName];
 
+	// EM: Effective display mode, decided once, before any preset's
+	// EM: validate()/configBinds() runs: a typed flag or its env spelling,
+	// EM: pushed into presets.ts so the two branches of guiDisplayBinds and
+	// EM: requireGuiDisplay can consult it without every preset signature
+	// EM: learning a parameter. ADR 0005.
+	const nativeDisplay =
+		options.nativeDisplay || process.env.SCODER_NATIVE_DISPLAY === "1";
+	setNativeDisplay(nativeDisplay);
+
 	if (preset) {
 		toolDescription = preset.description;
 
@@ -222,6 +231,60 @@ async function main(): Promise<void> {
 			error(`${idePreset.command ?? options.ide} not found in PATH`);
 			process.exit(1);
 		}
+	}
+
+	// EM: A GUI preset is a GUI preset whether it was named as the primary
+	// EM: tool (`scoder rstudio`) or as the companion (`--ide rstudio`); the
+	// EM: companion wins if somehow both are GUI, since that is the
+	// EM: arrangement --ide exists for. This is the same precedence the xpra
+	// EM: wrap has always applied, now computed once because native mode needs
+	// EM: it too — for its own guard, its warning, and its bus.
+	const guiTarget: "harness" | "ide" | null = idePreset?.gui
+		? "ide"
+		: preset?.gui
+			? "harness"
+			: null;
+
+	// EM: --native-display is a display grant; in a session with no GUI in it
+	// EM: there is nothing it could apply to. Silently accepting a flag that
+	// EM: widens access is worse than refusing it — the flag exists to name
+	// EM: what it gives up (ADR 0005), so it has to mean something.
+	if (nativeDisplay && !guiTarget) {
+		const guiNames = Object.entries(TOOL_PRESETS)
+			.filter(([, p]) => p.gui)
+			.map(([name]) => name)
+			.join(", ");
+		error("--native-display only applies to a session running a GUI preset");
+		error(`(the GUI presets are: ${guiNames})`);
+		error(
+			"without it, GUI windows are forwarded from a private virtual display",
+		);
+		process.exit(1);
+	}
+
+	// EM: ADR 0005's warning: name the grant, name the alternative. The
+	// EM: grant's size depends on what is behind the host's DISPLAY — on a
+	// EM: Wayland session X clients reach the desktop through XWayland, whose
+	// EM: per-client isolation the compositor enforces, while ADR 0002's
+	// EM: measured total-grant result (XTEST into every window, verified not
+	// EM: blocked by "untrusted" client mode) was Xorg. Calibrate to what is
+	// EM: detected rather than printing the worst case at everyone.
+	if (nativeDisplay && guiTarget) {
+		warning(
+			"--native-display: the GUI runs on the host's own X session, not a private one",
+		);
+		if (process.env.WAYLAND_DISPLAY) {
+			warning(
+				"sandboxed programs can read and disturb every window X apps show on this XWayland session; Wayland-native windows are isolated by the compositor",
+			);
+		} else {
+			warning(
+				"sandboxed programs can read the screen and inject input into every window on this X session",
+			);
+		}
+		warning(
+			"without the flag, xpra forwards only this session's windows from a virtual display inside the sandbox",
+		);
 	}
 
 	// EM: Resolve the tool on the host, where it actually exists. A preset's
@@ -532,17 +595,20 @@ async function main(): Promise<void> {
 		);
 	}
 
-	// EM: Which program, if any, runs under an xpra server inside the sandbox.
-	// EM: A GUI preset is a GUI preset whether it was named as the primary tool
-	// EM: (`scoder rstudio`) or as the companion (`--ide rstudio`), so both are
-	// EM: checked; the companion wins if somehow both are GUI, since that is
-	// EM: the arrangement --ide exists for. Exactly one xpra server per
-	// EM: session: a second would need a second socket and a second client, and
-	// EM: nothing wants two GUI programs in one sandbox today.
-	const xpra: XpraWrap | undefined = idePreset?.gui
-		? { socket: xpraSocketPath(), mmap: xpraMmapPath(), target: "ide" }
-		: preset?.gui
-			? { socket: xpraSocketPath(), mmap: xpraMmapPath(), target: "harness" }
+	// EM: Which program, if any, runs under an xpra server inside the
+	// EM: sandbox — none of them, under --native-display, which is the whole
+	// EM: point of the flag (ADR 0005). The precedence between primary tool
+	// EM: and companion is decided once in guiTarget above. Exactly one xpra
+	// EM: server per session: a second would need a second socket and a
+	// EM: second client, and nothing wants two GUI programs in one sandbox
+	// EM: today.
+	const xpra: XpraWrap | undefined =
+		guiTarget && !nativeDisplay
+			? {
+					socket: xpraSocketPath(),
+					mmap: xpraMmapPath(),
+					target: guiTarget,
+				}
 			: undefined;
 
 	const config = {
@@ -558,6 +624,12 @@ async function main(): Promise<void> {
 		ideArgs,
 		ideShutdown: idePreset?.ideShutdown,
 		xpra,
+		// EM: Which side's GUI program gets the private session bus that
+		// EM: replaces xpra's --dbus-launch in native mode (ADR 0005): the
+		// EM: harness is wrapped by its exec vector, the companion by the
+		// EM: entry point — the split is Decision 5's measurement of
+		// EM: dbus-run-session forwarding no signals.
+		nativeDBus: nativeDisplay && guiTarget ? guiTarget : undefined,
 		protectionConfig,
 	};
 
@@ -622,6 +694,39 @@ async function main(): Promise<void> {
 				options.dryRun,
 			);
 			if (!xpraReachable && !options.dryRun) {
+				process.exit(1);
+			}
+		}
+	}
+
+	// EM: Native mode's own cheap insurance, mirroring the block above: both
+	// EM: binaries come from the distro's dbus package under the wholesale
+	// EM: --ro-bind /usr, so reachability is near-certain — but the failure
+	// EM: they predict is a GUI that dies inside the sandbox on a bus it
+	// EM: cannot get, which is exactly the quiet kind. Which one depends on
+	// EM: the session shape: the direct form execs dbus-run-session, the
+	// EM: companion form has the entry point run dbus-launch beside the IDE.
+	if (nativeDisplay && guiTarget) {
+		const dbusBin = guiTarget === "ide" ? "dbus-launch" : "dbus-run-session";
+		const hostDbusBin = await which(dbusBin);
+		if (!hostDbusBin) {
+			error(`${dbusBin} not found in PATH`);
+			error(
+				"--native-display starts the GUI program's private session bus with it",
+			);
+			if (!options.dryRun) {
+				process.exit(1);
+			}
+		} else {
+			const dbusReachable = checkExecTargetReachable(
+				dbusBin,
+				hostDbusBin,
+				hostDbusBin,
+				bindDests,
+				realHome,
+				options.dryRun,
+			);
+			if (!dbusReachable && !options.dryRun) {
 				process.exit(1);
 			}
 		}

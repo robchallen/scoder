@@ -41,6 +41,10 @@
 #   XPRA_TARGET=ide|harness   which of the two the server wraps. Only read
 #                      when XPRA_SOCKET is set; defaults to ide.
 #   XPRA_LOG=<path>    where the xpra server's own log goes.
+#   DBUS_BUS=ide       when set, the companion IDE gets a private session bus
+#                      started beside it (see the dbus layer below). Unset for
+#                      xpra sessions and non-GUI sessions — the two mechanisms
+#                      never coexist in one session.
 #
 #     HARNESS_ARGC=3 IDE_ARGC=5 IDE_SIG=HUP … entrypoint.sh \
 #         pi --flag val  /opt/eclipse/eclipse -data … -importProject …
@@ -250,6 +254,44 @@ if [ -n "$XPRA_SOCKET" ]; then
 	fi
 fi
 
+# --- the private session bus, companion form -------------------------------
+# --native-display points a GUI preset at the host's X session directly
+# (ADR 0005). RStudio and Eclipse expect a session bus — GTK and Electron
+# both want one before they ask it for anything — and ADR 0004 rules out the
+# host's, so this starts one inside the sandbox, on the sandbox's own tmpfs.
+#
+# Beside the IDE, not above it: `dbus-run-session -- <cmd>` would be the
+# one-line spelling, and it is what the direct form (`scoder rstudio`, no
+# --ide) uses because there the wrapper cannot hurt anything. Here it would:
+# measured on dbus 1.16.2, dbus-run-session propagates the child's exit
+# status but forwards NO signals — a TERM/INT/HUP/USR1 sent to the wrapper
+# kills the wrapper (143/129/138) and orphans the child. The ENTER handshake
+# below signals $! directly, so wrapping would silently turn every ENTER into
+# a lost request plus an orphaned IDE, and the per-IDE shutdown signals were
+# measured against a directly-exec'd process. So the script starts the daemon
+# itself, prefixes its address onto the IDE's own launch line, and $! stays
+# the IDE's real pid — same property xpra keeps by leaving $! as the server
+# the handshake can reach.
+
+BUS_ADDRESS=
+BUS_PID=
+if [ "${DBUS_BUS:-}" = ide ]; then
+	command -v dbus-launch >/dev/null ||
+		die "dbus-launch not found inside the sandbox"
+	# --sh-syntax is dbus-launch's own contract for shell consumption; the
+	# two lines it prints are parsed with sed rather than eval'd, so a value
+	# that is shell syntax stays a value, never code. (The address is a
+	# unix: path under XDG_RUNTIME_DIR — sandbox-private tmpfs — but the
+	# same reasoning holds for whatever a future release puts in it.)
+	dbus_out=$(dbus-launch --sh-syntax)
+	BUS_ADDRESS=$(printf '%s\n' "$dbus_out" |
+		sed -n "s/^DBUS_SESSION_BUS_ADDRESS='\([^']*\)'.*/\1/p")
+	BUS_PID=$(printf '%s\n' "$dbus_out" |
+		sed -n 's/^DBUS_SESSION_BUS_PID=\([0-9]\+\).*/\1/p')
+	[ -n "$BUS_ADDRESS" ] || die "dbus-launch produced no bus address"
+	say "Private session bus for attached IDE (pid ${BUS_PID:-unknown})"
+fi
+
 # --- start the companion IDE, if there is one ------------------------------
 # The IDE runs detached in the background and the primary tool in the
 # foreground, both in the same process group inside the sandbox, so bwrap (and
@@ -276,7 +318,14 @@ fi
 
 IDE_PID=
 if [ ${#IDE_ARGV[@]} -gt 0 ]; then
-	if [ -n "$XPRA_SOCKET" ] && [ "$XPRA_TARGET" != harness ]; then
+	if [ -n "$BUS_ADDRESS" ]; then
+		# EM: An env prefix on this one line, not an export: the harness —
+		# EM: usually a CLI agent — gets no bus at all, exactly as before, and
+		# EM: only the IDE's tree inherits the address (setsid execs into the
+		# EM: IDE, so the assignment is inherited by it and its children).
+		DBUS_SESSION_BUS_ADDRESS="$BUS_ADDRESS" \
+			setsid "${IDE_ARGV[@]}" </dev/null >"$IDE_LOG" 2>&1 &
+	elif [ -n "$XPRA_SOCKET" ] && [ "$XPRA_TARGET" != harness ]; then
 		setsid "${IDE_ARGV[@]}" </dev/null >"$XPRA_LOG" 2>&1 &
 	else
 		setsid "${IDE_ARGV[@]}" </dev/null >"$IDE_LOG" 2>&1 &
@@ -375,6 +424,15 @@ fi
 # ("line 1: 1234 Killed ..."), which is noise the user did not cause and
 # cannot act on.
 [ -n "$IDE_PID" ] && wait "$IDE_PID" 2>/dev/null
+
+# EM: The bus daemon outlives the IDE only until here: it was started for
+# EM: that IDE's tree and nothing else uses it, so leaving it running to be
+# EM: reaped by bwrap's teardown would hold its /run/user socket and shm ids
+# EM: for no reason. Its exit status is not scoder's — STATUS above already
+# EM: fixed that — so it is silenced rather than waited on.
+if [ -n "$BUS_PID" ]; then
+	kill "$BUS_PID" 2>/dev/null
+fi
 
 clear
 # The primary tool's status, not the IDE's: the IDE is a companion, and scoder's

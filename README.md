@@ -195,6 +195,9 @@ bun test                          # run the validation suite
     --allow-ssh USER@HOST  Open a single pre-authenticated ssh connection to
                          USER@HOST outside the sandbox, and expose only that
                          one connection inside it
+    --native-display    For a GUI preset, draw on the host's X session
+                         directly instead of forwarding windows from a
+                         private virtual display (see below)
     --dry-run           Print bwrap command without executing
 ```
 
@@ -290,6 +293,30 @@ also sets `MCPTOOLS_SOCKET_DIR` to a writable sandbox path, so
 `mcptools::mcp_session()`/`mcp_server()` work out of the box — no project
 `.Rprofile` line needed (its own default location, `/run/user/<uid>`, is
 read-only inside the sandbox).
+
+## Native display (`--native-display`)
+
+GUI presets (`rstudio`, `eclipse`) normally run under an xpra server inside
+the sandbox: their windows are forwarded to the host, and they never hold a
+connection to the host's X session. That isolation has a usability cost —
+xpra's translation has been reported to break hovers, popups and dialog
+placement — and `--native-display` opts out of it:
+
+```
+scoder --native-display rstudio
+SCODER_NATIVE_DISPLAY=1 scoder rstudio     # same thing
+```
+
+Read the warning this prints before using it: a sandboxed program on the
+host's X session can read the screen and inject input into *other* windows
+(on Xorg, every window; on a Wayland host, the X/XWayland ones — see
+[ADR 0005](./architecture/decision-records/0005-native-display-opt-out.md)).
+What does not change: the private session bus (the GUI gets its own, never
+the host's), the `--tmpfs /run` boundary (the xauth cookie crosses as one
+file, never a directory), and xpra as the default — the flag is per-run and
+warned, and a repo can never carry the downgrade: it is not a `.sandbox/`
+setting. It only applies to sessions that run a GUI preset, as harness or as
+`--ide` companion; everywhere else it's a named error.
 
 ## Persistent host-loopback ports (an `.sandbox/ports` file)
 

@@ -123,8 +123,32 @@ Spending more of it to notice an edit a second sooner is a poor trade.
 
 `SCODER_OVERLAY_POLL_MS` overrides the interval.
 
+### Saves that replace the file
+
+A bind grafts onto the **file** at the destination path, not onto the name.
+A save that renames — VS Code's atomic save, vim's default backup mode,
+`sed -i`, `git checkout` — installs a new file under the old name, and the
+graft dies with the old entry. The content arrives inside the sandbox (the
+project directory itself is live), but without scoder's section, for the
+rest of the session; nothing outside the mount namespace can reattach it.
+Renders cannot fix this either: the staged file is innocent — same inode,
+current content, simply no longer read.
+
+In 2.7.0 this is detected, not prevented: the watcher records which file the
+bind was attached to (`dev:ino`, sampled after bwrap) and logs once —
+loudly, with the restart instruction — when the path starts naming a
+different file or none. Truncate-in-place writes, which is how both scoder
+and `echo`-style edits save, keep the inode and never trip it. The
+alternatives that actually survive renames (injecting into the project file,
+FUSE, an overlay that silently swallows the agent's writes) were considered
+and declined; the analysis, including a live measurement of each, is in
+`agents-md-does-not-update-as-expected`.
+
 ## Known Gaps
 
+- **A rename-save on the host detaches the overlay for the session.** The
+  agent loses scoder's section and keeps losing it until restart; the watcher
+  detects and warns, but cannot reattach (see "Saves that replace the file").
 - **The sandbox cannot edit these files**, by design — they are bound
   read-only, and the AGENTS.md injection says so. An agent that wants a change
   must ask.

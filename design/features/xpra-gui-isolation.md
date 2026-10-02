@@ -568,10 +568,17 @@ for `.config` and `.local/share` that `buildBwrapCommand` already emits.
 
 ### Hard dependency, never a fallback
 
-`requireXpra` (`src/tools/presets.ts`), shared by every GUI preset's
-`validate()`. A missing xpra fails with the same shape as the `bwrap` and
-`pasta` checks in `main()`. It deliberately does not fall back to the old
-X11 binds — see ADR 0003.
+`requireGuiDisplay` (`src/tools/presets.ts`, `requireXpra` until ADR 0005
+made it mode-aware), shared by every GUI preset's `validate()`. A missing
+xpra fails with the same shape as the `bwrap` and `pasta` checks in
+`main()`, and the error names `--native-display` as the operator's explicit
+way out. That is the distinction this section guards: xpra is never
+*silently* replaced by the old X11 binds — see ADR 0003 — and the native
+path only ever exists because a human typed the flag (or set
+`SCODER_NATIVE_DISPLAY=1`), never because xpra was missing. In native mode
+the check inverts: `requireHostX11` fails without a `DISPLAY`, fails without
+`/tmp/.X11-unix` behind one, and only *warns* about a missing cookie, since
+`xhost`-style setups are real.
 
 `--install-dependencies` adds the upstream repository (key,
 per-codename `.sources`, `apt-get update`) before installing
@@ -585,6 +592,40 @@ UI for seconds. Without the pin an ordinary `apt upgrade` restores the broken
 version silently, and nothing about the symptom points at xpra. See
 `xpra-client-crashes-on-every-discrete-scroll-event` for the pin's exact
 contents and why priority 1001.
+
+## Native mode: the warned opt-out
+
+`--native-display` runs a GUI preset on the host's own X session instead of
+under an xpra server. It is [ADR 0005](/architecture/decision-records/0005-native-display-opt-out.md)
+made flag-shaped, and it is here because *this* document's own cost side got
+real: the reported hovers and popups — override-redirect windows that never
+reach the client at all, dialogs placed at the screen origin
+([xpra-dialogs-placed-at-screen-origin](/design/implementation/issues/xpra-dialogs-placed-at-screen-origin.md))
+— are structural to xpra's translation, and "useful security that is not
+usable will not be used" is the argument that opened the opt-out.
+
+Mechanically it is a different grant, not a different sandbox. `guiDisplayBinds`
+(`src/tools/presets.ts`) is the single choke point for both modes: xpra gets
+one read-write directory bind and no X11 at all; native gets the pre-ADR-0003
+shape — ro-bound `/tmp/.X11-unix`, the xauth cookie as *one file* (the GDM
+`/run/user/<uid>` spelling normalises to `$HOME/.Xauthority`), `DISPLAY` —
+with the old `DBUS_SESSION_BUS_ADDRESS` passthrough deliberately NOT brought
+back: ADR 0004 still holds, and the GUI's private session bus is rebuilt
+instead: the direct form (`scoder rstudio`) prepends `dbus-run-session --` to
+the exec vector at build time; the companion form (`--ide`) has the entry
+point start `dbus-launch` *beside* the IDE and prefix its address onto that
+one launch line, because the measured ENTER handshake signals `$!` directly
+and `dbus-run-session` forwards no signals (dbus 1.16.2: wrapper dies 143,
+child orphaned). `$!` staying the IDE's real pid is what keeps `ideShutdown`
+meaning what it measured.
+
+What it gives up is the pricing table in ADR 0005, and scoder prints a
+calibrated version of it on every native session: on Xorg the grant is
+screen-read and XTEST input injection into *every* window (verified by ADR
+0002 not to be blocked by "untrusted" client mode); on a Wayland host the
+grant covers the X/XWayland windows while the compositor isolates
+Wayland-native ones. The flag names its alternative too — the default stays
+xpra, unchanged, byte for byte.
 
 ## Known Gaps
 

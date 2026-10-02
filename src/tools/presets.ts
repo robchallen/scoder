@@ -41,6 +41,20 @@ async function ensureDir(path: string): Promise<void> {
 	await Bun.spawn(["mkdir", "-p", path]).exited;
 }
 
+// ### Display mode — xpra (default) or the host's X session (--native-display)
+//
+// EM: Module-level rather than a parameter threaded through every preset's
+// EM: configBinds/validate signature, because every other host fact these
+// EM: functions consult (process.env.DISPLAY, process.cwd()) already arrives
+// EM: this way. index.ts calls setNativeDisplay exactly once, before any
+// EM: preset runs. The two branches it selects are the decision of
+// EM: architecture/decision-records/0005-native-display-opt-out.md.
+let nativeDisplayMode = false;
+
+export function setNativeDisplay(on: boolean): void {
+	nativeDisplayMode = on;
+}
+
 // ### guiDisplayBinds
 // Shared between `rstudio` and `eclipse` — both are GUI apps needing a
 // display. What they get is a *virtual* X server running inside the sandbox,
@@ -63,25 +77,74 @@ async function ensureDir(path: string): Promise<void> {
 // EM: ports. DISPLAY inside the sandbox is now set by xpra for its own
 // EM: virtual display, so nothing here passes one in.
 async function guiDisplayBinds(
-	_realHome: string,
-	_sandboxHome: string,
+	realHome: string,
+	sandboxHome: string,
 ): Promise<ToolBindSpec> {
 	const binds: BindMount[] = [];
 	const dirs: string[] = [];
 	const env: Record<string, string> = {};
 
-	// EM: The whole surface the GUI gets across the sandbox boundary: one
-	// EM: directory, read-write because the server inside creates the socket
-	// EM: and the client outside creates the mmap file. Source and dest are
-	// EM: the same path deliberately — see xpraDir in src/sandbox/xpra.ts;
-	// EM: mmap does not work otherwise, and without mmap the GUI is too laggy
-	// EM: to use.
-	const xpraDirPath = await stageXpraDir();
-	binds.push({
-		type: "bind",
-		source: xpraDirPath,
-		dest: xpraDirPath,
-	});
+	if (nativeDisplayMode) {
+		// EM: --native-display (ADR 0005): the host's own X session, granted
+		// EM: as it was before ADR 0003 withdrew it — and deliberately the
+		// EM: same shape it had then, ported from git history with exactly
+		// EM: one line NOT brought across: the old function also passed
+		// EM: DBUS_SESSION_BUS_ADDRESS, which ADR 0004 has since made
+		// EM: forbidden. A copy-paste would resurrect the hole's address;
+		// EM: the tail below shares the xpra branch's env allowlist, and it
+		// EM: says no.
+		// EM:
+		// EM: ro-bind, not bind: clients connect() to the socket *inodes*,
+		// EM: whose permissions do not depend on writing to the directory —
+		// EM: the shipping shape pre-xpra, and re-confirming it is a
+		// EM: real-desktop checklist item rather than a reason to widen it
+		// EM: now. Applied after builder's --tmpfs /tmp, so the mountpoint
+		// EM: lands in the sandbox's own tmpfs rather than shadowing the
+		// EM: host's /tmp — the same ordering rule the xpra dir bind below
+		// EM: relies on.
+		if (await dirExists("/tmp/.X11-unix")) {
+			binds.push({
+				type: "ro-bind",
+				source: "/tmp/.X11-unix",
+				dest: "/tmp/.X11-unix",
+			});
+		}
+
+		if (process.env.DISPLAY) {
+			env.DISPLAY = process.env.DISPLAY;
+		}
+
+		// EM: The cookie is bound as ONE FILE, never the directory around it.
+		// EM: On GDM hosts the real spelling is commonly /run/user/<uid>/… —
+		// EM: ADR 0005's named carve-out, and the reason it is named: a
+		// EM: read-only copy of a file with no socket in it is not /run
+		// EM: coming back, but only as long as it stays a file. The dest is
+		// EM: normalised to $HOME so the sandbox sees one stable spelling
+		// EM: whatever the host's happens to be.
+		const xauthPath = process.env.XAUTHORITY || `${realHome}/.Xauthority`;
+		if (await fileExists(xauthPath)) {
+			const sandboxXauthPath = `${sandboxHome}/.Xauthority`;
+			binds.push({
+				type: "ro-bind",
+				source: xauthPath,
+				dest: sandboxXauthPath,
+			});
+			env.XAUTHORITY = sandboxXauthPath;
+		}
+	} else {
+		// EM: The whole surface the GUI gets across the sandbox boundary: one
+		// EM: directory, read-write because the server inside creates the socket
+		// EM: and the client outside creates the mmap file. Source and dest are
+		// EM: the same path deliberately — see xpraDir in src/sandbox/xpra.ts;
+		// EM: mmap does not work otherwise, and without mmap the GUI is too laggy
+		// EM: to use.
+		const xpraDirPath = await stageXpraDir();
+		binds.push({
+			type: "bind",
+			source: xpraDirPath,
+			dest: xpraDirPath,
+		});
+	}
 
 	// EM: XDG_RUNTIME_DIR is passed through; DBUS_SESSION_BUS_ADDRESS
 	// EM: deliberately is not. The host's session bus went with --tmpfs /run,
@@ -89,7 +152,12 @@ async function guiDisplayBinds(
 	// EM: architecture/decision-records/0004-no-host-dbus.md. Forwarding the
 	// EM: address without the socket would only point applications at a path
 	// EM: that does not exist, which is worse than an unset variable — the
-	// EM: unset one lets xpra's own private bus take over cleanly.
+	// EM: unset one lets the session's *private* bus take over cleanly:
+	// EM: xpra's --dbus-launch in the default mode, and in native mode the
+	// EM: dbus-run-session / dbus-launch wrap the builder and entry point
+	// EM: apply to the GUI program specifically (ADR 0005). The passed value
+	// EM: names the sandbox's own fresh /run/user/<uid> on the /run tmpfs,
+	// EM: never the host's.
 	if (process.env.XDG_RUNTIME_DIR) {
 		env.XDG_RUNTIME_DIR = process.env.XDG_RUNTIME_DIR;
 	}
@@ -483,19 +551,25 @@ export function isSnapInstall(resolvedPath: string): boolean {
 	return resolvedPath.startsWith("/snap/");
 }
 
-// ### requireXpra
+// ### requireGuiDisplay
 // [IMPLEMENTS](/design/features/xpra-gui-isolation.md)
-// Shared by every GUI preset's validate(). A GUI preset without xpra is a
-// hard failure, never a fallback.
+// Shared by every GUI preset's validate(). In the default mode xpra's
+// absence is a hard failure, never a fallback; under --native-display it
+// preflights instead what that flag is about to grant, per ADR 0005.
 //
 // EM: Deliberately not "fall back to binding the host X socket if xpra is
 // EM: missing". A security-motivated change that quietly degrades to the
 // EM: mechanism it replaced is the worst available default: the user believes
 // EM: they got isolation and did not, and nothing on screen looks different.
 // EM: If an opt-out is ever wanted it should be an explicit flag that names
-// EM: what it gives up, not something that happens by absence. The message
-// EM: shape matches the bwrap/pasta checks in main() for the same reason.
-async function requireXpra(): Promise<boolean> {
+// EM: what it gives up, not something that happens by absence — which is what
+// EM: --native-display now is, and why this branches on it rather than on
+// EM: xpra's availability. The message shape matches the bwrap/pasta checks
+// EM: in main() for the same reason.
+async function requireGuiDisplay(): Promise<boolean> {
+	if (nativeDisplayMode) {
+		return requireHostX11();
+	}
 	if (await commandExists("xpra")) {
 		return true;
 	}
@@ -503,7 +577,44 @@ async function requireXpra(): Promise<boolean> {
 	error("GUI presets forward windows from a virtual display inside the");
 	error("sandbox, rather than exposing the host's X server to it");
 	error("run sudo scoder --install-dependencies");
+	error(
+		"or pass --native-display to use the host's X session (see its --help)",
+	);
 	return false;
+}
+
+// ### requireHostX11
+// --native-display's preflight: fail up front and by name, because a native
+// misfire without one surfaces as `cannot open display` in sandbox stderr
+// or, with --ide, in $IDE_LOG where nobody looks — ADR 0003's "failures get
+// quieter" note applies with more force here, since there is no server log
+// even to quiet into.
+async function requireHostX11(): Promise<boolean> {
+	if (!process.env.DISPLAY) {
+		error("no DISPLAY in the environment");
+		error("--native-display runs GUI presets on the host's own X session");
+		error("and there is no session to join");
+		return false;
+	}
+	if (!(await dirExists("/tmp/.X11-unix"))) {
+		error("DISPLAY is set, but /tmp/.X11-unix does not exist");
+		error("--native-display binds that socket directory into the sandbox;");
+		error("there is nothing to bind");
+		return false;
+	}
+	const xauthPath = process.env.XAUTHORITY || `${getRealHome()}/.Xauthority`;
+	if (!(await fileExists(xauthPath))) {
+		// EM: A warning, not an error: xhost-style access control needs no
+		// EM: cookie at all, and the pre-xpra code treated the file as
+		// EM: optional for the same reason. Warn rather than assume, though,
+		// EM: because on a cookie-requiring server the failure this predicts
+		// EM: is the quiet kind this function exists to prevent.
+		warning(`no X authority file at ${xauthPath}`);
+		warning(
+			"if your X server restricts clients by cookie, the GUI will not open",
+		);
+	}
+	return true;
 }
 
 // ### TOOL_PRESETS
@@ -880,7 +991,7 @@ export const TOOL_PRESETS: Record<string, ToolPreset> = {
 				error("Install: https://posit.co/download/rstudio-desktop/");
 				return false;
 			}
-			return await requireXpra();
+			return await requireGuiDisplay();
 		},
 
 		// EM: RStudio Desktop does not inherit the launching process's cwd for
@@ -1095,7 +1206,7 @@ export const TOOL_PRESETS: Record<string, ToolPreset> = {
 				error("Install: https://www.eclipse.org/downloads/");
 				return false;
 			}
-			return await requireXpra();
+			return await requireGuiDisplay();
 		},
 	},
 
@@ -1186,7 +1297,7 @@ export const TOOL_PRESETS: Record<string, ToolPreset> = {
 				error("  install the .deb, .rpm or tarball build instead");
 				return false;
 			}
-			return await requireXpra();
+			return await requireGuiDisplay();
 		},
 		resolveArgs: async (
 			_hostProjectDir: string,

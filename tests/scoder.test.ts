@@ -2997,7 +2997,7 @@ test("vscode-preset-launch-args-and-binds: managed user-data-dir rw, pinned flag
 			`-- bash /tmp/scoder-entrypoint.sh ${fakeBinDir}/code` +
 				` --user-data-dir ${managedDir}` +
 				` --extensions-dir ${extensionsDir}` +
-				` --disable-updates --disable-workspace-trust ${repoDir}\n`,
+				` --disable-updates --disable-workspace-trust --verbose ${repoDir}\n`,
 		);
 
 		expect(flat).toContain(`--ro-bind ${extensionsDir} ${extensionsDir}`);
@@ -3123,7 +3123,7 @@ test("vscode-user-args-pass-through-untouched: pinned flags prepend, user args f
 			`-- bash /tmp/scoder-entrypoint.sh ${fakeBinDir}/code` +
 				` --user-data-dir ${managedDir}` +
 				` --extensions-dir ${SANDBOX_HOME}/.vscode/extensions` +
-				` --disable-updates --disable-workspace-trust` +
+				` --disable-updates --disable-workspace-trust --verbose` +
 				` --install-extension ms-python.python\n`,
 		);
 	} finally {
@@ -3156,6 +3156,53 @@ test("vscode-as-ide-companion: --ide vscode gets its managed user-data-dir insid
 		// The companion is a GUI preset: the shared sandbox runs under xpra.
 		expect(output).toContain("--setenv XPRA_SOCKET ");
 	} finally {
+		await Bun.spawn(["rm", "-rf", managedDir]).exited;
+		await Bun.spawn(["rm", "-rf", piDir, codeDir]).exited;
+		await cleanupRepo(repoDir);
+	}
+});
+
+// ### Test: vscode-preset-native-display-gets-display-env
+// EM: Reported from the desktop: `scoder --native-display pi --ide vscode`
+// EM: bound /tmp/.X11-unix and the cookie but set neither DISPLAY nor
+// EM: XAUTHORITY, so `code` started into --clearenv with no display to
+// EM: name and never appeared. The preset took guiDisplayBinds' binds and
+// EM: dirs and dropped its env; rstudio and eclipse spread all three, which
+// EM: is why their native tests never caught it.
+test("vscode-preset-native-display-gets-display-env: under --native-display the vscode preset passes DISPLAY, XAUTHORITY and XDG_RUNTIME_DIR, not just the binds", async () => {
+	const repoDir = await createTempRepo();
+	tempRepos.push(repoDir);
+	const piDir = await createFakeToolDir("pi");
+	const codeDir = await createFakeToolDir("code");
+	const x11 = await createFakeX11HostState();
+	const managedDir = `${SANDBOX_HOME}/.local/share/scoder-vscode-userdata/${repoDir.slice(1)}`;
+
+	try {
+		const output = await runScoder(
+			repoDir,
+			[
+				"--native-display",
+				"--dry-run",
+				"--no-worktree",
+				"pi",
+				"--ide",
+				"vscode",
+			],
+			{
+				PATH: `${piDir}:${codeDir}:${process.env.PATH}`,
+				DISPLAY: ":42",
+				XAUTHORITY: x11.cookiePath,
+				XDG_RUNTIME_DIR: "/run/user/4242",
+			},
+		);
+		const flat = flattenDryRun(output);
+
+		expect(flat).toContain("--ro-bind /tmp/.X11-unix /tmp/.X11-unix");
+		expect(flat).toContain("--setenv DISPLAY :42");
+		expect(flat).toContain(`--setenv XAUTHORITY ${SANDBOX_HOME}/.Xauthority`);
+		expect(flat).toContain("--setenv XDG_RUNTIME_DIR /run/user/4242");
+	} finally {
+		await x11.cleanup();
 		await Bun.spawn(["rm", "-rf", managedDir]).exited;
 		await Bun.spawn(["rm", "-rf", piDir, codeDir]).exited;
 		await cleanupRepo(repoDir);

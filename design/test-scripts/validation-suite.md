@@ -27,7 +27,7 @@ tags: [test-script, validation]
 
 `tests/scoder.test.ts` is a self-contained integration test suite that creates
 temporary git repositories under `/tmp`, runs `scoder` against them using
-`/bin/bash` as the sandboxed command, and asserts expected behaviour. 137
+`/bin/bash` as the sandboxed command, and asserts expected behaviour. 138
 tests cover all sandbox mechanics — this catalog is currently behind the
 actual implemented count (see the note under case 113) due to other,
 unrelated in-progress work; not fixed here.
@@ -1277,7 +1277,9 @@ user-data-dir make one-instance-per-directory a hard limit of the app,
 so sharing the host editor's directory is never on the table — see
 `design/implementation/plans/vscode-preset.md`), the pinned flags
 (`--user-data-dir`, `--extensions-dir`, `--disable-updates`,
-`--disable-workspace-trust`) asserted in exact order ahead of the
+`--disable-workspace-trust`, `--verbose` — which keeps the `code` CLI
+attached to the app so the IDE log and the ENTER shutdown work) asserted
+in exact order ahead of the
 project argument, the host's `~/.vscode/extensions` bound read-only,
 and — the regression guard for the secret-storage policy
 (`design/features/secret-storage.md`, option A) — no `--password-store`
@@ -1342,6 +1344,16 @@ stages only `scoder-xpra.log` (its server swallows the IDE's output; the
 `scoder-ide.log`, and a plain CLI session neither — with the bind ordered
 after `--tmpfs /tmp`, the staged source existing before bwrap would run,
 and the startup line naming the host path (`… log on the host: …`).
+
+### 128. vscode-preset-native-display-gets-display-env
+[TESTED_BY](/tests/scoder.test.ts#testVscodePresetNativeDisplayGetsDisplayEnv)
+
+Regression for a desktop report: `scoder --native-display pi --ide vscode`
+bound `/tmp/.X11-unix` and the cookie but set no `DISPLAY` or
+`XAUTHORITY`, so `code` started under `--clearenv` with no display and
+never appeared. The preset spread `guiDisplayBinds`' binds and dirs and
+dropped its env. Asserts the native grant's binds *and* its env
+(`DISPLAY`, `XAUTHORITY` at `$HOME/.Xauthority`, `XDG_RUNTIME_DIR`).
 
 ## Current Network Coverage
 

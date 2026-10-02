@@ -1272,9 +1272,16 @@ export const TOOL_PRESETS: Record<string, ToolPreset> = {
 			// EM: pi's own config so the integrated terminal can run scoder,
 			// EM: for the same reason rstudio asks for it.
 			const piSpec = await piConfigBinds(realHome, sandboxHome);
+			// EM: gui.env carried through, not just its binds: under
+			// EM: --native-display it holds DISPLAY and XAUTHORITY, and the
+			// EM: sandbox runs --clearenv, so dropping it left `code` with the
+			// EM: X socket and cookie bound but no way to name them — reported
+			// EM: as VS Code never appearing, with an empty log (see
+			// EM: vscode-preset-native-display-gets-display-env).
 			return {
 				binds: [...binds, ...(piSpec.binds ?? [])],
 				dirs: [...dirs, ...(piSpec.dirs ?? [])],
+				env: { ...gui.env },
 			};
 		},
 		validate: async () => {
@@ -1329,6 +1336,21 @@ export const TOOL_PRESETS: Record<string, ToolPreset> = {
 				// EM: trust state — without this every session would open
 				// EM: the project in restricted mode and run nothing.
 				"--disable-workspace-trust",
+				// EM: Load-bearing for the entry point, not a debugging aid.
+				// EM: `code` is a CLI launcher, not the app: it spawns the
+				// EM: Electron main `detached: true` with `stdio: 'ignore'`
+				// EM: and exits at once (src/vs/code/node/cli.ts). Reported
+				// EM: as an IDE log that stayed empty — and worse, $! named a
+				// EM: process already gone, so the entry point saw the IDE
+				// EM: as finished: no ENTER prompt when pi exited, and the
+				// EM: namespace reaper then killed the real window, unsaved
+				// EM: work and all. --verbose is the one switch that makes
+				// EM: the CLI pipe the app's stdout/stderr through and wait
+				// EM: for its exit (Linux; same source). The app stays the
+				// EM: CLI's child — detached only means its own session — so
+				// EM: the children-first `pkill -P` shutdown still reaches
+				// EM: it. Cost: verbose-level output in the log.
+				"--verbose",
 			];
 			// EM: rstudio's fill-if-empty semantics: the user's own args pass
 			// EM: through untouched, and the project dir is added only when

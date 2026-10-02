@@ -336,7 +336,15 @@ auto-updater inside a disposable sandbox has nothing useful to update),
 and `--disable-workspace-trust` (the trust dialog's threat model is
 "you opened an untrusted folder on your real machine"; inside scoder that
 question is already answered, and a fresh user-data-dir would otherwise
-open every project in restricted mode). Then the user's own args,
+open every project in restricted mode), and `--verbose`. That last one is
+load-bearing, not a debugging aid: `code` is a CLI launcher that spawns the
+Electron app `detached` with `stdio: 'ignore'` and exits immediately
+(`src/vs/code/node/cli.ts`), so without it the IDE log stays empty and the
+entry point's `$!` names a process already gone. The session then treats
+the IDE as finished, skips the ENTER prompt when the primary tool exits,
+and the namespace reaper kills the real window. `--verbose` makes the CLI
+pipe the app's output through and wait for it to exit; the app stays the
+CLI's child, so the children-first shutdown still reaches it. Then the user's own args,
 untouched; the project directory is opened only when the user gave no
 argument at all (rstudio's fill-if-empty semantics — distinguishing
 folder arguments from flag values like `--install-extension <id>` would

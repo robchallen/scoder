@@ -488,6 +488,7 @@ export async function buildBwrapCommand(
 		"JINA_API_KEY",
 		"FIRECRAWL_API_KEY",
 		"PERPLEXITY_API_KEY",
+		"TYPESAFE_API_KEY",
 	];
 
 	for (const envVar of passThrough) {

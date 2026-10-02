@@ -34,6 +34,21 @@ key is what everyone calls the editor, the binary is `code`. `index.ts`
 resolves `preset.command ?? toolName` on the host for both the primary
 tool and an `--ide` companion.
 
+A preset can also be named with `--bind NAME`, which merges its
+`configBinds` result into another tool's sandbox without launching it
+(`scoder pi --bind claude`). Only `configBinds` runs: `validate()` checks
+that the binary is installed, which is the launch's question, and a bound
+preset is not launched. The merge uses `dedupeBinds` like an `--ide`
+companion's, except for env: on a clash the running tools keep their own
+values, since a bound preset's env exists for a process that is not there.
+GUI presets are refused — their binds include the display grant (the xpra
+socket directory, or under `--native-display` the host's X socket and
+cookie), and with no GUI process that is a dangling socket directory or an
+unasked-for host-display grant. A bound preset brings its read-write binds
+too: `--bind claude` opens the same host write surface described for
+`~/.claude` below. After the tool name, `--bind X` is claimed only when X
+is a registered preset, because `--bind` is a common flag of other tools.
+
 Every preset has an async function pair:
 - `configBinds(realHome, sandboxHome)` — returns bind mounts and directory specs
 - `validate()` — checks tool is installed, prints install instructions if missing

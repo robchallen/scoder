@@ -3090,6 +3090,40 @@ test("vscode-settings-seeded-once-and-never-again: settings copy on first creati
 	}
 });
 
+// ### Test: vscode-preset-binds-continue-when-present
+// EM: Continue keeps config, sessions and its index at ~/.continue, outside
+// EM: the user-data-dir: bound read-write when it exists, and never created
+// EM: when it does not. A throwaway HOME, so neither half depends on, or
+// EM: touches, the developer's real ~/.continue.
+test("vscode-preset-binds-continue-when-present: ~/.continue is bound read-write when it exists, absent otherwise", async () => {
+	const repoDir = await createTempRepo();
+	tempRepos.push(repoDir);
+	const fakeBinDir = await createFakeToolDir("code");
+	const fakeHome = `/tmp/scoder-vscode-fake-home-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
+	const env = { PATH: `${fakeBinDir}:${process.env.PATH}`, HOME: fakeHome };
+
+	try {
+		await Bun.write(`${fakeHome}/.placeholder`, "");
+		const without = flattenDryRun(
+			await runScoder(repoDir, ["--dry-run", "--no-worktree", "vscode"], env),
+		);
+		expect(without).not.toContain("/.continue");
+		expect(await dirExists(`${fakeHome}/.continue`)).toBe(false);
+
+		await Bun.write(`${fakeHome}/.continue/config.yaml`, "models: []\n");
+		const withIt = flattenDryRun(
+			await runScoder(repoDir, ["--dry-run", "--no-worktree", "vscode"], env),
+		);
+		expect(withIt).toContain(
+			`--bind ${fakeHome}/.continue ${fakeHome}/.continue`,
+		);
+		expect(withIt).not.toContain(`--ro-bind ${fakeHome}/.continue`);
+	} finally {
+		await Bun.spawn(["rm", "-rf", fakeHome, fakeBinDir]).exited;
+		await cleanupRepo(repoDir);
+	}
+});
+
 // ### Test: vscode-user-args-pass-through-untouched
 // EM: scoder's flags go in front, but they never displace or reorder the
 // EM: user's own, and any user arg at all suppresses the project-dir fill

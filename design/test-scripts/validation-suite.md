@@ -27,7 +27,7 @@ tags: [test-script, validation]
 
 `tests/scoder.test.ts` is a self-contained integration test suite that creates
 temporary git repositories under `/tmp`, runs `scoder` against them using
-`/bin/bash` as the sandboxed command, and asserts expected behaviour. 138
+`/bin/bash` as the sandboxed command, and asserts expected behaviour. 139
 tests cover all sandbox mechanics — this catalog is currently behind the
 actual implemented count (see the note under case 113) due to other,
 unrelated in-progress work; not fixed here.
@@ -1354,6 +1354,14 @@ bound `/tmp/.X11-unix` and the cookie but set no `DISPLAY` or
 never appeared. The preset spread `guiDisplayBinds`' binds and dirs and
 dropped its env. Asserts the native grant's binds *and* its env
 (`DISPLAY`, `XAUTHORITY` at `$HOME/.Xauthority`, `XDG_RUNTIME_DIR`).
+
+### 129. vscode-preset-binds-continue-when-present
+[TESTED_BY](/tests/scoder.test.ts#testVscodePresetBindsContinueWhenPresent)
+
+`~/.continue` (Continue's config, sessions and index, outside the
+user-data-dir) is bound read-write at its mirrored path when it exists, and
+neither bound nor created when it does not. Runs against a throwaway `HOME`
+so the developer's real `~/.continue` is never read or touched.
 
 ## Current Network Coverage
 

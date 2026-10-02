@@ -1269,6 +1269,26 @@ export const TOOL_PRESETS: Record<string, ToolPreset> = {
 				});
 			}
 
+			// EM: The Continue extension keeps its whole state outside the
+			// EM: user-data-dir, at ~/.continue: config.yaml (models and
+			// EM: their API keys), chat sessions, the codebase index, logs.
+			// EM: Read-write, because Continue writes sessions and its index
+			// EM: there throughout a session; ro would break it, and tmpfs
+			// EM: would show a blank, unconfigured Continue every launch.
+			// EM: Existence-gated like the extensions tree: a user without
+			// EM: Continue gets nothing created on their behalf. Its API
+			// EM: keys become readable by the agent, the same exposure
+			// EM: scoder's own API-key env passthrough already accepts.
+			const continueDir = `${realHome}/.continue`;
+			if (await dirExists(continueDir)) {
+				dirs.push(`${sandboxHome}/.continue`);
+				binds.push({
+					type: "bind",
+					source: continueDir,
+					dest: `${sandboxHome}/.continue`,
+				});
+			}
+
 			// EM: pi's own config so the integrated terminal can run scoder,
 			// EM: for the same reason rstudio asks for it.
 			const piSpec = await piConfigBinds(realHome, sandboxHome);

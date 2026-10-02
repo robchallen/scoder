@@ -147,6 +147,12 @@ four; proposed only if a future tool *requires* the Secret Service API itself
    private bus: pure in-memory, or does gnome-keyring activate and prompt?
    (The Chrome observation says the daemon *can* activate; VS Code's path is
    unmeasured.)
+   First desktop report (2026-10-02, `--native-display pi --ide vscode`):
+   VS Code asks to sign in to GitHub as soon as it launches. That is option
+   A as designed (a fresh managed profile with no persisted session), not a
+   missing bind. It asked once only: re-opening the same project did not ask
+   again, so the prompt's state is remembered in the persistent managed
+   profile. The keyring/in-memory question itself is still unmeasured.
 2. Same question for a sandbox image without gnome-keyring installed —
    confirming A's fallback is genuinely crash-free in practice.
 3. Whether opt-in C should be per-project or per-user; per-project matches

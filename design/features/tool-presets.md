@@ -327,6 +327,14 @@ sandboxed session silently inheriting host Electron switches is the
 failure mode this preset avoids everywhere else), and anything
 secret-bearing.
 
+`~/.continue` (the Continue extension's config, models and API keys,
+chat sessions and codebase index — kept outside the user-data-dir) binds
+**read-write** when it exists and is never created when it does not:
+Continue writes sessions and its index there all session long, so read-only
+would break it and tmpfs would show it unconfigured every launch. Its API
+keys become readable inside the sandbox, the same exposure scoder's API-key
+env passthrough already accepts.
+
 `~/.vscode/extensions` binds whole and **read-only**, existence-gated —
 install and update extensions on the host. Accepted cost, to be
 revisited on experience: "Install" inside the sandbox fails against the

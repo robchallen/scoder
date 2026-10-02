@@ -4048,6 +4048,120 @@ test("ide-flag-works-before-or-after-tool-name: --ide is recognised whether it c
 	}
 });
 
+// ### Test: bind-preset-adds-paths-without-launching
+// EM: --bind is --ide's merge without --ide's process: the bound preset's
+// EM: config binds join the sandbox, and the exec target stays the primary
+// EM: tool alone, with no entry point. Accepted on either side of the tool
+// EM: name. A throwaway HOME, so ~/.claude here is a fixture, never the
+// EM: developer's own.
+test("bind-preset-adds-paths-without-launching: --bind claude adds Claude Code's binds to pi's sandbox, before or after the tool name, and launches only pi", async () => {
+	const repoDir = await createTempRepo();
+	tempRepos.push(repoDir);
+	const piDir = await createFakeToolDir("pi");
+	const fakeHome = `/tmp/scoder-bind-fake-home-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
+	const env = { PATH: `${piDir}:${process.env.PATH}`, HOME: fakeHome };
+
+	try {
+		await Bun.write(`${fakeHome}/.claude/settings.json`, "{}");
+		await Bun.write(`${fakeHome}/.claude.json`, "{}");
+
+		const after = await runScoderRaw(
+			repoDir,
+			["--dry-run", "--no-worktree", "pi", "--bind", "claude"],
+			env,
+		);
+		const before = await runScoderRaw(
+			repoDir,
+			["--dry-run", "--no-worktree", "--bind=claude", "pi"],
+			env,
+		);
+
+		for (const run of [after, before]) {
+			expect(run.code).toBe(0);
+			const flat = flattenDryRun(run.stdout);
+			expect(flat).toContain(`--bind ${fakeHome}/.claude ${fakeHome}/.claude`);
+			expect(flat).toContain(
+				`--ro-bind ${fakeHome}/.claude.json ${fakeHome}/.claude.json`,
+			);
+			// pi's own binds are still there: the bound preset adds, never
+			// replaces.
+			expect(flat).toContain(
+				`--bind ${fakeHome}/.local/share/pi ${fakeHome}/.local/share/pi`,
+			);
+			// Only pi runs: no entry point, and --bind is not in pi's argv.
+			expect(flat).not.toContain("scoder-entrypoint.sh");
+			expect(flat).toContain(`-- ${piDir}/pi\n`);
+			expect(run.stderr).toContain("Binding Claude Code's paths");
+		}
+	} finally {
+		await Bun.spawn(["rm", "-rf", piDir, fakeHome]).exited;
+		await cleanupRepo(repoDir);
+	}
+});
+
+// ### Test: bind-flag-passes-through-non-preset-values
+// EM: --bind is a common flag in other tools (`python -m http.server
+// EM: --bind 0.0.0.0`), so after the tool name it is claimed only when its
+// EM: value names a preset. Anything else is the tool's own argv, intact.
+test("bind-flag-passes-through-non-preset-values: after the tool name, --bind with a non-preset value is left in the tool's argv", async () => {
+	const repoDir = await createTempRepo();
+	tempRepos.push(repoDir);
+	const piDir = await createFakeToolDir("pi");
+
+	try {
+		const run = await runScoderRaw(
+			repoDir,
+			["--dry-run", "--no-worktree", "pi", "--bind", "0.0.0.0", "--bind=::1"],
+			{ PATH: `${piDir}:${process.env.PATH}` },
+		);
+		expect(run.code).toBe(0);
+		// The printer wraps before every "--"-prefixed argument, hence \s+.
+		expect(flattenDryRun(run.stdout)).toMatch(
+			new RegExp(`-- ${piDir}/pi\\s+--bind 0\\.0\\.0\\.0\\s+--bind=::1\n`),
+		);
+		expect(run.stderr).not.toContain("Binding");
+	} finally {
+		await Bun.spawn(["rm", "-rf", piDir]).exited;
+		await cleanupRepo(repoDir);
+	}
+});
+
+// ### Test: bind-flag-refuses-gui-and-unknown-presets
+// EM: Before the tool name nothing is ambiguous, so an unknown name is an
+// EM: error, not a silent no-op. A GUI preset is refused at either
+// EM: position: its binds include a display grant that only makes sense
+// EM: with its GUI running, which is what --ide is for.
+test("bind-flag-refuses-gui-and-unknown-presets: --bind names a GUI preset or no preset at all, and scoder says so", async () => {
+	const repoDir = await createTempRepo();
+	tempRepos.push(repoDir);
+	const piDir = await createFakeToolDir("pi");
+	const env = { PATH: `${piDir}:${process.env.PATH}` };
+
+	try {
+		const gui = await runScoderRaw(
+			repoDir,
+			["--dry-run", "--no-worktree", "pi", "--bind", "rstudio"],
+			env,
+		);
+		expect(gui.code).not.toBe(0);
+		expect(gui.stderr).toContain("--bind rstudio: rstudio is a GUI preset");
+		expect(gui.stderr).toContain("use --ide rstudio");
+
+		const unknown = await runScoderRaw(
+			repoDir,
+			["--dry-run", "--no-worktree", "--bind", "nosuchtool", "pi"],
+			env,
+		);
+		expect(unknown.code).not.toBe(0);
+		expect(unknown.stderr).toContain(
+			"no preset registered for --bind nosuchtool",
+		);
+	} finally {
+		await Bun.spawn(["rm", "-rf", piDir]).exited;
+		await cleanupRepo(repoDir);
+	}
+});
+
 // ### Test: ide-must-differ-from-primary-tool
 test("ide-must-differ-from-primary-tool: --ide naming the same tool as the primary fails clearly", async () => {
 	const repoDir = await createTempRepo();

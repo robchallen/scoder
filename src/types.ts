@@ -7,6 +7,9 @@ export interface ScoderOptions {
 	worktree: boolean;
 	sshTarget: string | null;
 	ide: string | null;
+	// EM: --bind NAME (repeatable): presets whose config binds join the
+	// EM: sandbox without the preset's tool being launched.
+	bind: string[];
 	// EM: --native-display: GUI presets draw on the host's X session directly
 	// EM: instead of under an xpra server. A warned opt-out (ADR 0005), not a
 	// EM: fallback — the default stays xpra.

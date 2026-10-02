@@ -294,6 +294,30 @@ also sets `MCPTOOLS_SOCKET_DIR` to a writable sandbox path, so
 `.Rprofile` line needed (its own default location, `/run/user/<uid>`, is
 read-only inside the sandbox).
 
+## Another preset's paths, without its tool (`--bind`)
+
+`--bind NAME` adds preset `NAME`'s config binds to the sandbox without
+launching `NAME` — for when one agent needs another's state (its skills,
+sessions or config) but only one of them should run:
+
+```bash
+scoder pi --bind claude                   # pi runs; ~/.claude etc. are in its sandbox
+scoder --bind claude --bind copilot pi    # repeatable, either side of the tool name
+```
+
+Only the preset's binds come along: its tool is not started, and it need
+not even be installed. The binds are the preset's own, read-write ones
+included — `--bind claude` gives the session the same read-write
+`~/.claude` Claude Code itself gets, hooks and `settings.json` among it, so
+whatever the agent writes there takes effect the next time you run
+`claude` on the host (see `design/features/tool-presets.md`).
+
+After the tool name, `--bind` is taken as scoder's only when its value is a
+preset name, so a tool's own `--bind` (`scoder python3 -m http.server --bind
+0.0.0.0`) passes through untouched. GUI presets (`rstudio`, `eclipse`,
+`vscode`) are refused: their binds include a display, which only makes
+sense with the GUI running — use `--ide` for that.
+
 ## Native display (`--native-display`)
 
 GUI presets (`rstudio`, `eclipse`) normally run under an xpra server inside

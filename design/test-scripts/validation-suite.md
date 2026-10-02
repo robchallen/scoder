@@ -27,7 +27,7 @@ tags: [test-script, validation]
 
 `tests/scoder.test.ts` is a self-contained integration test suite that creates
 temporary git repositories under `/tmp`, runs `scoder` against them using
-`/bin/bash` as the sandboxed command, and asserts expected behaviour. 139
+`/bin/bash` as the sandboxed command, and asserts expected behaviour. 142
 tests cover all sandbox mechanics — this catalog is currently behind the
 actual implemented count (see the note under case 113) due to other,
 unrelated in-progress work; not fixed here.
@@ -1362,6 +1362,29 @@ dropped its env. Asserts the native grant's binds *and* its env
 user-data-dir) is bound read-write at its mirrored path when it exists, and
 neither bound nor created when it does not. Runs against a throwaway `HOME`
 so the developer's real `~/.continue` is never read or touched.
+
+### 130. bind-preset-adds-paths-without-launching
+[TESTED_BY](/tests/scoder.test.ts#testBindPresetAddsPathsWithoutLaunching)
+
+`scoder pi --bind claude` and `scoder --bind=claude pi` (throwaway `HOME`
+with a `~/.claude` fixture) both add Claude Code's binds (`~/.claude`
+read-write, `~/.claude.json` read-only) next to pi's own, and launch only
+pi: no entry point, and `--bind` is not in pi's argv.
+
+### 131. bind-flag-passes-through-non-preset-values
+[TESTED_BY](/tests/scoder.test.ts#testBindFlagPassesThroughNonPresetValues)
+
+After the tool name, `--bind 0.0.0.0` and `--bind=::1` stay in the tool's
+argv: `--bind` is claimed as scoder's only when its value names a preset,
+since it is a common flag of other tools (`python -m http.server`).
+
+### 132. bind-flag-refuses-gui-and-unknown-presets
+[TESTED_BY](/tests/scoder.test.ts#testBindFlagRefusesGuiAndUnknownPresets)
+
+`--bind rstudio` fails, naming `--ide rstudio` as the way to run it (a GUI
+preset's binds carry a display grant that only makes sense with its GUI
+running). Before the tool name, `--bind nosuchtool` fails as an unknown
+preset rather than being silently dropped.
 
 ## Current Network Coverage
 

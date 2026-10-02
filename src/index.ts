@@ -238,6 +238,47 @@ async function main(): Promise<void> {
 		}
 	}
 
+	// EM: --bind: a preset's paths without its process. `scoder pi --bind
+	// EM: claude` exists so one agent can read and write another's state
+	// EM: (skills, sessions, config) without launching it. Only configBinds
+	// EM: runs, not validate(): validate asks "is the binary installed",
+	// EM: which is the launch's question, not this flag's — the paths are
+	// EM: wanted whether or not the tool itself is on PATH.
+	// EM:
+	// EM: Merged with dedupeBinds like the companion's, but env goes the
+	// EM: other way: the tools actually running keep their own values on a
+	// EM: clash, since a bound preset's env exists to serve a process that
+	// EM: is not here.
+	for (const name of new Set(options.bind)) {
+		if (name === toolName || name === options.ide) {
+			// EM: Its binds are already in, by being launched.
+			continue;
+		}
+		const boundPreset = TOOL_PRESETS[name];
+		if (!boundPreset) {
+			error(`no preset registered for --bind ${name}`);
+			error(`(the presets are: ${Object.keys(TOOL_PRESETS).join(", ")})`);
+			process.exit(1);
+		}
+		// EM: Refused rather than half-honoured. A GUI preset's binds include
+		// EM: its display — the xpra socket directory, or under
+		// EM: --native-display the host's X socket and cookie — and with no
+		// EM: GUI process in the session that is either a dangling socket
+		// EM: dir or, worse, a host-display grant nothing asked for.
+		if (boundPreset.gui) {
+			error(`--bind ${name}: ${name} is a GUI preset`);
+			error(`use --ide ${name} to run it alongside ${toolName}`);
+			process.exit(1);
+		}
+		const boundSpec = await boundPreset.configBinds(realHome, realHome);
+		toolBinds = dedupeBinds([...toolBinds, ...boundSpec.binds]);
+		toolDirs = [...new Set([...toolDirs, ...boundSpec.dirs])];
+		toolEnv = { ...boundSpec.env, ...toolEnv };
+		info(
+			`Binding ${boundPreset.description}'s paths (${name} is not launched)`,
+		);
+	}
+
 	// EM: A GUI preset is a GUI preset whether it was named as the primary
 	// EM: tool (`scoder rstudio`) or as the companion (`--ide rstudio`); the
 	// EM: companion wins if somehow both are GUI, since that is the

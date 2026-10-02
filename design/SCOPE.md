@@ -23,7 +23,7 @@ localhost services by default.
 
 [HAS_FEATURE](./features/git-worktree-isolation.md) - Optional git worktree mode that isolates changes to a scoped branch in /tmp.
 
-[HAS_FEATURE](./features/tool-presets.md) - Built-in configuration presets for opencode, claude, copilot, pi, and rstudio with tool-specific config/data binds.
+[HAS_FEATURE](./features/tool-presets.md) - Built-in configuration presets for opencode, claude, copilot, pi, rstudio, eclipse, and vscode with tool-specific config/data binds.
 
 [HAS_FEATURE](./features/infrastructure-protection.md) - Default and user-configurable protection of critical files (.github/, .gitignore, lockfiles) via .sandbox/readonly.
 
@@ -56,6 +56,12 @@ localhost services by default.
 [HAS_FEATURE](./features/ide-companion.md) - `--ide NAME` launches NAME (must have a registered preset) as a companion in the same sandbox: NAME in the background, the primary tool in the foreground, both must exit before scoder shuts down.
 
 [HAS_FEATURE](./features/xpra-gui-isolation.md) - GUI presets run under an xpra server inside the sandbox, which forwards their windows to the host over a unix socket; the host's X11 socket, XAUTHORITY and DISPLAY are no longer exposed.
+
+## Proposed Features (design documented, no implementation yet)
+
+[HAS_FEATURE](./features/secret-storage.md) - What sandboxed tools do about a keyring they cannot reach: verified mechanism, an in-memory default, and an opt-in path to persistent secrets. Design proposal only — nothing implements it yet.
+
+## From the Roadmap
 
 From [ROADMAP.md](./legacy/ROADMAP.md), not yet in development:
 

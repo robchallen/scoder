@@ -19,14 +19,16 @@ on a separate git branch via a worktree.
 
 | Tool | IDE |
 |------|--------|
-| `rstudio` | RStudio Desktop config + data, X11 access, and pi's own binds (see below) |
-| `eclipse` | Eclipse IDE, X11 access, and a dynamically (re)generated workspace (see below) |
+| `rstudio` | RStudio Desktop config + data, an xpra-forwarded window, and pi's own binds (see below) |
+| `eclipse` | Eclipse IDE, an xpra-forwarded window, and a dynamically (re)generated workspace (see below) |
+| `vscode` | VS Code, an xpra-forwarded window, and a managed per-project user-data-dir (see below) |
 
 
-IDEs bind the host's real X11 socket into the sandbox so the IDEs
-window can render at all, which gives anything running inside the same
-access to that X display any of your own desktop apps have. This comes with some
-X11 security issues so should be used with caution.
+GUI presets don't see the host's X server at all. Each runs under an
+xpra server inside the sandbox, whose windows are forwarded to the
+host over a dedicated unix socket — no host X socket, XAUTHORITY or
+DISPLAY crosses the boundary (see
+`design/features/xpra-gui-isolation.md`).
 
 **`rstudio`**: If a `*.Rproj` file exists at the project root, `rstudio` opens it
 automatically (RStudio Desktop doesn't otherwise pick up the sandbox's
@@ -51,6 +53,24 @@ from your most recently used real Eclipse workspace (JDT/formatter
 settings, keybindings, etc. — instance-scope preferences that live per
 workspace, not in `~/.eclipse`), so it isn't blank on first open. See
 `design/implementation/plans/eclipse-preset.md` for the full
+investigation.
+
+**`vscode`** runs the `code` binary. VS Code supports exactly one running
+instance per user-data-directory — that directory holds its singleton
+lock, IPC socket and live state — so binding your real
+`~/.config/Code` would let a sandboxed window hand itself to your host
+editor (or corrupt shared state between two instances). Instead scoder
+gives each project its own managed user-data-dir under
+`~/.local/share/scoder-vscode-userdata/`, persisted across sessions and
+seeded **once** on first use from your real `~/.config/Code/User`
+(settings, keybindings, snippets — not live state, not secrets); what
+you change in the sandbox stays yours, and nothing is ever copied back.
+`~/.vscode/extensions` is bound read-only — install and update
+extensions on the host, where the sandbox can't diverge mid-session.
+Sign-ins don't persist across sessions: sandboxed secrets are
+in-memory by design (see `design/features/secret-storage.md`). The snap
+build is refused — install the .deb/.rpm/tarball. See
+`design/implementation/plans/vscode-preset.md` for the full
 investigation.
 
 ## How it works
@@ -112,14 +132,15 @@ investigation.
   - **mise**: `~/.local/share/mise` and `~/.config/mise` bound read-only
   - **Desktop integration**: `~/.local/share/fonts` and
     `~/.config/mimeapps.list` bound read-only, so GUI presets (`rstudio`,
-    `eclipse`) render text with the host's real fonts and see the host's
-    file-type "open with" associations
+    `eclipse`, `vscode`) render text with the host's real fonts and see
+    the host's file-type "open with" associations
 - **Java/Maven**: `~/.m2` bound read-write, otherwise not much works.
 - **Minimal `/dev`** — individual real host device nodes only (`null`,
   `zero`, `full`, `urandom`, `random`, `tty`, `pts`, `ptmx`, `fd`), not
   the host's whole `/dev` (which would also expose every raw disk, TPM,
   USB, and other device node on the machine). `/dev/shm` is a fresh
-  tmpfs. GUI presets (`rstudio`, `eclipse`) additionally bind `/dev/dri`
+  tmpfs. GUI presets (`rstudio`, `eclipse`, `vscode`) additionally bind
+  `/dev/dri`
   for GPU rendering when it exists on the host — needed, not optional,
   for RStudio Desktop specifically (Chromium's GPU process crashes
   outright without it, rather than falling back to software rendering).
@@ -157,6 +178,7 @@ scoder [options] <tool> [tool-args...]
 scoder opencode                   # sandbox opencode in current directory (direct mode)
 scoder claude                     # sandbox claude code
 scoder copilot                    # sandbox GitHub Copilot CLI
+scoder vscode                     # sandbox VS Code (runs the `code` binary)
 scoder -w opencode                # isolate changes on a scoder/<repo> branch
 scoder --dry-run opencode         # show bwrap command without running
 bun test                          # run the validation suite
@@ -240,13 +262,14 @@ unfamiliar host key.
 
 ## A companion IDE (`--ide`)
 
-`--ide NAME` launches `NAME` (must have a registered preset — `rstudio`
-and `eclipse`, following the same pattern as other tool presets) as a
-companion alongside the primary tool, both inside the *same* sandbox:
+`--ide NAME` launches `NAME` (must have a registered preset — `rstudio`,
+`eclipse` and `vscode`, following the same pattern as other tool presets)
+as a companion alongside the primary tool, both inside the *same* sandbox:
 
 ```bash
 scoder pi --ide rstudio     # rstudio in the background, pi in the foreground
 scoder pi --ide eclipse     # eclipse in the background, pi in the foreground
+scoder pi --ide vscode      # vscode in the background, pi in the foreground
 ```
 
 This is `eclipse`'s actual intended use — its own dynamic-workspace

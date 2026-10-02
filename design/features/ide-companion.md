@@ -17,8 +17,8 @@ after the primary tool's own name.
 
 ## Motivation
 
-Running an agent (`pi`, `claude`) alongside an IDE (`rstudio`, and in the
-future others like `spyder` or `vscode`) inside one sandbox, bridged via
+Running an agent (`pi`, `claude`) alongside an IDE (`rstudio`, `eclipse`,
+`vscode` — any registered preset, following the same pattern), bridged via
 MCP, only works today if the user manually launches the IDE, then
 manually launches the agent from inside the IDE's own embedded terminal.
 `--ide` makes this one command, and generalizes past `rstudio`
@@ -107,7 +107,13 @@ companion, following the same pattern.
     (`SIGTERM`, `children-first`) from `src/sandbox/builder.ts`. Both
     measured values are pinned by
     `ide-shutdown-presets-record-measured-signals`, so a later tidy-up
-    cannot quietly collapse them into one shared default.
+    cannot quietly collapse them into one shared default. `vscode` is
+    currently one that says nothing: all of Electron's children fork
+    from the main process, so the prior is TERM/`process-first` —
+    children-first would signal the renderer and GPU helpers out from
+    under main and lose its save-on-exit — but a prior is exactly what
+    this table refuses to list; the vscode plan's checklist measures it
+    into this table or the preset.
   - The read loop is **not** gated on stdin being a tty; only the prompt
     is. With stdin closed or on `/dev/null`, `read` returns EOF immediately
     and the script falls through to the same plain `wait` as before rather
@@ -185,6 +191,30 @@ programs have finished, so there is nothing left and the cost is one scan of
 `SIGWINCH`, `SIGINT`, `SIGQUIT` and `SIGTSTP`) so it terminates the process
 outright. `design/prototype/scoder-cleanup.sh` finds and removes what those
 leave behind.
+
+## The session log, readable from outside
+
+Every entry-point session writes exactly one log — the IDE's output under
+`>/tmp/scoder-ide.log`, or, whenever an xpra server is running, everything
+including the IDE's output under `/tmp/scoder-xpra.log`, because that is
+where the server's own stdout goes. Both names used to resolve to the
+sandbox's private `/tmp` tmpfs: the path was fixed so a diagnostic could
+name it, but reading it meant opening a shell inside the session whose GUI
+was misbehaving — from the terminal already showing that GUI not appearing.
+
+The log is therefore a staged file bound read-write at its own sandbox path:
+same name inside the sandbox (so `entrypoint.sh`, the agent-facing message
+and the existing tests all keep working untouched), and on the host at
+`<session staging root>/tmp/scoder-<name>.log`, which scoder prints at
+startup — `IDE log on the host: …` for a companion with no xpra, `xpra log
+on the host: …` whenever xpra is running. The host path lives under the
+session staging root, so it dies with the session like everything staged
+there; the startup line is telling you where to `tail` *while* things are
+wrong, not where the post-mortem is archived. `SCODER_KEEP_SESSION_TMP`
+keeps the whole staging root, log included, if the session already ended.
+Which of the two files a given session uses is one decision shared between
+the builder and the startup message (`entrypointLogDest`), not two
+statements that can drift.
 
 [HAS_FEATURE](./sandbox-isolation.md)
 [HAS_FEATURE](./tool-presets.md)

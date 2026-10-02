@@ -1,7 +1,8 @@
 import { mkdir, stat } from "node:fs/promises";
 import { error, info, warning } from "../utils/logger.ts";
 import { terminateProcess } from "../utils/process.ts";
-import { sessionRoot } from "../utils/session.ts";
+import { sessionPath, sessionRoot } from "../utils/session.ts";
+import { XPRA_LOG_PATH } from "./builder.ts";
 
 // EM: The xpra display sidecar
 // EM: Implements xpra-gui-isolation: a GUI program in the sandbox draws on a
@@ -121,7 +122,12 @@ export async function waitForXpraSocket(socketPath: string): Promise<boolean> {
 		`xpra server did not create its socket within ${SOCKET_WAIT_MS / 1000}s`,
 	);
 	error(`expected it at ${socketPath}`);
-	error("the GUI will not appear; see /tmp/scoder-xpra.log inside the sandbox");
+	// EM: The host path, because the log is a staged file bound through at
+	// EM: that sandbox path — reading it no longer means opening a shell
+	// EM: inside the very sandbox whose GUI failed to start.
+	error(
+		`the GUI will not appear; the xpra server's output is on the host at ${sessionPath(XPRA_LOG_PATH)}`,
+	);
 	return false;
 }
 

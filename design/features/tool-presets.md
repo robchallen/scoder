@@ -8,9 +8,9 @@ tags: [feature, tools, configuration]
 
 ## Summary
 
-Built-in configuration presets for opencode, claude, copilot, pi, rstudio, and
-eclipse that provide tool-specific config/data directory bind mounts into the
-sandbox.
+Built-in configuration presets for opencode, claude, copilot, pi, rstudio,
+eclipse, and vscode that provide tool-specific config/data directory bind
+mounts into the sandbox.
 
 ## Motivation
 
@@ -27,6 +27,12 @@ it is named as an `--ide` companion: how that IDE is asked to close when the
 primary tool exits first. The values are measurements per IDE, not
 preferences — see
 [design/features/ide-companion.md](/design/features/ide-companion.md).
+
+And a preset may carry `command`: the binary it actually runs, when that
+differs from the preset key the user types. Only `vscode` needs it — the
+key is what everyone calls the editor, the binary is `code`. `index.ts`
+resolves `preset.command ?? toolName` on the host for both the primary
+tool and an `--ide` companion.
 
 Every preset has an async function pair:
 - `configBinds(realHome, sandboxHome)` — returns bind mounts and directory specs
@@ -63,6 +69,7 @@ for why the separate stage turned out to be unnecessary.
 | pi | — | ~/.pi/agent, ~/.local/share/pi, ~/.cache/pi |
 | rstudio | — | ~/.config/rstudio, ~/.local/share/rstudio, plus pi's own binds (see below) |
 | eclipse | ~/.eclipse/\<hash\> (reused, when found) or a scoder-managed fallback | ~/.local/share/scoder-eclipse-workspaces/\<project\>, plus the reused/fallback config dir above |
+| vscode | ~/.vscode/extensions (whole tree, see below); ~/.config/Code/User is read only as a one-time seed source, never bound | ~/.local/share/scoder-vscode-userdata/\<project\> (scoder-managed), plus pi's own binds |
 
 `~/.config/gh` is not preset-specific — it is bound read-only for every
 sandbox by `buildExtraBinds`, so any tool can use an authenticated `gh`.
@@ -286,6 +293,93 @@ plugin's README describes, and whether the `RECENT_WORKSPACES`/`.settings`
 seeding mechanism actually locates and copies the right thing on a real
 install, are likewise unverified here — the user intends to test this
 directly.
+
+### vscode
+
+Everything specific to this preset follows from one app-level fact,
+**verified from `microsoft/vscode` source** (`src/main.ts`
+`attemptToAskInstanceToRelaunch`/`openCertificateStore`, and
+`src/vs/code/electron-main/app.ts`): VS Code supports exactly **one
+running instance per user-data-directory**. The singleton lock (a
+`SingletonLock` `hostname`-`pid` symlink) and the IPC socket it hands off
+through live *inside* that directory, alongside the live SQLite state
+(`state.vscdb`). scoder shares neither the PID nor the UTS namespace, so
+a directory shared with the host editor would let the sandboxed instance
+see the host's lock as live and connect to it across the bind — windows
+opening in the wrong instance, two writers on one database. So the
+sandbox always gets its own, via `--user-data-dir`: Microsoft's own flag
+help calls this "the intended way to run multiple distinct instances".
+
+The directory is scoder-managed and **persisted**, host-side, one per
+project: `~/.local/share/scoder-vscode-userdata/<projDir>`, bound
+read-write at its mirrored path — eclipse's managed-workspace shape
+(above) reused for the opposite reason: eclipse's dir protects the user's
+real workspace from a destructive flag; this one exists because sharing
+is structurally broken. Seeded **once on first creation**, copy not
+symlink (a symlink would make sandbox settings edits reach the host's
+real file), and never re-seeded afterwards: settings edits made inside
+the sandbox survive later sessions and later host changes, and nothing
+is ever copied back. Copied from `~/.config/Code/User`: `settings.json`,
+`keybindings.json`, `snippets/`. Deliberately *not* copied:
+`globalStorage`/`state.vscdb` and `workspaceStorage` (machine-scoped live
+state — and mid-write whenever the host editor runs), `argv.json` (a
+sandboxed session silently inheriting host Electron switches is the
+failure mode this preset avoids everywhere else), and anything
+secret-bearing.
+
+`~/.continue` (the Continue extension's config, models and API keys,
+chat sessions and codebase index — kept outside the user-data-dir) binds
+**read-write** when it exists and is never created when it does not:
+Continue writes sessions and its index there all session long, so read-only
+would break it and tmpfs would show it unconfigured every launch. Its API
+keys become readable inside the sandbox, the same exposure scoder's API-key
+env passthrough already accepts.
+
+`~/.vscode/extensions` binds whole and **read-only**, existence-gated —
+install and update extensions on the host. Accepted cost, to be
+revisited on experience: "Install" inside the sandbox fails against the
+ro tree rather than silently diverging. `resolveArgs` always prepends
+`--user-data-dir <managed>`, `--extensions-dir`, `--disable-updates` (an
+auto-updater inside a disposable sandbox has nothing useful to update),
+and `--disable-workspace-trust` (the trust dialog's threat model is
+"you opened an untrusted folder on your real machine"; inside scoder that
+question is already answered, and a fresh user-data-dir would otherwise
+open every project in restricted mode), and `--verbose`. That last one is
+load-bearing, not a debugging aid: `code` is a CLI launcher that spawns the
+Electron app `detached` with `stdio: 'ignore'` and exits immediately
+(`src/vs/code/node/cli.ts`), so without it the IDE log stays empty and the
+entry point's `$!` names a process already gone. The session then treats
+the IDE as finished, skips the ENTER prompt when the primary tool exits,
+and the namespace reaper kills the real window. `--verbose` makes the CLI
+pipe the app's output through and wait for it to exit; the app stays the
+CLI's child, so the children-first shutdown still reaches it. Then the user's own args,
+untouched; the project directory is opened only when the user gave no
+argument at all (rstudio's fill-if-empty semantics — distinguishing
+folder arguments from flag values like `--install-extension <id>` would
+be fragile). `validate()` refuses a snap build (`isSnapInstall`, whose
+own confinement stacking under bwrap nobody could debug) and requires
+xpra like every GUI preset; `command: "code"` covers the key/binary
+mismatch.
+
+Sandboxed secrets are **in-memory by design**: no `--password-store`
+flag is passed, and VS Code's verified fallback with no Secret Service
+reachable is session-lifetime secrets and nothing written to disk — see
+[secret-storage](/design/features/secret-storage.md) (option A). The
+`ideShutdown` field is deliberately absent: the field records
+measurements, and vscode has none; the expected shape (TERM,
+process-first — children-first would signal Electron's renderer and GPU
+helpers out from under the main process) is recorded as a comment on the
+preset until measured.
+
+All of the above is verified from *source*; none of it has yet been run
+against a real desktop VS Code from inside scoder. The dry-run tests fix
+the command shape; the plan's real-desktop checklist gates the shipping
+answers: whether Chromium's own sandbox survives bwrap without
+`--no-sandbox` (never added speculatively), what two sessions on the
+same project actually do (expected: handoff/exit — a pre-flight
+live-lock refusal is the proposed policy if confirmed), the keyring
+first-run experience, and the shutdown matrix. Full investigation:
+`design/implementation/plans/vscode-preset.md`.
 
 [HAS_FEATURE](./sandbox-isolation.md)
 [HAS_FEATURE](./host-tool-binding.md)

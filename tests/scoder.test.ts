@@ -26,7 +26,7 @@ import {
 	DEFAULT_IDE_SHUTDOWN,
 } from "../src/sandbox/builder.ts";
 import { getSandboxUsername } from "../src/sandbox/identity.ts";
-import { renderOverlay } from "../src/sandbox/overlays.ts";
+import { renderOverlay, startOverlayWatcher } from "../src/sandbox/overlays.ts";
 import { isIpv6RoutabilityFailure } from "../src/sandbox/pasta.ts";
 import { TOOL_PRESETS } from "../src/tools/presets.ts";
 import type { IdeShutdown } from "../src/types.ts";
@@ -1869,6 +1869,111 @@ test("overlay-tracks-host-edits: a host edit reaches the sandbox without the inj
 		expect(await renderOverlay(overlay)).toBe(true);
 		expect(await Bun.file(staged).text()).toContain("created mid-session");
 	} finally {
+		await Bun.spawn(["rm", "-rf", dir]).exited;
+	}
+});
+
+// ### Test: overlay-warns-when-a-host-save-detaches-the-bind
+// EM: The gap the live overlay cannot close (2.7.0 decision, option "warn
+// EM: only" of agents-md-does-not-update-as-expected): a bind grafts onto
+// EM: the file at the destination path, so a save-by-rename — VS Code's
+// EM: atomic save, vim's backup mode, `sed -i`, `git checkout` — installs a
+// EM: new file under the old name and the sandbox silently loses scoder's
+// EM: section for the rest of the session. No presentation scheme fixes
+// EM: this without mutating the project file or losing agent writes, so
+// EM: what is promised instead is detection: the watcher records which file
+// EM: the bind is attached to and says so the moment the path names another
+// EM: one. This is the mid-session rename no overlay test did before —
+// EM: overlay-tracks-host-edits edits in place, which is precisely the
+// EM: saving style that keeps the bind alive.
+// EM:
+// EM: Watcher-level rather than sandbox-level, same trade as the test above
+// EM: it sits beside: what is under test is the inode bookkeeping and the
+// EM: once-only warning, and the detach itself is a kernel mount fact the
+// EM: bwrap harness would only re-prove.
+test("overlay-warns-when-a-host-save-detaches-the-bind: a rename-save or delete mid-session warns once; in-place edits do not", async () => {
+	const dir = `/tmp/scoder-overlay-detach-${Date.now()}`;
+	await Bun.spawn(["mkdir", "-p", dir]).exited;
+	const replaced = `${dir}/AGENTS.md`;
+	const deleted = `${dir}/.Rprofile`;
+	const overlays = [
+		{
+			label: "AGENTS.md",
+			source: replaced,
+			dest: `${dir}/sandbox/AGENTS.md`,
+			injection: "## scoder sandbox",
+			position: "append" as const,
+		},
+		{
+			label: ".Rprofile",
+			source: deleted,
+			dest: `${dir}/sandbox/.Rprofile`,
+			injection: "# injected",
+			position: "prepend" as const,
+		},
+	];
+	await Bun.write(replaced, "project rules");
+	await Bun.write(deleted, "# project profile");
+
+	// The logger writes straight to console.error; capture instead of mock.
+	const lines: string[] = [];
+	const realError = console.error;
+	console.error = (...args: unknown[]) => {
+		lines.push(args.join(" "));
+	};
+
+	const watcher = startOverlayWatcher(overlays, 50);
+	try {
+		await Bun.sleep(150);
+
+		// The saving style that keeps the bind alive: truncate-in-place is
+		// inode-stable, so it refreshes quietly and is never "replaced".
+		await Bun.write(replaced, "project rules, edited in place");
+		await Bun.sleep(150);
+		expect(lines.join("\n")).toContain("AGENTS.md changed on the host");
+		expect(lines.join("\n")).not.toContain("replaced on the host");
+
+		// The saving style that kills it: temp file, rename over the name.
+		await Bun.write(`${dir}/tmp-save`, "saved by the editor");
+		await Bun.spawn(["mv", `${dir}/tmp-save`, replaced]).exited;
+		// ...and a plain delete, which takes the bind's mountpoint too.
+		await Bun.spawn(["rm", "-f", deleted]).exited;
+		await Bun.sleep(150);
+
+		const warnings = lines.filter((l) => l.includes("scoder:"));
+		expect(
+			warnings.filter((l) => l.includes("AGENTS.md was replaced on the host"))
+				.length,
+		).toBe(1);
+		expect(
+			warnings.filter((l) => l.includes(".Rprofile was deleted on the host"))
+				.length,
+		).toBe(1);
+		expect(warnings.find((l) => l.includes("replaced on the host"))).toContain(
+			"Restart the session",
+		);
+
+		// Loud once, not every tick: the detach is permanent, so repeating
+		// the sentence would be noise on a long session. Further in-place
+		// edits on the replaced file also stop claiming "updated in the
+		// sandbox" — after a detach that sentence is no longer true.
+		const replacedWarns = warnings.filter((l) =>
+			l.includes("replaced on the host"),
+		).length;
+		const updatedInfos = lines.filter((l) =>
+			l.includes("updated in the sandbox"),
+		).length;
+		await Bun.write(replaced, "still editing, still detached");
+		await Bun.sleep(150);
+		expect(lines.filter((l) => l.includes("replaced on the host")).length).toBe(
+			replacedWarns,
+		);
+		expect(
+			lines.filter((l) => l.includes("updated in the sandbox")).length,
+		).toBe(updatedInfos);
+	} finally {
+		watcher.stop();
+		console.error = realError;
 		await Bun.spawn(["rm", "-rf", dir]).exited;
 	}
 });

@@ -1,5 +1,7 @@
+import { statSync } from "node:fs";
+import { stat } from "node:fs/promises";
 import type { BindMount } from "../types.ts";
-import { info } from "../utils/logger.ts";
+import { info, warning } from "../utils/logger.ts";
 import { stageFile } from "../utils/session.ts";
 
 // EM: Live file overlays
@@ -161,21 +163,99 @@ export interface OverlayWatcher {
 const POLL_MS =
 	Number.parseInt(process.env.SCODER_OVERLAY_POLL_MS || "", 10) || 2000;
 
+// A source file as seen through the two facts the watcher can observe: the
+// identity of the file occupying the path, and whether that path still names
+// the file the sandbox bind was grafted onto.
+interface TrackedSource {
+	overlay: LiveOverlay;
+	/** `dev:ino` captured at watcher start — the file the bind is attached to. */
+	boundKey: string | null;
+	/** Once detached, always detached: nothing can reattach a bind mid-session. */
+	detached: boolean;
+}
+
 // ### startOverlayWatcher
 // Re-render the overlays whenever their host sources change, for as long as
 // the session runs.
-export function startOverlayWatcher(overlays: LiveOverlay[]): OverlayWatcher {
+export function startOverlayWatcher(
+	overlays: LiveOverlay[],
+	pollMs = POLL_MS,
+): OverlayWatcher {
 	let stopped = false;
+
+	// EM: A bind grafts onto the file occupying the destination path when
+	// EM: bwrap sets it up — onto the file object, not onto the name. A
+	// EM: rename-save deletes that entry and installs a new file under the
+	// EM: old name, and the graft dies with the old entry: inside the
+	// EM: sandbox the file then shows the raw host content with scoder's
+	// EM: section missing, for the rest of the session, with no way to
+	// EM: reattach from outside the mount namespace. VS Code's atomic save,
+	// EM: vim's default backup mode, `sed -i` and `git checkout` all save
+	// EM: this way, so it had to be assumed. The response chosen (2.7.0) is
+	// EM: to detect and say so loudly rather than re-present; the schemes
+	// EM: that do survive renames each mutate the user's project file or
+	// EM: hide the agent's writes from the host, and the reasoning lives in
+	// EM: design/implementation/issues/agents-md-does-not-update-as-
+	// EM: expected.md.
+	// EM:
+	// EM: dev+ino is sampled here, after bwrap has started, so the file the
+	// EM: stat finds is the file the bind grafted onto. `Bun.write`
+	// EM: truncates in place — the ordinary re-render is inode-stable and
+	// EM: must never trip this — so only replaced or vanished files change
+	// EM: the key.
+	const tracked: TrackedSource[] = overlays.map((overlay) => {
+		let boundKey: string | null = null;
+		try {
+			const st = statSync(overlay.source);
+			boundKey = `${st.dev}:${st.ino}`;
+		} catch {
+			// EM: Absent at startup — the source is optional. The first file
+			// EM: that appears is adopted quietly rather than accused of
+			// EM: having replaced something.
+		}
+		return { overlay, boundKey, detached: false };
+	});
 
 	const loop = (async () => {
 		while (!stopped) {
-			await Bun.sleep(POLL_MS);
+			await Bun.sleep(pollMs);
 			if (stopped) {
 				return;
 			}
 
-			for (const overlay of overlays) {
-				if (await renderOverlay(overlay)) {
+			for (const source of tracked) {
+				const { overlay } = source;
+				let key: string | null;
+				try {
+					const st = await stat(overlay.source);
+					key = `${st.dev}:${st.ino}`;
+				} catch {
+					key = null;
+				}
+
+				if (!source.detached) {
+					if (source.boundKey === null && key !== null) {
+						source.boundKey = key;
+					} else if (source.boundKey !== null && key !== source.boundKey) {
+						source.detached = true;
+						if (key === null) {
+							warning(
+								`${overlay.label} was deleted on the host, and its sandbox bind goes with it — inside the sandbox ${overlay.label} is now gone, scoder's instructions included. Putting the file back will not reattach the bind; restart the session.`,
+							);
+						} else {
+							warning(
+								`${overlay.label} was replaced on the host — how editors and git save (write a temp file, rename over the original). The bind is attached to the previous file, so inside the sandbox ${overlay.label} now shows the edits without scoder's instructions. Restart the session to restore them.`,
+							);
+						}
+					}
+				}
+
+				// EM: Rendering continues either way — the staged file is
+				// EM: the starting point after a restart, and keeping it
+				// EM: current costs one small read per tick. The "updated in
+				// EM: the sandbox" claim, however, is only true while the
+				// EM: bind is alive, so it is withheld once detached.
+				if ((await renderOverlay(overlay)) && !source.detached) {
 					info(`${overlay.label} changed on the host — updated in the sandbox`);
 				}
 			}

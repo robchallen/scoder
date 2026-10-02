@@ -986,6 +986,22 @@ leading blank line when the source is absent. The motivating case is an
 `.Rprofile`: R evaluates it top to bottom, so appending a session
 registration would be silently useless.
 
+### 96e. overlay-warns-when-a-host-save-detaches-the-bind
+[TESTED_BY](/tests/scoder.test.ts#testOverlayWarnsWhenAHostSaveDetachesTheBind)
+
+A save-by-rename on the host (temp file, `mv` over the name — how VS Code,
+vim's backup mode, `sed -i` and `git checkout` save) detaches the file the
+bind was grafted onto, and nothing outside the mount namespace can reattach
+it mid-session. The watcher records the bound file's `dev:ino` at start and
+warns **once** when the path names a different file — or none, for a plain
+delete — telling the user the agent now reads the file without scoder's
+instructions until the session restarts.
+
+Also asserts the two ways it must **not** fire: an in-place truncate-edit
+(inode-stable, the ordinary case) stays silent, and once detached, further
+edits stop claiming the sandbox was "updated" — true again only after
+restarting the session.
+
 ### 97. gui-display-is-private-end-to-end
 [TESTED_BY](/tests/scoder.test.ts#testGuiDisplayIsPrivateEndToEnd)
 

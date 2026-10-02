@@ -1,0 +1,22 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(bun run *)",
+      "Bash(bun test *)",
+      "Bash(./scoder --dry-run claude)",
+      "Bash(bunx biome *)",
+      "Bash(git add *)",
+      "Bash(git commit *)",
+      "Bash(git diff *)",
+      "Bash(bwrap --help)",
+      "Bash(bwrap --version)",
+      "Bash(pasta --help)",
+      "Bash(./em doc *)",
+      "Bash(echo \"exit=$?\")",
+      "Bash(./em help *)",
+      "Bash(echo \"--- exit=$? ---\")",
+      "Bash(./em check *)",
+      "Bash(./em *)"
+    ]
+  }
+}

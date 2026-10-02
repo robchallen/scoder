@@ -229,20 +229,39 @@ process-group kill still behave. If it isn't, the fallback is a `dbus-daemon
 --session --print-address` block managed directly in the entrypoint; record
 which one shipped.
 
-### 5. `entrypoint.sh` is the vehicle, with one new knob
+### 5. The wrap is argv composition at build time — no new script knob, no second script
 
-The script grows `DBUS_TARGET=harness|ide` — mirroring `XPRA_TARGET`'s
-existing shape — meaning "wrap this side's argv in `dbus-run-session --`".
-`XPRA_SOCKET` unset continues to mean no xpra layer. So:
+`dbus-run-session --` is *two words prepended to the wrapped side's argv*,
+and the builder already owns both argv vectors. So it happens there:
 
 | session | xpra mode | native mode |
 | --- | --- | --- |
-| `scoder rstudio` | entrypoint, `XPRA_TARGET=harness` | entrypoint, `DBUS_TARGET=harness` — **the gate `if (ideBin \|\| xpra)` gains `\|\| nativeDisplayGui`**, because native GUI-without-companion now needs in-sandbox wrapping (the bus) even with no xpra and no companion |
-| `scoder pi --ide rstudio` | entrypoint, `XPRA_TARGET=ide` | entrypoint, `DBUS_TARGET=ide`; harness (pi) gets no bus, unchanged |
+| `scoder rstudio` | entrypoint, `XPRA_TARGET=harness` | **no entrypoint** — bwrap execs `dbus-run-session -- <tool>` directly; the `if (ideBin \|\| xpra)` gate does not grow |
+| `scoder pi --ide rstudio` | entrypoint, `XPRA_TARGET=ide` | entrypoint unchanged (`XPRA_SOCKET` unset already means no xpra); `dbus-run-session --` prepended to the IDE argv vector |
 
-The `XPRA_TARGET=ide but no IDE in argv` die-guard gets a `DBUS_TARGET`
-twin. Everything else in the script — companion backgrounding, logs, the
-ENTER handshake — is untouched.
+Two rejected shapes, recorded so they are re-litigated only with new
+information:
+
+- **A second `entrypoint-native.sh`.** A direct-GUI script could own exactly
+  one of the three session shapes — the trivial one. `--ide` needs the
+  companion/handshake apparatus, and that is the half that must never fork
+  (it carries the measured shutdown behaviour and the script's invariants:
+  the `HARNESS_ARGC` split, no-argv-interpolation, the exit-status-is-the-
+  harness's rule). Parallel maintenance would therefore be two files that
+  both carry the complex half, to save one branch in the simple case.
+- **A `DBUS_TARGET` knob in the existing script.** The precedent for
+  rewriting argv *inside* the script is `xpra_wrap`, and it exists because
+  xpra has runtime knowledge there — `XPRA_EXTRA_ARGS` is env read in-
+  sandbox. The dbus wrap has no runtime knowledge; a knob would re-implement
+  argv plumbing the builder already has. If native-direct later grows real
+  in-sandbox behaviour (placement diagnostics, display probes), the seam is
+  a function in the one script, not a second file.
+
+Consequence to measure, identical under either rejected shape and so not a
+cost of this choice: in the companion case `$!` becomes `dbus-run-session`'s
+pid — the same wrapper-above-the-IDE layering `xpra_wrap` already
+introduced, so Decision 4's signal-forwarding and exit-propagation
+checklist item is unchanged, not new.
 
 ### 6. `guiDisplayBinds` grows a mode branch; it stays the single choke point
 
@@ -305,14 +324,16 @@ the user tested in, labelled as such.
 - **`src/cli/parse-args.ts`** — `--native-display` flag + `--help` entry
   naming the cost.
 - **`src/index.ts`** — display mode resolution; skip `XpraWrap` construction
-  and the host-xpra reachability check in native mode; builder gate grows the
-  native-GUI case; the two-line warning (Wayland-calibrated).
+  and the host-xpra reachability check in native mode; the two-line warning
+  (Wayland-calibrated).
 - **`src/tools/presets.ts`** — `guiDisplayBinds` mode branch (Decision 6);
   `requireXpra` → mode-aware validation for `rstudio`, `eclipse` (and
   `vscode` when that branch merges); XAUTHORITY single-file carve-out.
 - **`src/sandbox/builder.ts`** — pass the native grants (X socket dir,
-  cookie, `DISPLAY`); the entrypoint gate; `DBUS_TARGET` env var.
-- **`src/sandbox/entrypoint.sh`** — `DBUS_TARGET` handling; die-guard twin.
+  cookie, `DISPLAY`); prepend `dbus-run-session --` to the wrapped side's
+  argv (Decision 5).
+- **`src/sandbox/entrypoint.sh`** — **no change.** `XPRA_SOCKET` unset
+  already means no xpra layer, and the dbus wrap happens at build time.
 - **`src/sandbox/xpra.ts` / `launch.ts`** — no change (the `undefined` path
   already exists end-to-end).
 - **Docs** — ADR 0005 (the amendment; its pricing section is the warning
@@ -330,8 +351,8 @@ Dry-run and build-level, matching how the xpra layer itself is tested:
    regression guard and are not edited. This is the cheap half of "xpra is
    still the default."
 2. **Native grants present**: `--native-display --dry-run rstudio` contains
-   the `/tmp/.X11-unix` ro-bind, the cookie ro-bind, `DISPLAY`, `DBUS_TARGET
-   harness`, and no `XPRA_SOCKET`/`XPRA_MMAP`.
+   the `/tmp/.X11-unix` ro-bind, the cookie ro-bind, `DISPLAY`, an exec line
+   beginning `-- dbus-run-session --`, and no `XPRA_SOCKET`/`XPRA_MMAP`.
 3. **`/run` invariants hold in native mode**: `--tmpfs /run` still in the
    built command; no bind whose source starts with `/run/` except the exact
    cookie file; **no `--setenv DBUS_SESSION_BUS_ADDRESS` anywhere** — the
@@ -340,8 +361,9 @@ Dry-run and build-level, matching how the xpra layer itself is tested:
    existing "sandbox sees xpra socket, not host X11" guard gains its mirror
    image ("with the flag, no xpra dir bind; without it, no X11 bind"), so
    neither mode can leak into the other.
-5. **Non-GUI + flag is a named error**; companion form puts `DBUS_TARGET=ide`
-   on the entrypoint invocation with the harness argv untouched.
+5. **Non-GUI + flag is a named error**; companion form wraps the IDE argv in
+   `dbus-run-session --` on the entrypoint invocation, harness argv and all
+   `IDE_*` variables untouched.
 6. **Runtime spot-check where the container allows**: a `dbus-run-session`
    shim/fake-GUI test that the child sees a `DBUS_SESSION_BUS_ADDRESS` under
    `/tmp/dbus-*` and that exit status survives the wrap. Full display
@@ -353,8 +375,9 @@ Dry-run and build-level, matching how the xpra layer itself is tested:
 1. Draft ADR 0005 first — the pricing section *is* the warning text, and the
    amendment settles the default-vs-optout framing before code.
 2. Flag + `guiDisplayBinds` branch + native validation + warning.
-3. `DBUS_TARGET` in the entrypoint, the gate change, `dbus-run-session`
-   runtime checks (Decision 4's checklist folded in).
+3. The `dbus-run-session --` argv prepend, direct and companion forms, plus
+   its runtime checks (Decision 4's checklist folded in) — no entrypoint
+   changes (Decision 5).
 4. Tests, then the docs sweep, then the real-desktop checklist against the
    same live desktop the vscode preset's checklist needs — the two checklists
    deliberately share a session.

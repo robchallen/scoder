@@ -78,13 +78,20 @@ xpra this was free — `xpra start` defaults to `--dbus-launch`, a private bus
 inside the sandbox — and 0004's own experiment (a real RStudio on a private
 bus, menus fine, host bus unreachable) is the evidence a private bus
 suffices. Native mode drops the xpra server and must reproduce the effect
-directly: the wrapped side's argv is prepended with `dbus-run-session --`
-at build time, which starts a private `dbus-daemon` whose socket lands under
-the sandbox's own `/tmp` and whose address exists only inside the sandbox —
-the built command still contains no `DBUS_SESSION_BUS_ADDRESS` at all. The
-pre-xpra `guiX11Binds` in git history is otherwise nearly the native grant
-verbatim — including a `DBUS_SESSION_BUS_ADDRESS` passthrough line that
-must not be ported, and is the trap a copy-paste would fall into.
+directly, in whichever form the session's lifecycle can safely host it:
+`scoder rstudio` runs its tool under `dbus-run-session --` (prepended to the
+exec vector at build time; exit status verified to propagate, and Ctrl-C
+arrives as a process-group kill that no wrapper can block), while the
+companion form starts the bus *beside* the IDE in the entry point — because
+measured directly (dbus 1.16.2), `dbus-run-session` forwards no signals and
+orphans its child, which would turn the ENTER-to-close handshake into a
+wrapper kill plus an orphaned, force-killed IDE. Either way the daemon's
+socket lands under the sandbox's own `/tmp` and its address exists only
+inside the sandbox — the built command still contains no
+`DBUS_SESSION_BUS_ADDRESS` at all. The pre-xpra `guiX11Binds` in git history
+is otherwise nearly the native grant verbatim — including a
+`DBUS_SESSION_BUS_ADDRESS` passthrough line that must not be ported, and is
+the trap a copy-paste would fall into.
 
 ## Consequences
 

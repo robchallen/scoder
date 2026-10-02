@@ -222,24 +222,44 @@ sufficient; `dbus-run-session` is the standard tool reproducing it.
 the client dies uncleanly; xpra uses it because it predates the choice, not
 for a reason we inherit.)
 
-**Checklist item:** `dbus-run-session`'s signal forwarding and exit-status
-propagation, through bwrap — the wrapper must be transparent enough that
-the entrypoint's `wait`/`$?` handshake and `installSignalForwarding`'s
-process-group kill still behave. If it isn't, the fallback is a `dbus-daemon
---session --print-address` block managed directly in the entrypoint; record
-which one shipped.
+**Measured here (dbus 1.16.2), and it decided the companion form:**
+`dbus-run-session` propagates the child's exit status (`exit 42` → 42) but
+forwards **no signals** — TERM/INT/HUP/USR1 all kill the runner on its own
+default disposition and orphan the child. Fine for the direct form (group
+kill bypasses the wrapper), disqualifying for the ENTER-handshake form. See
+Decision 5.
 
-### 5. The wrap is argv composition at build time — no new script knob, no second script
+### 5. Direct form: build-time argv prepend. Companion form: private bus in the script — *measured*, not assumed
 
-`dbus-run-session --` is *two words prepended to the wrapped side's argv*,
-and the builder already owns both argv vectors. So it happens there:
+The two session shapes have different lifecycles, and a measurement (this
+environment, dbus 1.16.2) decided they need different mechanisms:
 
 | session | xpra mode | native mode |
 | --- | --- | --- |
 | `scoder rstudio` | entrypoint, `XPRA_TARGET=harness` | **no entrypoint** — bwrap execs `dbus-run-session -- <tool>` directly; the `if (ideBin \|\| xpra)` gate does not grow |
-| `scoder pi --ide rstudio` | entrypoint, `XPRA_TARGET=ide` | entrypoint unchanged (`XPRA_SOCKET` unset already means no xpra); `dbus-run-session --` prepended to the IDE argv vector |
+| `scoder pi --ide rstudio` | entrypoint, `XPRA_TARGET=ide` | entrypoint gains `DBUS_BUS=ide`: the script starts a private bus itself (`dbus-launch`), prefixes its address onto the IDE's launch line only, and kills the daemon after the IDE exits |
 
-Two rejected shapes, recorded so they are re-litigated only with new
+**Why the split.** `dbus-run-session` in the *direct* form is verifiably
+safe: exit status propagates (measured: child `exit 42` → runner exit 42),
+and Ctrl-C reaches everyone because `installSignalForwarding`'s kill is a
+*process-group* kill — the wrapper cannot stand in the way of a signal that
+does not route through it.
+
+`dbus-run-session` above the *companion* IDE is not safe, measured directly:
+it forwards **none** of TERM, INT, HUP or USR1 to its child — sent any of
+them it dies on its own default disposition (143/129/138 with no child
+output) and **orphans the child**. And the ENTER handshake is exactly a
+direct signal to `$!`: the first ENTER would kill the wrapper, orphan the
+IDE, and leave namespace teardown to force-kill what the user asked to be
+asked — the measured `ideShutdown` values (rstudio's `SIGHUP`, eclipse's
+`TERM`) turning into a forced kill every time.
+
+So the companion form keeps `$!` as the IDE's **real pid** and starts the
+bus beside it instead of above it — which has the bonus of making it, again
+literally, the direct-exec condition the shutdown values were measured
+under (Decision 9), with only an env prefix added. The harness (e.g. `pi`)
+still gets no bus: the address is exported to the IDE's launch line only.
+Rejected shapes, recorded so they are re-litigated only with new
 information:
 
 - **A second `entrypoint-native.sh`.** A direct-GUI script could own exactly
@@ -249,19 +269,21 @@ information:
   the `HARNESS_ARGC` split, no-argv-interpolation, the exit-status-is-the-
   harness's rule). Parallel maintenance would therefore be two files that
   both carry the complex half, to save one branch in the simple case.
-- **A `DBUS_TARGET` knob in the existing script.** The precedent for
-  rewriting argv *inside* the script is `xpra_wrap`, and it exists because
-  xpra has runtime knowledge there — `XPRA_EXTRA_ARGS` is env read in-
-  sandbox. The dbus wrap has no runtime knowledge; a knob would re-implement
-  argv plumbing the builder already has. If native-direct later grows real
-  in-sandbox behaviour (placement diagnostics, display probes), the seam is
-  a function in the one script, not a second file.
+- **A `DBUS_TARGET`-style argv rewrite inside the script.** The precedent
+  for rewriting argv *inside* the script is `xpra_wrap`, and it exists
+  because xpra has runtime knowledge there — `XPRA_EXTRA_ARGS` is env read
+  in-sandbox. The dbus grant needs no argv rewrite at all in either form:
+  the direct form is a build-time prepend, and the companion form is an
+  **env prefix** on the launch line, which leaves every argv vector exactly
+  as the builder composed it. If native-direct later grows real in-sandbox
+  behaviour (placement diagnostics, display probes), the seam is a function
+  in the one script, not a second file.
 
-Consequence to measure, identical under either rejected shape and so not a
-cost of this choice: in the companion case `$!` becomes `dbus-run-session`'s
-pid — the same wrapper-above-the-IDE layering `xpra_wrap` already
-introduced, so Decision 4's signal-forwarding and exit-propagation
-checklist item is unchanged, not new.
+The companion form's checklist reduces to confirming `dbus-launch` on the
+real host (same package as `dbus-run-session`, so expected to be inert) and
+that the ENTER handshake behaves as it did before native mode existed —
+which, with `$!` back as the IDE's own pid, it should by construction
+rather than by hope.
 
 ### 6. `guiDisplayBinds` grows a mode branch; it stays the single choke point
 
@@ -330,10 +352,14 @@ the user tested in, labelled as such.
   `requireXpra` → mode-aware validation for `rstudio`, `eclipse` (and
   `vscode` when that branch merges); XAUTHORITY single-file carve-out.
 - **`src/sandbox/builder.ts`** — pass the native grants (X socket dir,
-  cookie, `DISPLAY`); prepend `dbus-run-session --` to the wrapped side's
-  argv (Decision 5).
-- **`src/sandbox/entrypoint.sh`** — **no change.** `XPRA_SOCKET` unset
-  already means no xpra layer, and the dbus wrap happens at build time.
+  cookie, `DISPLAY`); prepend `dbus-run-session --` to the exec vector in the
+  direct form, and pass `DBUS_BUS=ide` to the entry point in the companion
+  form (Decision 5).
+- **`src/sandbox/entrypoint.sh`** — `DBUS_BUS=ide`: start `dbus-launch`
+  beside the IDE, prefix its address onto the IDE's launch line only, kill
+  the daemon after the IDE exits. `XPRA_SOCKET` unset still means no xpra
+  layer; the two never coexist (Decision 5's measurement of why the wrap
+  cannot go here instead).
 - **`src/sandbox/xpra.ts` / `launch.ts`** — no change (the `undefined` path
   already exists end-to-end).
 - **Docs** — ADR 0005 (the amendment; its pricing section is the warning
@@ -375,9 +401,10 @@ Dry-run and build-level, matching how the xpra layer itself is tested:
 1. Draft ADR 0005 first — the pricing section *is* the warning text, and the
    amendment settles the default-vs-optout framing before code.
 2. Flag + `guiDisplayBinds` branch + native validation + warning.
-3. The `dbus-run-session --` argv prepend, direct and companion forms, plus
-   its runtime checks (Decision 4's checklist folded in) — no entrypoint
-   changes (Decision 5).
+3. The private session bus — `dbus-run-session --` argv prepend in the direct
+   form, `DBUS_BUS=ide` in the entry point for the companion form, plus its
+   runtime checks (Decision 4's checklist folded in) — per Decision 5's
+   amended shape.
 4. Tests, then the docs sweep, then the real-desktop checklist against the
    same live desktop the vscode preset's checklist needs — the two checklists
    deliberately share a session.

@@ -389,6 +389,19 @@ async function seedWorkspaceSettingsFromHost(
 	}
 }
 
+// ### managedProjectDir
+// The host path of one project's scoder-managed state under a preset's
+// root in ~/.local/share. Shared by the layout resolvers, which create and
+// seed it, and by the presets' managedWorkspaceDir hooks, which only name
+// it for --new-workspace — so the two can never disagree about the path.
+async function managedProjectDir(
+	rootDirname: string,
+	hostProjectDir: string,
+): Promise<string> {
+	const projDir = await getProjDir(hostProjectDir);
+	return `${getRealHome()}/.local/share/${rootDirname}/${projDir}`;
+}
+
 // ### resolveEclipseLayout
 // Computes every path the eclipse preset's two hooks (configBinds,
 // resolveArgs) need to agree on. Called independently from each of them
@@ -424,8 +437,10 @@ async function resolveEclipseLayout(
 	const sandboxInstallDir = toSandboxPath(hostInstallDir, homePrefixes);
 	const installUnderHome = isUnderAny(hostInstallDir, [realHome]);
 
-	const projDir = await getProjDir(hostProjectDir);
-	const workspaceHostDir = `${realHome}/.local/share/${SCODER_ECLIPSE_WORKSPACES_DIRNAME}/${projDir}`;
+	const workspaceHostDir = await managedProjectDir(
+		SCODER_ECLIPSE_WORKSPACES_DIRNAME,
+		hostProjectDir,
+	);
 	const workspaceIsNew = !(await dirExists(workspaceHostDir));
 	await ensureDir(workspaceHostDir);
 	if (workspaceIsNew) {
@@ -523,9 +538,10 @@ async function resolveVscodeLayout(
 ): Promise<VscodeLayout> {
 	const realHome = getRealHome();
 	const homePrefixes = await resolveHomePrefixes();
-	const projDir = await getProjDir(hostProjectDir);
-
-	const userDataHostDir = `${realHome}/.local/share/${SCODER_VSCODE_USERDATA_DIRNAME}/${projDir}`;
+	const userDataHostDir = await managedProjectDir(
+		SCODER_VSCODE_USERDATA_DIRNAME,
+		hostProjectDir,
+	);
 	const isNew = !(await dirExists(userDataHostDir));
 	await ensureDir(userDataHostDir);
 	if (isNew) {
@@ -1180,6 +1196,15 @@ export const TOOL_PRESETS: Record<string, ToolPreset> = {
 		// earlier version ran the plugin's own headless application as a
 		// distinct pre-launch step instead — dropped once this was
 		// confirmed, since it bought nothing beyond an extra JVM startup.
+		// EM: Only scoder's own workspace under
+		// EM: ~/.local/share/scoder-eclipse-workspaces — never ~/.eclipse,
+		// EM: which may be the host install's own configuration. The project
+		// EM: is imported in place (-importProject), so its files are not in
+		// EM: here; what goes is Eclipse's .metadata: preferences, launch
+		// EM: configurations, breakpoints, local history.
+		managedWorkspaceDir: (hostProjectDir) =>
+			managedProjectDir(SCODER_ECLIPSE_WORKSPACES_DIRNAME, hostProjectDir),
+
 		resolveArgs: async (
 			hostProjectDir,
 			sandboxProjectDir,
@@ -1222,6 +1247,12 @@ export const TOOL_PRESETS: Record<string, ToolPreset> = {
 		description: "VS Code",
 		// EM: The binary is `code`; the preset key is what users type.
 		command: "code",
+		// EM: The whole managed user-data-dir: settings, UI state, the
+		// EM: remembered prompts, workspace storage. Extensions live in the
+		// EM: host's ~/.vscode/extensions and ~/.continue is the host's own,
+		// EM: so neither is touched.
+		managedWorkspaceDir: (hostProjectDir) =>
+			managedProjectDir(SCODER_VSCODE_USERDATA_DIRNAME, hostProjectDir),
 		// EM: No ideShutdown: that field records measurements, not priors
 		// EM: (see ide-shutdown-presets-record-measured-signals), and vscode
 		// EM: has none yet. The expected shape is TERM/process-first —

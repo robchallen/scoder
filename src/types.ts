@@ -7,6 +7,10 @@ export interface ScoderOptions {
 	worktree: boolean;
 	sshTarget: string | null;
 	ide: string | null;
+	// EM: --new-workspace: delete the session's managed per-project state
+	// EM: (eclipse workspace, vscode user-data-dir) before setup, so it is
+	// EM: re-seeded fresh from the host.
+	newWorkspace: boolean;
 	// EM: --bind NAME (repeatable): presets whose config binds join the
 	// EM: sandbox without the preset's tool being launched.
 	bind: string[];
@@ -90,6 +94,12 @@ export interface ToolPreset {
 	// primary tool (`scoder rstudio`) or the companion (`--ide rstudio`),
 	// which is why it lives here rather than alongside ideShutdown.
 	gui?: boolean;
+	// The per-project directory scoder keeps for this preset across
+	// sessions (eclipse's managed workspace, vscode's user-data-dir), which
+	// --new-workspace deletes so the next setup re-creates it from the host's
+	// settings. Must only compute the path — never create or seed it — and
+	// must name a directory scoder owns: never the user's own config.
+	managedWorkspaceDir?: (hostProjectDir: string) => Promise<string>;
 }
 
 export interface ToolBindSpec {

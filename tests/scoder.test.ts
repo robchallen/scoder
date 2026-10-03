@@ -28,6 +28,10 @@ import {
 import { getSandboxUsername } from "../src/sandbox/identity.ts";
 import { renderOverlay, startOverlayWatcher } from "../src/sandbox/overlays.ts";
 import { isIpv6RoutabilityFailure } from "../src/sandbox/pasta.ts";
+import {
+	isManagedWorkspacePath,
+	resetManagedWorkspace,
+} from "../src/tools/new-workspace.ts";
 import { isSnapInstall, TOOL_PRESETS } from "../src/tools/presets.ts";
 import type { IdeShutdown } from "../src/types.ts";
 import { getRealHome } from "../src/utils/paths.ts";
@@ -3276,6 +3280,158 @@ test("vscode-preset-binds-continue-when-present: ~/.continue is bound read-write
 		expect(withIt).not.toContain(`--ro-bind ${fakeHome}/.continue`);
 	} finally {
 		await Bun.spawn(["rm", "-rf", fakeHome, fakeBinDir]).exited;
+		await cleanupRepo(repoDir);
+	}
+});
+
+// ### Test: new-workspace-path-guard
+// EM: The check standing between a preset hook and rm -rf: strictly below
+// EM: a scoder-<name> root in ~/.local/share, never the root itself, never
+// EM: anything else in $HOME, never a path that climbs out with "..".
+test("new-workspace-path-guard: only paths strictly inside a scoder-managed root are deletable", () => {
+	const home = "/home/u";
+	const ok = [
+		"/home/u/.local/share/scoder-vscode-userdata/home/u/proj",
+		"/home/u/.local/share/scoder-eclipse-workspaces/tmp/repo",
+	];
+	const refused = [
+		"/home/u/.local/share/scoder-vscode-userdata",
+		"/home/u/.local/share/scoder-vscode-userdata/",
+		"/home/u/.local/share/Code/User",
+		"/home/u/.eclipse/123/configuration",
+		"/home/u",
+		"/home/u/.local/share/scoder-x/../../../.ssh",
+		"/home/other/.local/share/scoder-vscode-userdata/p",
+	];
+	for (const dir of ok) {
+		expect(isManagedWorkspacePath(dir, home)).toBe(true);
+	}
+	for (const dir of refused) {
+		expect(isManagedWorkspacePath(dir, home)).toBe(false);
+	}
+});
+
+// ### Test: new-workspace-reseeds-vscode-from-host
+// EM: The point of the flag end to end: a session's edits to its managed
+// EM: settings are what the seed-once rule protects, and --new-workspace is
+// EM: the deliberate way past it. Delete (in-process: a real launch needs
+// EM: bwrap) then a dry-run setup: the user-data-dir comes back seeded from
+// EM: the host's *current* settings, not the session's edit. Throwaway HOME.
+test("new-workspace-reseeds-vscode-from-host: after a reset the managed user-data-dir is re-seeded from the host's current settings", async () => {
+	const repoDir = await createTempRepo();
+	tempRepos.push(repoDir);
+	const fakeBinDir = await createFakeToolDir("code");
+	const fakeHome = `/tmp/scoder-newws-home-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
+	const hostSettings = `${fakeHome}/.config/Code/User/settings.json`;
+	const managedDir = `${fakeHome}/.local/share/scoder-vscode-userdata/${repoDir.slice(1)}`;
+	const env = { PATH: `${fakeBinDir}:${process.env.PATH}`, HOME: fakeHome };
+	const savedHome = process.env.HOME;
+
+	try {
+		await Bun.write(hostSettings, '{"theme":"first"}');
+		await runScoder(repoDir, ["--dry-run", "--no-worktree", "vscode"], env);
+		await Bun.write(`${managedDir}/User/settings.json`, '{"theme":"session"}');
+		await Bun.write(hostSettings, '{"theme":"host-now"}');
+
+		// --dry-run reports, and deletes nothing.
+		const dry = await runScoderRaw(
+			repoDir,
+			["--dry-run", "--no-worktree", "vscode", "--new-workspace"],
+			env,
+		);
+		expect(dry.code).toBe(0);
+		expect(dry.stderr).toContain(
+			`would delete vscode's workspace ${managedDir}`,
+		);
+		expect(await Bun.file(`${managedDir}/User/settings.json`).text()).toBe(
+			'{"theme":"session"}',
+		);
+
+		process.env.HOME = fakeHome;
+		expect(await resetManagedWorkspace("vscode", managedDir, false)).toBe(true);
+		process.env.HOME = savedHome;
+		expect(await dirExists(managedDir)).toBe(false);
+
+		await runScoder(repoDir, ["--dry-run", "--no-worktree", "vscode"], env);
+		expect(await Bun.file(`${managedDir}/User/settings.json`).text()).toBe(
+			'{"theme":"host-now"}',
+		);
+	} finally {
+		process.env.HOME = savedHome;
+		await Bun.spawn(["rm", "-rf", fakeHome, fakeBinDir]).exited;
+		await cleanupRepo(repoDir);
+	}
+});
+
+// ### Test: new-workspace-refuses-while-in-use
+// EM: Deleting under a live IDE half-destroys a tree it is still writing.
+// EM: The stand-in "IDE" is any process naming the directory in its argv,
+// EM: the way both presets launch (-data DIR, --user-data-dir DIR).
+test("new-workspace-refuses-while-in-use: a process with the workspace in its argv blocks the reset, and nothing is deleted", async () => {
+	const fakeHome = `/tmp/scoder-newws-home-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
+	const managedDir = `${fakeHome}/.local/share/scoder-eclipse-workspaces/tmp/proj`;
+	const savedHome = process.env.HOME;
+	await Bun.write(`${managedDir}/.metadata/.lock`, "");
+	// EM: Two commands, so bash stays the process (a lone `sleep` would be
+	// EM: exec'd in its place, taking the argv with it), and the reset only
+	// EM: runs once the kernel shows the directory in its cmdline.
+	const holder = Bun.spawn([
+		"bash",
+		"-c",
+		"sleep 30; true",
+		"_",
+		"-data",
+		managedDir,
+	]);
+	for (let tries = 0; tries < 100; tries++) {
+		const cmdline = await Bun.file(`/proc/${holder.pid}/cmdline`)
+			.text()
+			.catch(() => "");
+		if (cmdline.includes(managedDir)) {
+			break;
+		}
+		await Bun.sleep(10);
+	}
+
+	try {
+		process.env.HOME = fakeHome;
+		expect(await resetManagedWorkspace("eclipse", managedDir, false)).toBe(
+			false,
+		);
+		expect(await dirExists(managedDir)).toBe(true);
+
+		holder.kill();
+		await holder.exited;
+		expect(await resetManagedWorkspace("eclipse", managedDir, false)).toBe(
+			true,
+		);
+		expect(await dirExists(managedDir)).toBe(false);
+	} finally {
+		process.env.HOME = savedHome;
+		holder.kill();
+		await Bun.spawn(["rm", "-rf", fakeHome]).exited;
+	}
+});
+
+// ### Test: new-workspace-needs-a-managed-preset
+test("new-workspace-needs-a-managed-preset: --new-workspace with no eclipse or vscode in the session is a named error", async () => {
+	const repoDir = await createTempRepo();
+	tempRepos.push(repoDir);
+	const piDir = await createFakeToolDir("pi");
+
+	try {
+		const run = await runScoderRaw(
+			repoDir,
+			["--dry-run", "--no-worktree", "--new-workspace", "pi"],
+			{ PATH: `${piDir}:${process.env.PATH}` },
+		);
+		expect(run.code).not.toBe(0);
+		expect(run.stderr).toContain(
+			"--new-workspace only applies to a session running a preset with a managed workspace",
+		);
+		expect(run.stderr).toContain("eclipse, vscode");
+	} finally {
+		await Bun.spawn(["rm", "-rf", piDir]).exited;
 		await cleanupRepo(repoDir);
 	}
 });

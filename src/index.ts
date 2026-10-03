@@ -51,6 +51,7 @@ import {
 	stopSshTunnel,
 } from "./sandbox/ssh.ts";
 import { xpraMmapPath, xpraSocketPath } from "./sandbox/xpra.ts";
+import { resetManagedWorkspace } from "./tools/new-workspace.ts";
 import { setNativeDisplay, TOOL_PRESETS } from "./tools/presets.ts";
 import type { BindMount, GitWorktreeInfo } from "./types.ts";
 import {
@@ -179,6 +180,35 @@ async function main(): Promise<void> {
 	const nativeDisplay =
 		options.nativeDisplay || process.env.SCODER_NATIVE_DISPLAY === "1";
 	setNativeDisplay(nativeDisplay);
+
+	// EM: --new-workspace runs before any preset's configBinds, because those
+	// EM: are what create and seed the managed directory: deleted first, it
+	// EM: is re-created by the ordinary first-run path. Both the tool and an
+	// EM: --ide companion are covered; a session with neither preset having
+	// EM: managed state gets a named error rather than a silent no-op.
+	if (options.newWorkspace) {
+		const resettable = [toolName, options.ide].flatMap((name) => {
+			const hook = name ? TOOL_PRESETS[name]?.managedWorkspaceDir : undefined;
+			return name && hook ? [{ name, hook }] : [];
+		});
+		if (resettable.length === 0) {
+			const supported = Object.entries(TOOL_PRESETS)
+				.filter(([, p]) => p.managedWorkspaceDir)
+				.map(([name]) => name)
+				.join(", ");
+			error(
+				"--new-workspace only applies to a session running a preset with a managed workspace",
+			);
+			error(`(those are: ${supported}, as the tool or as --ide)`);
+			process.exit(1);
+		}
+		for (const { name, hook } of resettable) {
+			const dir = await hook(process.cwd());
+			if (!(await resetManagedWorkspace(name, dir, options.dryRun))) {
+				process.exit(1);
+			}
+		}
+	}
 
 	if (preset) {
 		toolDescription = preset.description;

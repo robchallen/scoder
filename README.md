@@ -416,6 +416,34 @@ automatically. Gitignored works too, but only in direct mode: a new
 worktree checkout contains only tracked files, so an untracked
 `.sandbox/readwrite` from your main checkout won't appear there on its own.
 
+## Defaults (`~/.config/scoder`) and environment passthrough (`.sandbox/env`)
+
+The first time scoder runs in a project it creates `.sandbox/` by copying
+in each file from `~/.config/scoder/` (or `$XDG_CONFIG_HOME/scoder/`) that
+the project does not already have. `~/.config/scoder/` is itself created
+from scoder's built-in defaults, file by file, the first time it is
+needed. Nothing is ever overwritten at either level, so:
+
+- edit `~/.config/scoder/` to change what **new** projects start with;
+- edit a project's `.sandbox/` to change **that** project.
+
+`.sandbox/env` lists, one per line, the host environment variables passed
+into the sandbox (when set); nothing else is passed:
+
+```
+# .sandbox/env
+EDITOR
+GH_TOKEN
+ANTHROPIC_API_KEY
+```
+
+The built-in default passes your shell/editor variables and `GH_TOKEN` /
+`GITHUB_TOKEN` only, with the common provider API keys listed but
+commented out — uncomment the ones you use in `~/.config/scoder/env` (for
+new projects) or `.sandbox/env` (for an existing one). This replaces the
+fixed list earlier versions passed unconditionally. `--dry-run` writes no
+configuration files, but previews the values a real run would use.
+
 ## After a session
 
 ### Direct mode (default)

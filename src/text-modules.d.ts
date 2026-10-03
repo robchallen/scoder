@@ -6,3 +6,25 @@ declare module "*.sh" {
 	const content: string;
 	export default content;
 }
+
+// The shipped .sandbox defaults in src/defaults/, imported the same way.
+declare module "*.md" {
+	const content: string;
+	export default content;
+}
+declare module "*/defaults/env" {
+	const content: string;
+	export default content;
+}
+declare module "*/defaults/ports" {
+	const content: string;
+	export default content;
+}
+declare module "*/defaults/readonly" {
+	const content: string;
+	export default content;
+}
+declare module "*/defaults/readwrite" {
+	const content: string;
+	export default content;
+}

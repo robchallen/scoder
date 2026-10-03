@@ -1,3 +1,5 @@
+# Paths kept read-only inside the sandbox, one per line, .gitignore-style.
+# $HOME/... lines bind that directory read-only (e.g. a dependency project).
 .github/
 .claude/
 opencode.json
@@ -8,4 +10,3 @@ Cargo.lock
 pnpm-lock.yaml
 yarn.lock
 mise.toml
-

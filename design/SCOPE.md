@@ -57,6 +57,8 @@ localhost services by default.
 
 [HAS_FEATURE](./features/xpra-gui-isolation.md) - GUI presets run under an xpra server inside the sandbox, which forwards their windows to the host over a unix socket; the host's X11 socket, XAUTHORITY and DISPLAY are no longer exposed.
 
+[HAS_FEATURE](./features/config-defaults.md) - `.sandbox/` files are seeded from the user's `~/.config/scoder/`, itself seeded from defaults shipped in the binary; `.sandbox/env` lists the host environment variables passed into the sandbox.
+
 ## Proposed Features (design documented, no implementation yet)
 
 [HAS_FEATURE](./features/secret-storage.md) - What sandboxed tools do about a keyring they cannot reach: verified mechanism, an in-memory default, and an opt-in path to persistent secrets. Design proposal only — nothing implements it yet.
@@ -69,7 +71,6 @@ From [ROADMAP.md](./legacy/ROADMAP.md), not yet in development:
 - **Restricted `/dev`** — bind only essential devices (`/dev/null`, `/dev/zero`, `/dev/random`, `/dev/urandom`, `/dev/tty`, `/dev/pts`, `/dev/fd`).
 - **Auto-cleanup on no changes** — optionally remove the worktree and branch if the session made no commits.
 - **R environment variables** — pass through `R_LIBS`, `R_LIBS_USER`, `R_HOME` and bind `~/.Renviron`.
-- **Configurable env var passthrough** — make the set of passed-through environment variables user-configurable.
 - **Real-tool integration tests** — extend `tests/scoder.test.ts` to optionally test with an actual tool preset.
 
 ## Non-Goals

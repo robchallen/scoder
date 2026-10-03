@@ -397,7 +397,7 @@ async function main(): Promise<void> {
 		sandboxProjDir = worktreeInfo.worktreeDir;
 		// EM: Before anything reads configuration, so that every later code
 		// EM: path sees one layout and none of them has to know both.
-		await prepareConfigDir(worktreeInfo.worktreeDir);
+		await prepareConfigDir(worktreeInfo.worktreeDir, options.dryRun);
 		protectionConfig = await setupProtection(
 			worktreeInfo.worktreeDir,
 			sandboxProjDir,
@@ -459,7 +459,7 @@ async function main(): Promise<void> {
 		// EM: outside $HOME (e.g. /opt/proj) onto a fabricated $HOME/opt/proj
 		// EM: that has no relation to where it actually lives.
 		sandboxProjDir = toSandboxPath(cwd, homePrefixes);
-		await prepareConfigDir(cwd);
+		await prepareConfigDir(cwd, options.dryRun);
 		protectionConfig = await setupProtection(cwd, sandboxProjDir);
 
 		const agentsSnapshotBind = await setupAgentsSnapshot();

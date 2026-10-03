@@ -13,7 +13,7 @@ import {
 	removeGitExclude,
 	setupResolvConf,
 } from "../src/git/protection.ts";
-import { prepareConfigDir } from "../src/git/sandbox-config.ts";
+import { prepareConfigDir, userConfigDir } from "../src/git/sandbox-config.ts";
 import {
 	getWorktreesParentDir,
 	relocateWorktree,
@@ -35,6 +35,12 @@ import { sessionPath } from "../src/utils/session.ts";
 
 // ### Constants
 const TEST_BASE = "/tmp/scoder-test-repos";
+// EM: Every scoder run in this file, spawned or in-process, reads its user
+// EM: defaults from here rather than the developer's real ~/.config/scoder:
+// EM: scoder creates that directory on first use, and a suite run must
+// EM: neither do so in someone's home nor pick up their edited env list.
+// EM: Under TEST_BASE, so the normal cleanup removes it.
+process.env.XDG_CONFIG_HOME = `${TEST_BASE}/xdg-config`;
 // The sandbox's own $HOME is the real host $HOME now (see path-mirroring) —
 // no more separate /home/scoder namespace. Kept as its own named constant
 // (rather than inlining getRealHome() everywhere below) so every assertion
@@ -106,6 +112,7 @@ async function removeSessionRoot(pathUnderRoot: string): Promise<void> {
 
 async function runScoderInDir(runDir: string, args: string[]): Promise<string> {
 	const proc = await Bun.spawn([SCODER_PATH, ...args], {
+		env: process.env,
 		cwd: runDir,
 		stdout: "pipe",
 		stderr: "pipe",
@@ -821,7 +828,12 @@ test("worktrees-parent-dir-bound-regardless-of-mode: a direct-mode session still
 		// bind is actually part of the built command.
 		const proc = await Bun.spawn(
 			[SCODER_PATH, "-q", "--no-worktree", "/bin/bash", "-c", "true"],
-			{ cwd: repoDir, stdout: "pipe", stderr: "pipe" },
+			{
+				env: process.env,
+				cwd: repoDir,
+				stdout: "pipe",
+				stderr: "pipe",
+			},
 		);
 		await proc.exited;
 
@@ -948,6 +960,7 @@ test("sandbox-readonly-created-if-missing: a real session creates .sandbox/reado
 
 	try {
 		const proc = Bun.spawn([SCODER_PATH, "-q", "/bin/bash", "-c", "true"], {
+			env: process.env,
 			cwd: repoDir,
 			stdout: "pipe",
 			stderr: "pipe",
@@ -977,7 +990,12 @@ test("sandbox-readonly-missing-file-not-writable-from-sandbox: a session with no
 				"-c",
 				"echo '# modified' >> .sandbox/readonly",
 			],
-			{ cwd: repoDir, stdout: "pipe", stderr: "pipe" },
+			{
+				env: process.env,
+				cwd: repoDir,
+				stdout: "pipe",
+				stderr: "pipe",
+			},
 		);
 		await proc.exited;
 
@@ -1106,6 +1124,7 @@ test("sandbox-readonly-home-file-bind-does-not-create-conflicting-dir: a file ta
 		// during mount setup, before pasta ever runs, so it's a valid check
 		// independent of this environment's own missing /dev/net/tun.
 		const proc = Bun.spawn([SCODER_PATH, "-q", "/bin/bash", "-c", "true"], {
+			env: process.env,
 			cwd: repoDir,
 			stdout: "pipe",
 			stderr: "pipe",
@@ -1208,6 +1227,7 @@ test("sandbox-readonly-home-fonts-directory-now-redundant: $HOME/.local/share/fo
 		);
 
 		const proc = Bun.spawn([SCODER_PATH, "--dry-run", "/bin/bash"], {
+			env: process.env,
 			cwd: repoDir,
 			stdout: "pipe",
 			stderr: "pipe",
@@ -1403,6 +1423,7 @@ test("sandbox-readonly-home-ancestor-of-fixed-bind-still-rejected: $HOME/.config
 		await Bun.write(`${repoDir}/.sandbox/readonly`, "$HOME/.config\n");
 
 		const proc = Bun.spawn([SCODER_PATH, "--dry-run", "/bin/bash"], {
+			env: process.env,
 			cwd: repoDir,
 			stdout: "pipe",
 			stderr: "pipe",
@@ -2162,6 +2183,7 @@ test("llm-port-flag-removed: --llm-port is an unknown option", async () => {
 
 	try {
 		const proc = Bun.spawn([SCODER_PATH, "--llm-port", "8080", "/bin/bash"], {
+			env: process.env,
 			cwd: repoDir,
 			stdout: "pipe",
 			stderr: "pipe",
@@ -2200,7 +2222,12 @@ test("sandbox-ports-forwards-listed-port: a port listed in .sandbox/ports is rea
 				"-c",
 				"curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:19998",
 			],
-			{ cwd: repoDir, stdout: "pipe", stderr: "pipe" },
+			{
+				env: process.env,
+				cwd: repoDir,
+				stdout: "pipe",
+				stderr: "pipe",
+			},
 		);
 		await proc.exited;
 
@@ -2222,6 +2249,7 @@ test("sandbox-ports-malformed-line-fails: a non-numeric line exits 1 naming the 
 		await Bun.write(`${repoDir}/.sandbox/ports`, "11434\nnotaport\n");
 
 		const proc = Bun.spawn([SCODER_PATH, "--dry-run", "/bin/bash"], {
+			env: process.env,
 			cwd: repoDir,
 			stdout: "pipe",
 			stderr: "pipe",
@@ -2375,6 +2403,7 @@ test("sandbox-ports-created-if-missing: a real session creates .sandbox/ports wi
 
 	try {
 		const proc = Bun.spawn([SCODER_PATH, "-q", "/bin/bash", "-c", "true"], {
+			env: process.env,
 			cwd: repoDir,
 			stdout: "pipe",
 			stderr: "pipe",
@@ -2398,7 +2427,12 @@ test("sandbox-ports-missing-file-not-writable-from-sandbox: a session with no pr
 	try {
 		const proc = Bun.spawn(
 			[SCODER_PATH, "-q", "/bin/bash", "-c", "echo 1234 > .sandbox/ports"],
-			{ cwd: repoDir, stdout: "pipe", stderr: "pipe" },
+			{
+				env: process.env,
+				cwd: repoDir,
+				stdout: "pipe",
+				stderr: "pipe",
+			},
 		);
 		await proc.exited;
 
@@ -2496,6 +2530,12 @@ test("dry-run-redacts-sensitive-env-vars: real secret values never appear in the
 	tempRepos.push(repoDir);
 
 	try {
+		// EM: Passthrough is now whatever .sandbox/env lists, and the shipped
+		// EM: default comments the API keys out, so the test names its own.
+		await Bun.write(
+			`${repoDir}/.sandbox/env`,
+			"DEEPSEEK_API_KEY\nGITHUB_TOKEN\nEDITOR\n",
+		);
 		const output = await runScoder(repoDir, ["--dry-run", "-q", "/bin/bash"], {
 			DEEPSEEK_API_KEY: "sk-should-not-appear",
 			GITHUB_TOKEN: "ghp-should-not-appear",
@@ -2508,6 +2548,122 @@ test("dry-run-redacts-sensitive-env-vars: real secret values never appear in the
 		expect(output).toContain("--setenv GITHUB_TOKEN <redacted>");
 		expect(output).toContain("--setenv EDITOR should-still-appear");
 	} finally {
+		await cleanupRepo(repoDir);
+	}
+});
+
+// ### Test: env-file-controls-passthrough
+// EM: .sandbox/env replaces builder.ts's old hardcoded list: a name passes
+// EM: through only if it is listed and set on the host. Commented names and
+// EM: unlisted ones do not; a line that is not a variable name is warned
+// EM: about and skipped, not fatal.
+test("env-file-controls-passthrough: only names listed in .sandbox/env reach the sandbox, and a bad line is skipped with a warning", async () => {
+	const repoDir = await createTempRepo();
+	tempRepos.push(repoDir);
+
+	try {
+		await Bun.write(
+			`${repoDir}/.sandbox/env`,
+			"# comment\nSCODER_T_LISTED\n# SCODER_T_COMMENTED\nSCODER_T_TRAILING # why\nnot a name\n",
+		);
+		const run = await runScoderRaw(repoDir, ["--dry-run", "/bin/bash"], {
+			SCODER_T_LISTED: "v1",
+			SCODER_T_TRAILING: "v2",
+			SCODER_T_COMMENTED: "no",
+			SCODER_T_UNLISTED: "no",
+		});
+		expect(run.code).toBe(0);
+		expect(run.stdout).toContain("--setenv SCODER_T_LISTED v1");
+		expect(run.stdout).toContain("--setenv SCODER_T_TRAILING v2");
+		expect(run.stdout).not.toContain("SCODER_T_COMMENTED");
+		expect(run.stdout).not.toContain("SCODER_T_UNLISTED");
+		expect(run.stderr).toContain('ignoring "not a name"');
+	} finally {
+		await cleanupRepo(repoDir);
+	}
+});
+
+// ### Test: user-config-seeds-project-sandbox-dir
+// EM: The two-level copy: shipped defaults -> ~/.config/scoder (only the
+// EM: files missing there) -> .sandbox/ (only the files missing there).
+// EM: Nothing is ever overwritten at either level. In-process, with
+// EM: XDG_CONFIG_HOME pointed at a fresh directory for this test alone.
+test("user-config-seeds-project-sandbox-dir: defaults fill ~/.config/scoder, which fills .sandbox/, and neither level overwrites an existing file", async () => {
+	const repoDir = await createTempRepo();
+	tempRepos.push(repoDir);
+	const savedXdg = process.env.XDG_CONFIG_HOME;
+	const xdg = `${TEST_BASE}/xdg-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
+
+	try {
+		process.env.XDG_CONFIG_HOME = xdg;
+		const userDir = userConfigDir();
+		expect(userDir).toBe(`${xdg}/scoder`);
+		await Bun.write(`${userDir}/env`, "MY_OWN_VAR\n");
+		await Bun.write(`${userDir}/extra-note`, "copied too\n");
+		await Bun.write(`${repoDir}/.sandbox/ports`, "# project's own\n8080\n");
+
+		await prepareConfigDir(repoDir);
+
+		// User level: the edited file kept, the missing ones written from
+		// the shipped defaults (byte-identical to src/defaults/).
+		expect(await Bun.file(`${userDir}/env`).text()).toBe("MY_OWN_VAR\n");
+		for (const name of ["README.md", "readonly", "readwrite", "ports"]) {
+			expect(await Bun.file(`${userDir}/${name}`).text()).toBe(
+				await Bun.file(`${import.meta.dir}/../src/defaults/${name}`).text(),
+			);
+		}
+		// Project level: every user file the project lacked, the user's own
+		// edits included; the project's existing file untouched.
+		expect(await Bun.file(`${repoDir}/.sandbox/env`).text()).toBe(
+			"MY_OWN_VAR\n",
+		);
+		expect(await Bun.file(`${repoDir}/.sandbox/extra-note`).text()).toBe(
+			"copied too\n",
+		);
+		expect(await Bun.file(`${repoDir}/.sandbox/ports`).text()).toBe(
+			"# project's own\n8080\n",
+		);
+		expect(await Bun.file(`${repoDir}/.sandbox/readonly`).text()).toBe(
+			await Bun.file(`${userDir}/readonly`).text(),
+		);
+
+		// A later user-level edit does not reach a project that already has
+		// the file: the project's copy is the one in force.
+		await Bun.write(`${userDir}/env`, "CHANGED_LATER\n");
+		await prepareConfigDir(repoDir);
+		expect(await Bun.file(`${repoDir}/.sandbox/env`).text()).toBe(
+			"MY_OWN_VAR\n",
+		);
+	} finally {
+		process.env.XDG_CONFIG_HOME = savedXdg;
+		await Bun.spawn(["rm", "-rf", xdg]).exited;
+		await cleanupRepo(repoDir);
+	}
+});
+
+// ### Test: user-config-dry-run-writes-nothing-but-previews-it
+// EM: --dry-run writes no configuration at either level, yet previews what
+// EM: a real run would apply: with no .sandbox/env yet, the user's env
+// EM: list decides the passthrough.
+test("user-config-dry-run-writes-nothing-but-previews-it: --dry-run creates no config files and still uses the user's env list", async () => {
+	const repoDir = await createTempRepo();
+	tempRepos.push(repoDir);
+	const xdg = `${TEST_BASE}/xdg-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
+
+	try {
+		await Bun.write(`${xdg}/scoder/env`, "SCODER_T_FROM_USER\n");
+		const run = await runScoderRaw(repoDir, ["--dry-run", "/bin/bash"], {
+			XDG_CONFIG_HOME: xdg,
+			SCODER_T_FROM_USER: "u1",
+		});
+		expect(run.code).toBe(0);
+		expect(run.stdout).toContain("--setenv SCODER_T_FROM_USER u1");
+		expect(readdirSync(`${xdg}/scoder`)).toEqual(["env"]);
+		for (const name of ["env", "readonly", "readwrite", "ports"]) {
+			expect(await fileExists(`${repoDir}/.sandbox/${name}`)).toBe(false);
+		}
+	} finally {
+		await Bun.spawn(["rm", "-rf", xdg]).exited;
 		await cleanupRepo(repoDir);
 	}
 });
@@ -4856,7 +5012,12 @@ test("direct-mode-works-in-linked-worktree: --no-worktree runs inside a linked g
 				"-c",
 				"echo in-worktree",
 			],
-			{ cwd: linkedWorktree, stdout: "pipe", stderr: "pipe" },
+			{
+				env: process.env,
+				cwd: linkedWorktree,
+				stdout: "pipe",
+				stderr: "pipe",
+			},
 		);
 		await proc.exited;
 
@@ -4890,6 +5051,7 @@ test("worktree-mode-refused-in-linked-worktree: -w inside a linked worktree stil
 		const proc = await Bun.spawn(
 			[SCODER_PATH, "-w", "/bin/bash", "-c", "true"],
 			{
+				env: process.env,
 				cwd: linkedWorktree,
 				stdout: "pipe",
 				stderr: "pipe",
@@ -4926,7 +5088,12 @@ test("worktree-mode-refuses-dirty-checkout: worktree mode refuses when the check
 
 		const proc = await Bun.spawn(
 			[SCODER_PATH, "-w", "/bin/bash", "-c", "true"],
-			{ cwd: repoDir, stdout: "pipe", stderr: "pipe" },
+			{
+				env: process.env,
+				cwd: repoDir,
+				stdout: "pipe",
+				stderr: "pipe",
+			},
 		);
 		await proc.exited;
 
@@ -4958,7 +5125,12 @@ test("direct-mode-requires-git-repo: direct mode refuses outside a git repositor
 	try {
 		const proc = await Bun.spawn(
 			[SCODER_PATH, "--no-worktree", "/bin/bash", "-c", "true"],
-			{ cwd: plainDir, stdout: "pipe", stderr: "pipe" },
+			{
+				env: process.env,
+				cwd: plainDir,
+				stdout: "pipe",
+				stderr: "pipe",
+			},
 		);
 		await proc.exited;
 
@@ -4981,6 +5153,7 @@ test("worktree-mode-requires-git-repo: worktree mode refuses outside a git repos
 		const proc = await Bun.spawn(
 			[SCODER_PATH, "-w", "/bin/bash", "-c", "true"],
 			{
+				env: process.env,
 				cwd: plainDir,
 				stdout: "pipe",
 				stderr: "pipe",
@@ -5074,6 +5247,7 @@ test("home-installed-tool-runs: a tool symlinked from ~/.local/bin into ~/.local
 
 	try {
 		const proc = await Bun.spawn([SCODER_PATH, "-q", name], {
+			env: process.env,
 			cwd: repoDir,
 			stdout: "pipe",
 			stderr: "pipe",
@@ -5164,6 +5338,7 @@ test("unbound-home-tool-diagnosed: tool in an unbound $HOME directory fails with
 
 	try {
 		const proc = await Bun.spawn([SCODER_PATH, tool], {
+			env: process.env,
 			cwd: repoDir,
 			stdout: "pipe",
 			stderr: "pipe",
@@ -5303,7 +5478,12 @@ test("scoder should succeed in direct mode with AGENTS.md excluded", async () =>
 	// Run scoder in direct mode
 	const scoderResult = await Bun.spawn(
 		[SCODER_PATH, "--no-worktree", "--quiet", "--dry-run", "opencode"],
-		{ cwd: repoDir, stdout: "pipe", stderr: "pipe" },
+		{
+			env: process.env,
+			cwd: repoDir,
+			stdout: "pipe",
+			stderr: "pipe",
+		},
 	);
 	await scoderResult.exited;
 
@@ -5338,7 +5518,12 @@ test("scoder should succeed in worktree mode with AGENTS.md excluded from worktr
 	// Run scoder in worktree mode
 	const scoderResult = await Bun.spawn(
 		[SCODER_PATH, "--quiet", "--dry-run", "opencode"],
-		{ cwd: repoDir, stdout: "pipe", stderr: "pipe" },
+		{
+			env: process.env,
+			cwd: repoDir,
+			stdout: "pipe",
+			stderr: "pipe",
+		},
 	);
 	await scoderResult.exited;
 
@@ -5538,7 +5723,12 @@ test("ssh-blocked-by-default: without --allow-ssh, ssh has nothing to authentica
 				"-c",
 				"ssh -o BatchMode=yes -o ConnectTimeout=5 127.0.0.1 whoami",
 			],
-			{ cwd: repoDir, stdout: "pipe", stderr: "pipe" },
+			{
+				env: process.env,
+				cwd: repoDir,
+				stdout: "pipe",
+				stderr: "pipe",
+			},
 		);
 		await proc.exited;
 
@@ -5667,7 +5857,12 @@ test("ssh-tunnel-fails-closed-on-bad-target: unreachable target exits non-zero w
 				"-c",
 				"true",
 			],
-			{ cwd: repoDir, stdout: "pipe", stderr: "pipe" },
+			{
+				env: process.env,
+				cwd: repoDir,
+				stdout: "pipe",
+				stderr: "pipe",
+			},
 		);
 		await proc.exited;
 
@@ -6276,7 +6471,12 @@ test("sandbox-readwrite-created-if-missing: a missing .sandbox/readwrite is crea
 				"-c",
 				"echo modified >> .sandbox/readwrite",
 			],
-			{ cwd: repoDir, stdout: "pipe", stderr: "pipe" },
+			{
+				env: process.env,
+				cwd: repoDir,
+				stdout: "pipe",
+				stderr: "pipe",
+			},
 		);
 		await proc.exited;
 
@@ -6374,6 +6574,7 @@ test("sandbox-readwrite-outside-home-rejected: a line not starting with $HOME/ e
 		await Bun.write(`${repoDir}/.sandbox/readwrite`, "/tmp\n");
 
 		const proc = Bun.spawn([SCODER_PATH, "--dry-run", "/bin/bash"], {
+			env: process.env,
 			cwd: repoDir,
 			stdout: "pipe",
 			stderr: "pipe",
@@ -6400,6 +6601,7 @@ test("sandbox-readwrite-escape-via-symlink-rejected: a $HOME entry that resolves
 		await Bun.write(`${repoDir}/.sandbox/readwrite`, `$HOME/${linkName}\n`);
 
 		const proc = Bun.spawn([SCODER_PATH, "--dry-run", "/bin/bash"], {
+			env: process.env,
 			cwd: repoDir,
 			stdout: "pipe",
 			stderr: "pipe",
@@ -6427,6 +6629,7 @@ test.skipIf(!localBinExists)(
 			await Bun.write(`${repoDir}/.sandbox/readwrite`, "$HOME/.local/bin\n");
 
 			const proc = Bun.spawn([SCODER_PATH, "--dry-run", "/bin/bash"], {
+				env: process.env,
 				cwd: repoDir,
 				stdout: "pipe",
 				stderr: "pipe",
@@ -6478,6 +6681,7 @@ test("sandbox-readwrite-overlapping-readonly-rejected: the same $HOME path in bo
 		await Bun.write(`${repoDir}/.sandbox/readwrite`, `$HOME/${relative}\n`);
 
 		const proc = Bun.spawn([SCODER_PATH, "--dry-run", "/bin/bash"], {
+			env: process.env,
 			cwd: repoDir,
 			stdout: "pipe",
 			stderr: "pipe",

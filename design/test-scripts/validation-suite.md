@@ -27,7 +27,7 @@ tags: [test-script, validation]
 
 `tests/scoder.test.ts` is a self-contained integration test suite that creates
 temporary git repositories under `/tmp`, runs `scoder` against them using
-`/bin/bash` as the sandboxed command, and asserts expected behaviour. 142
+`/bin/bash` as the sandboxed command, and asserts expected behaviour. 145
 tests cover all sandbox mechanics — this catalog is currently behind the
 actual implemented count (see the note under case 113) due to other,
 unrelated in-progress work; not fixed here.
@@ -1385,6 +1385,28 @@ since it is a common flag of other tools (`python -m http.server`).
 preset's binds carry a display grant that only makes sense with its GUI
 running). Before the tool name, `--bind nosuchtool` fails as an unknown
 preset rather than being silently dropped.
+
+### 137. env-file-controls-passthrough
+[TESTED_BY](/tests/scoder.test.ts#testEnvFileControlsPassthrough)
+
+`.sandbox/env` decides the passthrough: a listed name set on the host is
+passed (a trailing `#` comment allowed); a commented-out or unlisted one is
+not; a line that is not a variable name is warned about and skipped.
+
+### 138. user-config-seeds-project-sandbox-dir
+[TESTED_BY](/tests/scoder.test.ts#testUserConfigSeedsProjectSandboxDir)
+
+In-process with a fresh `XDG_CONFIG_HOME`: missing user defaults are
+written byte-identical to `src/defaults/`, an edited one is kept; every
+user file the project lacks is copied into `.sandbox/` (an extra user file
+too), a project's existing file is untouched, and a later user-level edit
+does not reach a project that already has the file.
+
+### 139. user-config-dry-run-writes-nothing-but-previews-it
+[TESTED_BY](/tests/scoder.test.ts#testUserConfigDryRunWritesNothingButPreviewsIt)
+
+`--dry-run` creates no configuration at either level, yet its preview uses
+the user's `env` list when the project has none yet.
 
 ## Current Network Coverage
 

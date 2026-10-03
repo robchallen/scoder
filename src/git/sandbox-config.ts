@@ -1,5 +1,12 @@
-import { mkdir, rename } from "node:fs/promises";
+import { constants } from "node:fs";
+import { copyFile, mkdir, readdir, rename } from "node:fs/promises";
+import defaultEnv from "../defaults/env" with { type: "text" };
+import defaultPorts from "../defaults/ports" with { type: "text" };
+import defaultReadme from "../defaults/README.md" with { type: "text" };
+import defaultReadonly from "../defaults/readonly" with { type: "text" };
+import defaultReadwrite from "../defaults/readwrite" with { type: "text" };
 import { info, warning } from "../utils/logger.ts";
+import { getRealHome } from "../utils/paths.ts";
 
 // EM: The .sandbox/ project configuration directory
 // EM: Implements sandbox-config-directory
@@ -27,23 +34,105 @@ export const CONFIG_FILES: Record<
 	readonly: { path: `${CONFIG_DIR}/readonly`, legacy: ".agentreadonly" },
 	readwrite: { path: `${CONFIG_DIR}/readwrite`, legacy: ".agentreadwrite" },
 	ports: { path: `${CONFIG_DIR}/ports`, legacy: ".agentports" },
+	env: { path: `${CONFIG_DIR}/env`, legacy: null },
 };
 
-const README = `# .sandbox
+// EM: The shipped defaults, embedded at build time like entrypoint.sh: the
+// EM: compiled single-file binary carries them, with no asset path to find at
+// EM: runtime. They are the only defaults scoder has — every reader below that
+// EM: finds a file missing falls back to these, not to a literal of its own.
+const DEFAULT_FILES: Record<string, string> = {
+	"README.md": defaultReadme,
+	env: defaultEnv,
+	readonly: defaultReadonly,
+	readwrite: defaultReadwrite,
+	ports: defaultPorts,
+};
 
-Configuration for scoder, which runs tools in a bubblewrap sandbox.
+// ### defaultConfigText
+// The shipped default content of one configuration file.
+export function defaultConfigText(file: keyof typeof CONFIG_FILES): string {
+	return DEFAULT_FILES[file] ?? "";
+}
 
-This whole directory is bound **read-only** inside the sandbox, so a tool
-running in there can read these files but cannot change what it is allowed to
-do. Edit them from outside.
+// ### parseEnvNames
+// The names in an env file: one per line, blank lines and # comments
+// skipped, anything that is not a valid variable name warned about and
+// dropped, duplicates removed.
+export function parseEnvNames(content: string, label: string): string[] {
+	const names: string[] = [];
+	for (const rawLine of content.split("\n")) {
+		const name = rawLine.split("#")[0]?.trim() ?? "";
+		if (name === "") {
+			continue;
+		}
+		if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) {
+			warning(
+				`${label}: ignoring "${rawLine.trim()}" — not an environment variable name`,
+			);
+			continue;
+		}
+		if (!names.includes(name)) {
+			names.push(name);
+		}
+	}
+	return names;
+}
 
-- \`readonly\`  — paths kept read-only inside the sandbox
-- \`readwrite\` — \`$HOME\` directories opened read-write
-- \`ports\`     — localhost ports forwarded into the sandbox
+// ### readConfigText
+// One configuration file's content as the session will use it: the
+// project's own `.sandbox/` copy, else the user's `~/.config/scoder/` one,
+// else the shipped default.
+//
+// EM: The fallbacks exist for --dry-run, which writes nothing and so never
+// EM: creates the project's copy: it still previews exactly what a real run
+// EM: would apply. On a real run prepareConfigDir has already filled the
+// EM: project's copy, and the first branch is the only one taken.
+export async function readConfigText(
+	projectRoot: string,
+	file: keyof typeof CONFIG_FILES,
+): Promise<string> {
+	const leaf = CONFIG_FILES[file].path.slice(CONFIG_DIR.length + 1);
+	for (const path of [
+		configPath(projectRoot, file),
+		`${userConfigDir()}/${leaf}`,
+	]) {
+		if (await fileExists(path)) {
+			return await Bun.file(path).text();
+		}
+	}
+	return defaultConfigText(file);
+}
 
-scoder creates this directory and these files with sane defaults the first
-time it runs in a project. Each file documents itself in its own comments.
-`;
+// ### userConfigDir
+// The user's own defaults, `$XDG_CONFIG_HOME/scoder` (normally
+// `~/.config/scoder`). Copied into a project's `.sandbox/` file by file,
+// for whatever the project does not already have.
+export function userConfigDir(): string {
+	const xdg = process.env.XDG_CONFIG_HOME;
+	const base = xdg?.startsWith("/") ? xdg : `${getRealHome()}/.config`;
+	return `${base}/scoder`;
+}
+
+// ### ensureUserConfig
+// Write any shipped default the user's config directory is missing.
+//
+// EM: Per file, never overwriting: a user who has edited
+// EM: ~/.config/scoder/env keeps their edit forever, and a file they delete
+// EM: comes back as the shipped default on the next run — deletion is not a
+// EM: way to opt out of a file, an empty or all-comment file is.
+async function ensureUserConfig(): Promise<string> {
+	const dir = userConfigDir();
+	await mkdir(dir, { recursive: true });
+	for (const [name, content] of Object.entries(DEFAULT_FILES)) {
+		const path = `${dir}/${name}`;
+		if (!(await fileExists(path))) {
+			await Bun.write(path, content);
+			info(`Created ${path} from scoder's defaults`);
+		}
+	}
+	return dir;
+}
 
 // ### configPath
 // Absolute path of a configuration file within a project.
@@ -68,7 +157,10 @@ export function configPath(
 // EM: legacy files are silently ignored until they find it — which for
 // EM: `.agentreadonly` means protections quietly stop applying, a security
 // EM: regression presented as an upgrade.
-export async function prepareConfigDir(projectRoot: string): Promise<void> {
+export async function prepareConfigDir(
+	projectRoot: string,
+	dryRun = false,
+): Promise<void> {
 	const dir = `${projectRoot}/${CONFIG_DIR}`;
 	const existed = await dirExists(dir);
 
@@ -117,8 +209,36 @@ export async function prepareConfigDir(projectRoot: string): Promise<void> {
 		void name;
 	}
 
-	if (!existed) {
-		await Bun.write(`${dir}/README.md`, README);
+	// EM: Then fill the gaps from the user's own defaults: every file in
+	// EM: ~/.config/scoder the project lacks, copied as-is, never one it
+	// EM: already has. After the migration, so a legacy dotfile becomes the
+	// EM: project's file rather than being shadowed by a fresh default. The
+	// EM: project's copy is from then on the only one read — editing
+	// EM: ~/.config/scoder changes what new projects start with, not what
+	// EM: existing ones have.
+	// EM: Not under --dry-run, which must not create configuration files —
+	// EM: in the project or in ~/.config. readConfigText's fallbacks give
+	// EM: the preview the same values a real run would write.
+	if (dryRun) {
+		return;
+	}
+	const userDir = await ensureUserConfig();
+	for (const entry of await readdir(userDir, { withFileTypes: true })) {
+		if (!entry.isFile()) {
+			continue;
+		}
+		try {
+			await copyFile(
+				`${userDir}/${entry.name}`,
+				`${dir}/${entry.name}`,
+				constants.COPYFILE_EXCL,
+			);
+			info(`Created ${CONFIG_DIR}/${entry.name} from ${userDir}/${entry.name}`);
+		} catch (err) {
+			if ((err as NodeJS.ErrnoException).code !== "EEXIST") {
+				warning(`could not create ${CONFIG_DIR}/${entry.name}: ${err}`);
+			}
+		}
 	}
 }
 

@@ -1,6 +1,7 @@
 import { mkdir, realpath } from "node:fs/promises";
 import { dirname } from "node:path";
 import type { ProtectionConfig } from "../git/protection.ts";
+import { defaultConfigText, parseEnvNames } from "../git/sandbox-config.ts";
 import {
 	getGitCommonDir,
 	getProjDir,
@@ -427,69 +428,15 @@ export async function buildBwrapCommand(
 		}
 	}
 
-	const passThrough = [
-		"SHELL",
-		"EDITOR",
-		"VISUAL",
-		"NO_COLOR",
-		"FORCE_COLOR",
-		"OPENROUTER_API_KEY",
-		"ANTHROPIC_BASE_URL",
-		"ANTHROPIC_AUTH_TOKEN",
-		"ANTHROPIC_API_KEY",
-		"CLAUDE_MODEL",
-		"COPILOT_PROVIDER_TYPE",
-		"COPILOT_PROVIDER_BASE_URL",
-		"COPILOT_PROVIDER_API_KEY",
-		"COPILOT_MODEL",
-		"COPILOT_GITHUB_TOKEN",
-		"GH_TOKEN",
-		"GITHUB_TOKEN",
-		"OPENCODE_CONFIG",
-		"OPENCODE_CONFIG_CONTENT",
-		"AZURE_OPENAI_API_KEY",
-		"OPENAI_API_KEY",
-		"DEEPSEEK_API_KEY",
-		"GEMINI_API_KEY",
-		"MISTRAL_API_KEY",
-		"GROQ_API_KEY",
-		"CEREBRAS_API_KEY",
-		"CLOUDFLARE_API_KEY",
-		"XAI_API_KEY",
-		"OPENROUTER_API_KEY",
-		"AI_GATEWAY_API_KEY",
-		"ZAI_API_KEY",
-		"OPENCODE_API_KEY",
-		"HF_TOKEN",
-		"FIREWORKS_API_KEY",
-		"TOGETHER_API_KEY",
-		"KIMI_API_KEY",
-		"MINIMAX_API_KEY",
-		"XIAOMI_API_KEY",
-		"AZURE_OPENAI_BASE_URL",
-		"AZURE_OPENAI_RESOURCE_NAME",
-		"AZURE_OPENAI_API_VERSION",
-		"AZURE_OPENAI_DEPLOYMENT_NAME_MAP",
-		"AWS_PROFILE",
-		"AWS_ACCESS_KEY_ID",
-		"AWS_SECRET_ACCESS_KEY",
-		"AWS_BEARER_TOKEN_BEDROCK",
-		"AWS_REGION",
-		"GOOGLE_CLOUD_PROJECT",
-		"GOOGLE_CLOUD_LOCATION",
-		"GOOGLE_APPLICATION_CREDENTIALS",
-		"PI_SKIP_VERSION_CHECK",
-		"PI_OFFLINE",
-		"BRAVE_SEARCH_API_KEY",
-		"TAVILY_API_KEY",
-		"SERPER_API_KEY",
-		"EXA_API_KEY",
-		"YOUCOM_API_KEY",
-		"JINA_API_KEY",
-		"FIRECRAWL_API_KEY",
-		"PERPLEXITY_API_KEY",
-		"TYPESAFE_API_KEY",
-	];
+	// EM: The host env vars a session may see: .sandbox/env's names, read by
+	// EM: setupProtection. Formerly a list in this file; now a per-project
+	// EM: file seeded from ~/.config/scoder/env, so adding a provider's key no
+	// EM: longer needs a scoder release. Read-only inside the sandbox like the
+	// EM: rest of .sandbox/, so an agent cannot widen its own environment.
+	// EM: With no protectionConfig the shipped default applies.
+	const passThrough =
+		protectionConfig?.envPassThrough ??
+		parseEnvNames(defaultConfigText("env"), "default env");
 
 	for (const envVar of passThrough) {
 		if (process.env[envVar]) {

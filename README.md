@@ -220,6 +220,8 @@ scoder --dry-run opencode         # show bwrap command without running
     --native-display    For a GUI preset, draw on the host's X session
                          directly instead of forwarding windows from a
                          private virtual display (see below)
+    --env NAME=VALUE    Set NAME inside the sandbox for this session only;
+                         repeatable (see below)
     --dry-run           Print bwrap command without executing
 
 Setup (run once, with sudo):
@@ -506,6 +508,23 @@ commented out — uncomment the ones you use in `~/.config/scoder/env` (for
 new projects) or `.sandbox/env` (for an existing one). This replaces the
 fixed list earlier versions passed unconditionally. `--dry-run` writes no
 configuration files, but previews the values a real run would use.
+
+For a one-off value, `--env` sets a variable in this session's sandbox
+only — nothing is written to `.sandbox/env`:
+
+```bash
+scoder --env MY_KEY=xyz pi
+scoder --env DEBUG=1 --env LOG_LEVEL=trace pi    # repeatable
+```
+
+The value is everything after the first `=` (so it may contain `=`, or be
+empty). It wins over the same name from `.sandbox/env`, and over a value
+scoder sets itself (`HOME`, `PATH`, ...), with a warning in that case.
+`--env` goes before the tool name — after it, it is the tool's own
+argument. Like every value scoder passes into the sandbox, it is on
+bwrap's command line, so other processes on the host can see it in the
+process list while the session runs; `--dry-run` redacts names that look
+secret.
 
 ## Environment variables
 

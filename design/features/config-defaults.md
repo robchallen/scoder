@@ -70,6 +70,18 @@ The shipped default lists the shell/editor variables and `GH_TOKEN` /
 list passed unconditionally — a behaviour change: a key is now passed only
 when a project's `env` (or the user's default, for new projects) lists it.
 
+### `--env NAME=VALUE`
+
+A one-off value for one session, nothing written. Parsed before the tool
+name only, like `--allow-ssh`: after it, `--env` is commonly the tool's
+own flag. The value is everything after the first `=`. The `--setenv`
+pairs are pushed after the `.sandbox/env` passthrough, so bwrap's
+last-wins rule makes them override it, a preset's values and scoder's
+fixed ones; overriding a variable scoder sets itself is warned about. The
+entry point's interface variables (`HARNESS_ARGC`, `IDE_ARGC`, ...) are
+pushed after `--env`, so a typed value cannot break a companion-IDE
+launch.
+
 A repository that commits its own `.sandbox/env` chooses which host
 variables its sessions see, the same trust a committed
 `.sandbox/readwrite` already carries.

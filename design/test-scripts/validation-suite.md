@@ -27,7 +27,7 @@ tags: [test-script, validation]
 
 `tests/scoder.test.ts` is a self-contained integration test suite that creates
 temporary git repositories under `/tmp`, runs `scoder` against them using
-`/bin/bash` as the sandboxed command, and asserts expected behaviour. 150
+`/bin/bash` as the sandboxed command, and asserts expected behaviour. 153
 tests cover all sandbox mechanics — this catalog is currently behind the
 actual implemented count (see the note under case 113) due to other,
 unrelated in-progress work; not fixed here.
@@ -1443,6 +1443,28 @@ the user's `env` list when the project has none yet.
 paths and launches only pi; Claude Code's bind appears once despite being
 named twice. `SCODER_BIND=rstudio` is refused, the error naming
 `SCODER_BIND` rather than `--bind`.
+
+### 141. env-flag-sets-value-in-sandbox-only
+[TESTED_BY](/tests/scoder.test.ts#testEnvFlagSetsValueInSandboxOnly)
+
+`--env` values reach the sandbox: split at the first `=` (a value with
+`=` and an empty value both work), set after the `.sandbox/env`
+passthrough of the same name so they win, redacted in the preview when the
+name looks secret, and warned about only when overriding a variable scoder
+sets itself (`HOME`).
+
+### 142. env-flag-cannot-override-entrypoint-interface
+[TESTED_BY](/tests/scoder.test.ts#testEnvFlagCannotOverrideEntrypointInterface)
+
+`--env IDE_ARGC=99` with `--ide rstudio`: the entry point's own
+`IDE_ARGC` is set after it, so the last value bwrap applies is scoder's.
+
+### 143. env-flag-rejects-malformed-and-stays-out-of-tool-argv
+[TESTED_BY](/tests/scoder.test.ts#testEnvFlagRejectsMalformedAndStaysOutOfToolArgv)
+
+`--env NOEQUALS`, `--env 1BAD=x`, `--env =x` and a bare `--env` fail with
+"`--env must be NAME=VALUE`"; after the tool name, `--env FOO=bar` stays
+in the tool's argv and sets nothing.
 
 ## Current Network Coverage
 

@@ -14,6 +14,7 @@ import type {
 	IdeShutdown,
 	ScoderOptions,
 } from "../types.ts";
+import { warning } from "../utils/logger.ts";
 import { getRealHome } from "../utils/paths.ts";
 import { stageFile } from "../utils/session.ts";
 import entrypointScript from "./entrypoint.sh" with { type: "text" };
@@ -442,6 +443,30 @@ export async function buildBwrapCommand(
 		if (process.env[envVar]) {
 			cmd.push("--setenv", envVar, process.env[envVar] || "");
 		}
+	}
+
+	// EM: --env: one-off values for this session, pushed last among the
+	// EM: session's own variables so bwrap's last-wins --setenv makes them
+	// EM: override the passthrough, a preset's values and scoder's own fixed
+	// EM: ones alike — an explicit, typed request is the strongest statement
+	// EM: of intent there is. Overriding one scoder set itself (HOME, PATH,
+	// EM: SCODER_SANDBOX...) is allowed but said out loud, since it can make
+	// EM: the sandbox behave unlike the docs. The entry point's own
+	// EM: variables are pushed after this, deliberately: they are its
+	// EM: internal interface, not session environment, and a companion-IDE
+	// EM: launch should not be breakable from the command line.
+	const scoderSet = new Set<string>();
+	for (let i = 0; i < cmd.length - 1; i++) {
+		if (cmd[i] === "--setenv") {
+			scoderSet.add(cmd[i + 1]);
+		}
+	}
+	const fromPassThrough = new Set(passThrough.filter((n) => process.env[n]));
+	for (const { name, value } of options.setEnv ?? []) {
+		if (scoderSet.has(name) && !fromPassThrough.has(name)) {
+			warning(`--env ${name} overrides the value scoder sets itself`);
+		}
+		cmd.push("--setenv", name, value);
 	}
 
 	// EM: `--` marks end-of-options, so a tool path beginning with `-` cannot be

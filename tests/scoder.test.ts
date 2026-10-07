@@ -2672,6 +2672,137 @@ test("user-config-dry-run-writes-nothing-but-previews-it: --dry-run creates no c
 	}
 });
 
+// ### Test: env-flag-sets-value-in-sandbox-only
+// EM: --env NAME=VALUE sets NAME for this session's sandbox: split at the
+// EM: first "=" (so values may contain "=" or be empty), pushed after the
+// EM: .sandbox/env passthrough so bwrap's last-wins --setenv makes it win,
+// EM: warned about only when it overrides a variable scoder sets itself,
+// EM: and still redacted in the --dry-run preview when the name looks secret.
+test("env-flag-sets-value-in-sandbox-only: --env values reach the sandbox, win over the passthrough, and warn only when overriding scoder's own", async () => {
+	const repoDir = await createTempRepo();
+	tempRepos.push(repoDir);
+
+	try {
+		// MY_SETTING, not MY_KEY: a name containing "key" is redacted in
+		// the preview, which would hide the values compared here.
+		await Bun.write(`${repoDir}/.sandbox/env`, "MY_SETTING\n");
+		const run = await runScoderRaw(
+			repoDir,
+			[
+				"--dry-run",
+				"--env",
+				"MY_SETTING=xyz",
+				"--env=URLISH=a=b=c",
+				"--env",
+				"EMPTY_ONE=",
+				"--env",
+				"MY_API_KEY=sekrit-value",
+				"--env",
+				"HOME=/elsewhere",
+				"/bin/bash",
+			],
+			{ MY_SETTING: "from-host" },
+		);
+		expect(run.code).toBe(0);
+		const flat = flattenDryRun(run.stdout);
+		const passed = flat.indexOf("--setenv MY_SETTING from-host");
+		const oneOff = flat.indexOf("--setenv MY_SETTING xyz");
+		expect(passed).toBeGreaterThan(-1);
+		expect(oneOff).toBeGreaterThan(passed);
+		expect(flat).toContain("--setenv URLISH a=b=c");
+		expect(flat).toMatch(/--setenv EMPTY_ONE\s/);
+		expect(flat).toContain("--setenv MY_API_KEY <redacted>");
+		expect(flat).not.toContain("sekrit-value");
+		expect(flat.lastIndexOf("--setenv HOME /elsewhere")).toBeGreaterThan(
+			flat.lastIndexOf(`--setenv HOME ${SANDBOX_HOME}`),
+		);
+		expect(run.stderr).toContain(
+			"--env HOME overrides the value scoder sets itself",
+		);
+		expect(run.stderr).not.toContain("--env MY_SETTING overrides");
+	} finally {
+		await cleanupRepo(repoDir);
+	}
+});
+
+// ### Test: env-flag-cannot-override-entrypoint-interface
+// EM: The entry point's variables (HARNESS_ARGC, IDE_ARGC, ...) are its
+// EM: internal interface, pushed after --env so a typed value can never
+// EM: break a companion-IDE launch: the last --setenv for each is scoder's.
+test("env-flag-cannot-override-entrypoint-interface: the entry point's own variables are set after --env, so they win", async () => {
+	const repoDir = await createTempRepo();
+	tempRepos.push(repoDir);
+	const piDir = await createFakeToolDir("pi");
+	const rstudioDir = await createFakeToolDir("rstudio");
+
+	try {
+		const run = await runScoderRaw(
+			repoDir,
+			[
+				"--dry-run",
+				"--no-worktree",
+				"--env",
+				"IDE_ARGC=99",
+				"pi",
+				"--ide",
+				"rstudio",
+			],
+			{ PATH: `${piDir}:${rstudioDir}:${process.env.PATH}` },
+		);
+		expect(run.code).toBe(0);
+		const flat = flattenDryRun(run.stdout);
+		const settings = [...flat.matchAll(/--setenv IDE_ARGC (\S+)/g)].map(
+			(m) => m[1],
+		);
+		expect(settings[0]).toBe("99");
+		expect(settings.at(-1)).not.toBe("99");
+	} finally {
+		await Bun.spawn(["rm", "-rf", piDir, rstudioDir]).exited;
+		await cleanupRepo(repoDir);
+	}
+});
+
+// ### Test: env-flag-rejects-malformed-and-stays-out-of-tool-argv
+// EM: A malformed spec is an error naming the expected shape, not a silent
+// EM: no-op. After the tool name --env is the tool's own argument, as with
+// EM: --allow-ssh: `docker run --env` and friends must keep working.
+test("env-flag-rejects-malformed-and-stays-out-of-tool-argv: bad --env specs fail clearly, and after the tool name --env is the tool's", async () => {
+	const repoDir = await createTempRepo();
+	tempRepos.push(repoDir);
+	const piDir = await createFakeToolDir("pi");
+	const env = { PATH: `${piDir}:${process.env.PATH}` };
+
+	try {
+		for (const bad of [
+			["--env", "NOEQUALS"],
+			["--env", "1BAD=x"],
+			["--env", "=x"],
+			["--env"],
+		]) {
+			const run = await runScoderRaw(
+				repoDir,
+				["--dry-run", ...bad, ...(bad.length === 1 ? [] : ["pi"])],
+				env,
+			);
+			expect(run.code).not.toBe(0);
+			expect(run.stderr).toContain("--env must be NAME=VALUE");
+		}
+
+		const after = await runScoderRaw(
+			repoDir,
+			["--dry-run", "--no-worktree", "pi", "--env", "FOO=bar"],
+			env,
+		);
+		expect(after.code).toBe(0);
+		const flat = flattenDryRun(after.stdout);
+		expect(flat).not.toContain("--setenv FOO");
+		expect(flat).toMatch(new RegExp(`-- ${piDir}/pi\\s+--env FOO=bar\n`));
+	} finally {
+		await Bun.spawn(["rm", "-rf", piDir]).exited;
+		await cleanupRepo(repoDir);
+	}
+});
+
 // ### Test: dry-run-uses-pasta
 test("dry-run-uses-pasta: Dry-run output includes pasta in command", async () => {
 	const repoDir = await createTempRepo();

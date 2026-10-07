@@ -3288,13 +3288,14 @@ test("vscode-preset-launch-args-and-binds: managed user-data-dir rw, pinned flag
 			`-- bash /tmp/scoder-entrypoint.sh ${fakeBinDir}/code` +
 				` --user-data-dir ${managedDir}` +
 				` --extensions-dir ${extensionsDir}` +
-				` --disable-updates --disable-workspace-trust --verbose ${repoDir}\n`,
+				` --disable-updates --disable-workspace-trust --verbose --use-inmemory-secretstorage ${repoDir}\n`,
 		);
 
 		expect(flat).toContain(`--ro-bind ${extensionsDir} ${extensionsDir}`);
 
 		expect(flat).not.toContain("--password-store");
-		expect(flat).not.toContain("--use-inmemory-secretstorage");
+		// Trial branch: in-memory secrets are now pinned explicitly.
+		expect(flat).toContain("--use-inmemory-secretstorage");
 	} finally {
 		if (!extensionsPreExisted) {
 			await Bun.spawn(["rm", "-rf", extensionsDir]).exited;
@@ -3600,7 +3601,7 @@ test("vscode-user-args-pass-through-untouched: pinned flags prepend, user args f
 			`-- bash /tmp/scoder-entrypoint.sh ${fakeBinDir}/code` +
 				` --user-data-dir ${managedDir}` +
 				` --extensions-dir ${SANDBOX_HOME}/.vscode/extensions` +
-				` --disable-updates --disable-workspace-trust --verbose` +
+				` --disable-updates --disable-workspace-trust --verbose --use-inmemory-secretstorage` +
 				` --install-extension ms-python.python\n`,
 		);
 	} finally {

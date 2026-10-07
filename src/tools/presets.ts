@@ -1402,6 +1402,11 @@ export const TOOL_PRESETS: Record<string, ToolPreset> = {
 				// EM: the children-first `pkill -P` shutdown still reaches
 				// EM: it. Cost: verbose-level output in the log.
 				"--verbose",
+				// EM: Trial: secrets in memory for the session, explicitly, so
+				// EM: VS Code never asks the keyring and the create-keyring
+				// EM: dialog never appears. The same behaviour as its own
+				// EM: fallback (secret-storage.md option A), minus the prompt.
+				"--use-inmemory-secretstorage",
 			];
 			// EM: rstudio's fill-if-empty semantics: the user's own args pass
 			// EM: through untouched, and the project dir is added only when

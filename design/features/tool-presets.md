@@ -48,6 +48,9 @@ unasked-for host-display grant. A bound preset brings its read-write binds
 too: `--bind claude` opens the same host write surface described for
 `~/.claude` below. After the tool name, `--bind X` is claimed only when X
 is a registered preset, because `--bind` is a common flag of other tools.
+`SCODER_BIND` (comma- or space-separated names) makes the same request
+from the environment, added to any `--bind` flags and held to the same
+rules; an error names `SCODER_BIND` when that is where the name came from.
 
 `eclipse` and `vscode` also carry `managedWorkspaceDir(hostProjectDir)`:
 the host path of their scoder-managed per-project state (eclipse's

@@ -20,7 +20,7 @@ on a separate git branch via a worktree.
 | Tool | IDE |
 |------|--------|
 | `rstudio` | RStudio Desktop config + data, an xpra-forwarded window, and pi's own binds (see below) |
-| `eclipse` | Eclipse IDE, an xpra-forwarded window, and a dynamically (re)generated workspace (see below) |
+| `eclipse` | Eclipse IDE, an xpra-forwarded window, and a persisted per-project workspace (see below) |
 | `vscode` | VS Code, an xpra-forwarded window, and a managed per-project user-data-dir (see below) |
 
 
@@ -67,10 +67,14 @@ seeded **once** on first use from your real `~/.config/Code/User`
 you change in the sandbox stays yours, and nothing is ever copied back.
 `~/.vscode/extensions` is bound read-only — install and update
 extensions on the host, where the sandbox can't diverge mid-session.
+`~/.continue` (the Continue extension's config, sessions and index) is
+bound read-write when it exists.
 Sign-ins don't persist across sessions: sandboxed secrets are
 in-memory by design (see `design/features/secret-storage.md`). The snap
-build is refused — install the .deb/.rpm/tarball. See
-`design/implementation/plans/vscode-preset.md` for the full
+build is refused — install the .deb/.rpm/tarball. To start a project's
+VS Code (or Eclipse) state over, see
+[`--new-workspace`](#starting-a-projects-ide-state-over---new-workspace).
+See `design/implementation/plans/vscode-preset.md` for the full
 investigation.
 
 ## How it works
@@ -113,8 +117,19 @@ investigation.
 - **System read-only** — `/usr`, `/bin`, `/lib`, `/etc` are read-only.
 - **Protected infrastructure** — `.github/`, `.claude/`, `opencode.json`,
    `.gitignore`, `package-lock.json`, `poetry.lock`, `Cargo.lock`, `pnpm-lock.yaml`, `yarn.lock`, `mise.toml`
-   are read-only by default. List can be modified with a `.sandbox/readonly` file in the repository
-   root. (`.sandbox/readonly` is always protected)
+   are read-only by default. The list lives in the project's `.sandbox/readonly`
+   (seeded from `~/.config/scoder/readonly`, see
+   [defaults](#defaults-configscoder-and-environment-passthrough-sandboxenv));
+   the whole `.sandbox/` directory is always read-only inside the sandbox.
+- **Cleared environment** — the sandbox starts with no host environment
+   variables except the names listed in `.sandbox/env` (see
+   [defaults](#defaults-configscoder-and-environment-passthrough-sandboxenv))
+   and the few scoder sets itself (see
+   [environment variables](#environment-variables)).
+- **No host session bus, no host `/run`** — `/run` is a fresh tmpfs, with
+   `/run/user/<uid>` created mode `0700`; nothing in the sandbox can reach
+   your desktop's D-Bus session or system bus, keyring included. GUI presets
+   get a private session bus of their own.
 - **Agent skills snapshot** — `~/.agents` is copied at sandbox start and bound
   read-only into the sandbox, so symlinked skills resolve as a stable snapshot
   for the duration of the session.
@@ -153,7 +168,7 @@ investigation.
   If a local OpenAI-compatible API is listening on port `11434` (the Ollama
   default) it is auto-detected at startup and appended to `.sandbox/ports`
   automatically. Override the probed port with `SCODER_LLM_PORT`. See
-  [persistent host-loopback ports](#persistent-host-loopback-ports-an-agentports-file)
+  [persistent host-loopback ports](#persistent-host-loopback-ports-an-sandboxports-file)
   below.
 - **No ssh access by default** — with `--allow-ssh user@host`, scoder opens a
   single pre-authenticated ssh connection to that one destination outside the
@@ -163,7 +178,7 @@ investigation.
   `.sandbox/readwrite` file at the project root lists `$HOME/...` directories
   to bind read-write, for a persistent cache or analysis output that
   survives session restarts. See
-  [persistent read-write access](#persistent-read-write-access-an-agentreadwrite-file)
+  [persistent read-write access](#persistent-read-write-access-an-sandboxreadwrite-file)
   below.
 
 ## Usage
@@ -180,8 +195,9 @@ scoder claude                     # sandbox claude code
 scoder copilot                    # sandbox GitHub Copilot CLI
 scoder vscode                     # sandbox VS Code (runs the `code` binary)
 scoder -w opencode                # isolate changes on a scoder/<repo> branch
+scoder pi --ide rstudio           # pi in the terminal, RStudio alongside it
+scoder pi --bind claude           # pi, with Claude Code's config in reach
 scoder --dry-run opencode         # show bwrap command without running
-bun test                          # run the validation suite
 ```
 
 ### Options
@@ -195,16 +211,29 @@ bun test                          # run the validation suite
     --allow-ssh USER@HOST  Open a single pre-authenticated ssh connection to
                          USER@HOST outside the sandbox, and expose only that
                          one connection inside it
+    --ide NAME          Run preset NAME (rstudio, eclipse, vscode) as a
+                         companion IDE in the same sandbox (see below)
+    --bind NAME         Add CLI preset NAME's config binds without
+                         launching it; repeatable (see below)
+    --new-workspace     Reset this project's managed eclipse/vscode state
+                         before launch (see below)
     --native-display    For a GUI preset, draw on the host's X session
                          directly instead of forwarding windows from a
                          private virtual display (see below)
     --dry-run           Print bwrap command without executing
+
+Setup (run once, with sudo):
+    --configure-apparmor    Install the AppArmor profile bwrap needs
+                            (Ubuntu 24.04+)
+    --install-dependencies  Install bubblewrap, passt and xpra
 ```
 
-Scoder options must come before the tool name:
-`scoder --allow-ssh me@remote-host pi`, not `scoder pi --allow-ssh
-me@remote-host` (anything after the tool name is passed to the tool
-unparsed).
+Scoder options normally come before the tool name — anything after it is
+the tool's own argv, passed through unparsed: `scoder --allow-ssh
+me@remote-host pi`, not `scoder pi --allow-ssh me@remote-host`. Three
+are also recognised after it, since that is the natural place to type
+them: `--ide`, `--new-workspace`, and `--bind` (the last only when its
+value names a preset, so a tool's own `--bind 0.0.0.0` passes through).
 
 ### `.sandbox/readonly` file
 
@@ -294,6 +323,13 @@ also sets `MCPTOOLS_SOCKET_DIR` to a writable sandbox path, so
 `.Rprofile` line needed (its own default location, `/run/user/<uid>`, is
 read-only inside the sandbox).
 
+A companion IDE's output goes to a log file rather than your terminal.
+scoder prints where at startup — for example `IDE log on the host:
+/tmp/scoder-1a2b3c4d/tmp/scoder-ide.log` (or `xpra log on the host:` when
+xpra is running, which carries the IDE's output too). It is the place to
+look when an IDE window never appears. The file is removed when the
+session ends; set `SCODER_KEEP_SESSION_TMP=1` to keep it.
+
 ## Another preset's paths, without its tool (`--bind`)
 
 `--bind NAME` adds preset `NAME`'s config binds to the sandbox without
@@ -303,7 +339,12 @@ sessions or config) but only one of them should run:
 ```bash
 scoder pi --bind claude                   # pi runs; ~/.claude etc. are in its sandbox
 scoder --bind claude --bind copilot pi    # repeatable, either side of the tool name
+SCODER_BIND=claude,copilot scoder pi      # the same, from the environment
 ```
+
+`SCODER_BIND` takes preset names separated by commas or spaces, and adds
+to any `--bind` flags rather than replacing them — set it in your shell
+profile for a binding you want in every session.
 
 Only the preset's binds come along: its tool is not started, and it need
 not even be installed. The binds are the preset's own, read-write ones
@@ -343,7 +384,7 @@ It is refused while a session is still using that directory, and with
 
 ## Native display (`--native-display`)
 
-GUI presets (`rstudio`, `eclipse`) normally run under an xpra server inside
+GUI presets (`rstudio`, `eclipse`, `vscode`) normally run under an xpra server inside
 the sandbox: their windows are forwarded to the host, and they never hold a
 connection to the host's X session. That isolation has a usability cost —
 xpra's translation has been reported to break hovers, popups and dialog
@@ -379,10 +420,9 @@ file's presence and content is the entire mechanism, same as
 23119   # zotero local api
 ```
 
-- **Always read-only inside the sandbox**, like `.sandbox/readonly` — only the
-  host side can change it. If it doesn't exist yet, it's created first (just
-  a header comment) rather than left unbound, which would otherwise leave it
-  writable from inside the sandbox in that first session.
+- **Always read-only inside the sandbox**, like the rest of `.sandbox/` —
+  only the host side can change it. A project without one gets a copy of
+  `~/.config/scoder/ports` (all comments by default).
 - **A malformed line fails the session outright**, naming the bad line —
   this is network exposure, not a workspace-protection list, so a config
   file that could silently mean less than it looks like is the wrong
@@ -467,6 +507,54 @@ new projects) or `.sandbox/env` (for an existing one). This replaces the
 fixed list earlier versions passed unconditionally. `--dry-run` writes no
 configuration files, but previews the values a real run would use.
 
+## Environment variables
+
+These change how scoder itself behaves. They are read from the environment
+you start scoder in — none of them is passed into the sandbox (that is
+`.sandbox/env`'s job).
+
+**Behaviour**
+
+| Variable | Effect |
+|----------|--------|
+| `SCODER_NATIVE_DISPLAY=1` | Same as `--native-display`. |
+| `SCODER_BIND` | Same as `--bind`, for each preset named (comma- or space-separated, e.g. `claude,copilot`); added to any `--bind` flags. |
+| `SCODER_LLM_PORT` | The host port probed for a local OpenAI-compatible API at startup (default `11434`, Ollama's). When something answers, the port is forwarded and appended to `.sandbox/ports`. |
+| `SCODER_KEEP_SESSION_TMP` | Any non-empty value keeps the session's temp root (`/tmp/scoder-<id>`) after exit instead of deleting it — the staged files scoder put in front of the sandbox, and the IDE/xpra log. Useful with `--dry-run` to inspect what it built. |
+| `XDG_CONFIG_HOME` | Where the user defaults live: `$XDG_CONFIG_HOME/scoder/`, else `~/.config/scoder/`. |
+
+**GUI presets (xpra)**
+
+| Variable | Effect |
+|----------|--------|
+| `SCODER_XPRA_SERVER_ARGS` | Extra flags appended to the `xpra start` run inside the sandbox, word-split. |
+| `SCODER_XPRA_CLIENT_ARGS` | Extra flags for the host-side xpra client, split on whitespace (so a value cannot itself contain a space), e.g. `--encoding=rgb --video=no`. |
+| `XPRA_*` | Any host variable starting `XPRA_` is forwarded to the xpra server in the sandbox. `XPRA_SCROLL_ENCODING` also applies to the host client, where scoder defaults it to `1`; set it to override. |
+| `GTK_OVERLAY_SCROLLING` | Inherited by GUI presets, so `GTK_OVERLAY_SCROLLING=0` keeps scrollbars visible as on the rest of your desktop. |
+| `RSTUDIO_CHROMIUM_ARGUMENTS` | Forwarded to RStudio, for Chromium flags (e.g. GPU workarounds). |
+
+**Timing** — mostly for the test suite; each is in milliseconds, default `2000`.
+
+| Variable | Effect |
+|----------|--------|
+| `SCODER_AGENTPORTS_POLL_MS` | How often a running session re-reads `.sandbox/ports`. |
+| `SCODER_RESOLVCONF_POLL_MS` | How often it checks the host's DNS configuration for changes. |
+| `SCODER_OVERLAY_POLL_MS` | How often it checks `AGENTS.md` (and other overlaid files) for host edits. |
+| `SCODER_DOUBLE_SIGINT_WINDOW_MS` | A second Ctrl-C within this window force-stops the session instead of passing the interrupt on again. |
+
+**Read from your environment**, not settings: `DISPLAY`, `XAUTHORITY` and
+`WAYLAND_DISPLAY` (for `--native-display`, and to pick the GUI backend);
+`XDG_RUNTIME_DIR`, passed on to GUI presets; `HOME`, `USER`/`LOGNAME`,
+`TERM` and `LANG`, which shape
+the sandbox's own; and `SUDO_USER`/`SUDO_UID`/`SUDO_GID`, so that under
+`sudo` the sandbox runs as you rather than as root.
+
+**Set inside the sandbox** by scoder: `SCODER_SANDBOX=1` (a nested
+`scoder -w` refuses to run; `--no-worktree` still works), `HOME`, `PATH`,
+`USER`, `LOGNAME`, `TERM` and `LANG`, plus `MCPTOOLS_SOCKET_DIR` for
+`rstudio`. Everything else in the sandbox's environment — `SHELL` and
+`EDITOR` included — is there because `.sandbox/env` lists it.
+
 ## After a session
 
 ### Direct mode (default)
@@ -516,11 +604,17 @@ scoder: To discard: git worktree remove <worktree-path> && git branch -D scoder/
 - `git`
 - `ssh` (OpenSSH client) — only needed for `--allow-ssh`
 - `bun` (TypeScript runtime) - install via `curl -fsSL https://bun.sh/install | bash`
+- `xpra` 6.x on the host — only for GUI presets (`rstudio`, `eclipse`,
+  `vscode`) without `--native-display`; `--install-dependencies` installs
+  it from xpra's own repository, pinned to 6.5.3 (6.5.4 breaks scrolling)
 - The tool you want to sandbox (e.g. `opencode`, `copilot`, `claude`)
 - Tool-specific prerequisites must already be set up (and installed globally):
   - `claude`: install via `npm install -g @anthropic-ai/claude-code`
   - `copilot`: install via `npm install -g @github/copilot` or `brew install copilot-cli`, run `gh auth login` first
   - `opencode`: install from https://opencode.ai
+  - `pi`: install from https://pi.dev
+  - `eclipse`: the [import-projects plugin](https://github.com/robchallen/eclipse-import-projects-plugin)
+  - `vscode`: the .deb, .rpm or tarball build (not the snap)
 
 ## Install
 
@@ -565,4 +659,13 @@ scoder: Fix: sudo scoder --configure-apparmor
 sudo ./scoder --install-dependencies
 ```
 
-Installs `bubblewrap` and `passt` via apt.
+Installs `bubblewrap` and `passt` via apt, and adds xpra's own apt
+repository (the distro's xpra is too old or absent) to install `xpra`,
+pinned to 6.5.3.
+
+## Development
+
+```bash
+bun test          # the validation suite (design/test-scripts/validation-suite.md)
+./em check        # typecheck, lint/format, duplication
+```

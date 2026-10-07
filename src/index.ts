@@ -279,14 +279,32 @@ async function main(): Promise<void> {
 	// EM: other way: the tools actually running keep their own values on a
 	// EM: clash, since a bound preset's env exists to serve a process that
 	// EM: is not here.
-	for (const name of new Set(options.bind)) {
+	// EM:
+	// EM: SCODER_BIND is the same request from the environment — for a
+	// EM: binding wanted in every session, set once in a shell profile.
+	// EM: Comma- or space-separated, added to the flags rather than replaced
+	// EM: by them, and held to the same rules. Each name remembers where it
+	// EM: came from so an error names the thing the user actually typed.
+	const bindRequests = [
+		...options.bind.map((name) => ({ name, from: "--bind" })),
+		...(process.env.SCODER_BIND ?? "")
+			.split(/[\s,]+/)
+			.filter(Boolean)
+			.map((name) => ({ name, from: "SCODER_BIND" })),
+	];
+	const seenBinds = new Set<string>();
+	for (const { name, from } of bindRequests) {
+		if (seenBinds.has(name)) {
+			continue;
+		}
+		seenBinds.add(name);
 		if (name === toolName || name === options.ide) {
 			// EM: Its binds are already in, by being launched.
 			continue;
 		}
 		const boundPreset = TOOL_PRESETS[name];
 		if (!boundPreset) {
-			error(`no preset registered for --bind ${name}`);
+			error(`no preset registered for ${from} ${name}`);
 			error(`(the presets are: ${Object.keys(TOOL_PRESETS).join(", ")})`);
 			process.exit(1);
 		}
@@ -296,7 +314,7 @@ async function main(): Promise<void> {
 		// EM: GUI process in the session that is either a dangling socket
 		// EM: dir or, worse, a host-display grant nothing asked for.
 		if (boundPreset.gui) {
-			error(`--bind ${name}: ${name} is a GUI preset`);
+			error(`${from} ${name}: ${name} is a GUI preset`);
 			error(`use --ide ${name} to run it alongside ${toolName}`);
 			process.exit(1);
 		}

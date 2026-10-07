@@ -6,7 +6,7 @@ tags: [prototype, sandbox, network, pasta, uid]
 
 # Prototype: pasta Attach Mode
 
-[IMPLEMENTED_BY](/design/prototypes/pasta-attach-mode.sh)
+[IMPLEMENTED_BY](/design/prototype/pasta-attach-mode.sh)
 
 > **This approach was chosen.** See
 > [ADR 0001](../../architecture/decision-records/0001-sandbox-uid-and-networking-composition.md)
@@ -161,7 +161,7 @@ remains is production concern rather than open design, and is planned in
 ## Running It
 
 ```bash
-./design/prototypes/pasta-attach-mode.sh
+./design/prototype/pasta-attach-mode.sh
 ```
 
 Exits 0 only if every check passes. Self-contained: it starts its own throwaway

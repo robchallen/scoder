@@ -4474,6 +4474,52 @@ test("bind-flag-refuses-gui-and-unknown-presets: --bind names a GUI preset or no
 	}
 });
 
+// ### Test: scoder-bind-env-adds-presets
+// EM: SCODER_BIND is --bind from the environment: names separated by commas
+// EM: or spaces, added to any --bind flags (a preset named by both is bound
+// EM: once), held to the same rules, and an error names SCODER_BIND rather
+// EM: than a flag the user never typed. Throwaway HOME, as for --bind.
+test("scoder-bind-env-adds-presets: SCODER_BIND binds the named presets alongside --bind, once each, and its errors name SCODER_BIND", async () => {
+	const repoDir = await createTempRepo();
+	tempRepos.push(repoDir);
+	const piDir = await createFakeToolDir("pi");
+	const fakeHome = `/tmp/scoder-bind-fake-home-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
+	const env = { PATH: `${piDir}:${process.env.PATH}`, HOME: fakeHome };
+
+	try {
+		await Bun.write(`${fakeHome}/.claude/settings.json`, "{}");
+		await Bun.write(`${fakeHome}/.copilot/config.json`, "{}");
+
+		const run = await runScoderRaw(
+			repoDir,
+			["--dry-run", "--no-worktree", "--bind", "claude", "pi"],
+			{ ...env, SCODER_BIND: "claude, copilot" },
+		);
+		expect(run.code).toBe(0);
+		const flat = flattenDryRun(run.stdout);
+		const claudeBind = `--bind ${fakeHome}/.claude ${fakeHome}/.claude`;
+		expect(flat).toContain(claudeBind);
+		expect(flat.split(claudeBind).length - 1).toBe(1);
+		expect(flat).toContain(`--bind ${fakeHome}/.copilot ${fakeHome}/.copilot`);
+		expect(flat).toContain(`-- ${piDir}/pi\n`);
+		expect(run.stderr).toContain("Binding Claude Code's paths");
+		expect(run.stderr).toContain("Binding GitHub Copilot CLI's paths");
+
+		const gui = await runScoderRaw(
+			repoDir,
+			["--dry-run", "--no-worktree", "pi"],
+			{ ...env, SCODER_BIND: "rstudio" },
+		);
+		expect(gui.code).not.toBe(0);
+		expect(gui.stderr).toContain(
+			"SCODER_BIND rstudio: rstudio is a GUI preset",
+		);
+	} finally {
+		await Bun.spawn(["rm", "-rf", piDir, fakeHome]).exited;
+		await cleanupRepo(repoDir);
+	}
+});
+
 // ### Test: ide-must-differ-from-primary-tool
 test("ide-must-differ-from-primary-tool: --ide naming the same tool as the primary fails clearly", async () => {
 	const repoDir = await createTempRepo();

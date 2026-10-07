@@ -7,7 +7,7 @@ tags: [plan, sandbox, network, pasta, uid]
 # Implementing pasta Attach Mode
 
 > **Ready to implement.** Every design question is closed and each answer is
-> verified by [pasta-attach-mode](../../prototypes/pasta-attach-mode.sh), which
+> verified by [pasta-attach-mode](../../prototype/pasta-attach-mode.sh), which
 > rehearses the production shape and exits 0. Decision and rationale in
 > [ADR 0001](../../../architecture/decision-records/0001-sandbox-uid-and-networking-composition.md);
 > the defect in [sandbox-uid-becomes-root](../issues/sandbox-uid-becomes-root.md).

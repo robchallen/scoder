@@ -7,7 +7,7 @@ tags: [plan, sandbox, uid, nss, ssh]
 # Accept root uid in the Sandbox
 
 > **Rejected** in favour of
-> [pasta-attach-mode](../../prototypes/pasta-attach-mode.md). See
+> [pasta-attach-mode](../../prototype/pasta-attach-mode.md). See
 > [ADR 0001](../../../architecture/decision-records/0001-sandbox-uid-and-networking-composition.md)
 > for the reasoning: the sandbox should resemble an ordinary home directory
 > rather than a root shell, and attach mode leaves room to change forwarded
@@ -183,7 +183,7 @@ clean it up on exit, matching the other snapshots.
 - Rewrite the resolution section of
   [sandbox-uid-becomes-root](../issues/sandbox-uid-becomes-root.md): option 3
   becomes the chosen route, option 1 becomes a rejected alternative.
-- Mark [pasta-attach-mode](../../prototypes/pasta-attach-mode.md) as a rejected
+- Mark [pasta-attach-mode](../../prototype/pasta-attach-mode.md) as a rejected
   alternative, retaining it as evidence rather than deleting it.
 
 ## Comparison with Attach Mode

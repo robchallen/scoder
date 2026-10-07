@@ -92,7 +92,7 @@ Each is a structural change to how pasta and bwrap compose, not a flag tweak.
    pasta from outside by PID. Keeps bwrap's uid mapping authoritative.
 
    **Prototyped and working** — see
-   [pasta-attach-mode](../../prototypes/pasta-attach-mode.md). The uid comes out
+   [pasta-attach-mode](../../prototype/pasta-attach-mode.md). The uid comes out
    as the host uid with `uid_map` of `1001 1001 1`, and both raw TCP and DNS
    work. The startup race is closed with bwrap's `--info-fd` (which publishes
    the child PID) and `--block-fd` (which holds the exec until pasta has

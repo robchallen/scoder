@@ -27,7 +27,7 @@ tags: [test-script, validation]
 
 `tests/scoder.test.ts` is a self-contained integration test suite that creates
 temporary git repositories under `/tmp`, runs `scoder` against them using
-`/bin/bash` as the sandboxed command, and asserts expected behaviour. 149
+`/bin/bash` as the sandboxed command, and asserts expected behaviour. 150
 tests cover all sandbox mechanics — this catalog is currently behind the
 actual implemented count (see the note under case 113) due to other,
 unrelated in-progress work; not fixed here.
@@ -1435,6 +1435,14 @@ does not reach a project that already has the file.
 
 `--dry-run` creates no configuration at either level, yet its preview uses
 the user's `env` list when the project has none yet.
+
+### 140. scoder-bind-env-adds-presets
+[TESTED_BY](/tests/scoder.test.ts#testScoderBindEnvAddsPresets)
+
+`SCODER_BIND="claude, copilot"` with `--bind claude` binds both presets'
+paths and launches only pi; Claude Code's bind appears once despite being
+named twice. `SCODER_BIND=rstudio` is refused, the error naming
+`SCODER_BIND` rather than `--bind`.
 
 ## Current Network Coverage
 

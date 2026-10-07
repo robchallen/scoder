@@ -51,7 +51,8 @@ Options:
                             claude puts ~/.claude and the rest of Claude
                             Code's paths in pi's sandbox. Repeatable. CLI
                             presets only — a GUI preset brings a display,
-                            which is --ide's job
+                            which is --ide's job. SCODER_BIND=NAME[,NAME...]
+                            does the same from the environment
        --new-workspace     Delete this project's scoder-managed eclipse
                             workspace / vscode user-data-dir before launch,
                             so it is re-created fresh from your host

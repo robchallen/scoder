@@ -318,6 +318,29 @@ preset name, so a tool's own `--bind` (`scoder python3 -m http.server --bind
 `vscode`) are refused: their binds include a display, which only makes
 sense with the GUI running — use `--ide` for that.
 
+## Starting a project's IDE state over (`--new-workspace`)
+
+`eclipse` and `vscode` keep per-project state between sessions in
+directories scoder manages — an Eclipse workspace under
+`~/.local/share/scoder-eclipse-workspaces/`, a VS Code user-data-dir under
+`~/.local/share/scoder-vscode-userdata/` — seeded once from your host
+settings and never re-seeded, so changes made inside the sandbox stick.
+`--new-workspace` throws that state away for the current project before
+launch, and it is re-created from your host settings as on a first run:
+
+```bash
+scoder eclipse --new-workspace
+scoder pi --ide vscode --new-workspace     # works for the --ide companion too
+```
+
+What goes: Eclipse's `.metadata` (preferences, launch configurations,
+breakpoints, local history — the project itself is imported in place, so
+its files are untouched), or everything in the VS Code user-data-dir
+(settings, UI state, remembered prompts). What stays: your host's own
+`~/.eclipse`, `~/.config/Code`, `~/.vscode/extensions` and `~/.continue`.
+It is refused while a session is still using that directory, and with
+`--dry-run` it only reports what it would delete.
+
 ## Native display (`--native-display`)
 
 GUI presets (`rstudio`, `eclipse`) normally run under an xpra server inside

@@ -52,6 +52,12 @@ Options:
                             Code's paths in pi's sandbox. Repeatable. CLI
                             presets only — a GUI preset brings a display,
                             which is --ide's job
+       --new-workspace     Delete this project's scoder-managed eclipse
+                            workspace / vscode user-data-dir before launch,
+                            so it is re-created fresh from your host
+                            settings. Applies to eclipse and vscode, as the
+                            tool or as --ide; refused while a session is
+                            using it
        --dry-run           Print the bwrap command without executing
 
 Setup (run once, requires sudo):
@@ -87,6 +93,7 @@ export function parseArgs(args: string[]): ParseResult {
 		worktree: false,
 		sshTarget: null,
 		ide: null,
+		newWorkspace: false,
 		bind: [],
 		nativeDisplay: false,
 	};
@@ -211,6 +218,12 @@ export function parseArgs(args: string[]): ParseResult {
 			continue;
 		}
 
+		if (arg === "--new-workspace") {
+			options.newWorkspace = true;
+			i++;
+			continue;
+		}
+
 		if (arg.startsWith("--bind=")) {
 			options.bind.push(arg.slice("--bind=".length));
 			i++;
@@ -266,6 +279,7 @@ export function parseArgs(args: string[]): ParseResult {
 			options.ide = extracted.ide;
 		}
 		options.bind.push(...extracted.bind);
+		options.newWorkspace ||= extracted.newWorkspace;
 		toolArgs = extracted.remaining;
 		break;
 	}
@@ -281,6 +295,7 @@ export function parseArgs(args: string[]): ParseResult {
 
 interface ExtractedScoderFlags {
 	ide: string | null;
+	newWorkspace: boolean;
 	bind: string[];
 	remaining: string[];
 	error: string | null;
@@ -302,6 +317,7 @@ function extractScoderFlags(args: string[]): ExtractedScoderFlags {
 	const remaining: string[] = [];
 	const bind: string[] = [];
 	let ide: string | null = null;
+	let newWorkspace = false;
 
 	for (let i = 0; i < args.length; i++) {
 		const arg = args[i];
@@ -315,6 +331,7 @@ function extractScoderFlags(args: string[]): ExtractedScoderFlags {
 			if (i + 1 >= args.length) {
 				return {
 					ide: null,
+					newWorkspace: false,
 					bind: [],
 					remaining: [],
 					error: "--ide requires a tool name",
@@ -322,6 +339,14 @@ function extractScoderFlags(args: string[]): ExtractedScoderFlags {
 			}
 			ide = args[i + 1];
 			i++;
+			continue;
+		}
+
+		// EM: Taken after the tool name too (`scoder eclipse
+		// EM: --new-workspace` is the natural spelling); neither IDE has a
+		// EM: flag of that name for it to shadow.
+		if (arg === "--new-workspace") {
+			newWorkspace = true;
 			continue;
 		}
 
@@ -342,7 +367,7 @@ function extractScoderFlags(args: string[]): ExtractedScoderFlags {
 		remaining.push(arg);
 	}
 
-	return { ide, bind, remaining, error: null };
+	return { ide, newWorkspace, bind, remaining, error: null };
 }
 
 function isPresetName(name: string | undefined): name is string {

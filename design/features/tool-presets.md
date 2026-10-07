@@ -49,6 +49,20 @@ too: `--bind claude` opens the same host write surface described for
 `~/.claude` below. After the tool name, `--bind X` is claimed only when X
 is a registered preset, because `--bind` is a common flag of other tools.
 
+`eclipse` and `vscode` also carry `managedWorkspaceDir(hostProjectDir)`:
+the host path of their scoder-managed per-project state (eclipse's
+workspace, vscode's user-data-dir), computed by the same
+`managedProjectDir` helper their layout resolvers use, so the two cannot
+disagree. `--new-workspace` deletes that directory before any
+`configBinds` runs; the resolver then finds it missing and takes its
+ordinary first-run path — create, seed from the host — so there is no
+separate reset logic. `src/tools/new-workspace.ts` refuses a path not
+strictly inside a `~/.local/share/scoder-*` root, and refuses while any
+process has the directory in its argv (`-data DIR`, `--user-data-dir
+DIR`): scoder shares the host's PID namespace, so a sandboxed IDE is
+visible there, and deleting under a live instance would leave it writing
+into a half-removed tree.
+
 Every preset has an async function pair:
 - `configBinds(realHome, sandboxHome)` — returns bind mounts and directory specs
 - `validate()` — checks tool is installed, prints install instructions if missing

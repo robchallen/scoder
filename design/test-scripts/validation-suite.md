@@ -27,7 +27,7 @@ tags: [test-script, validation]
 
 `tests/scoder.test.ts` is a self-contained integration test suite that creates
 temporary git repositories under `/tmp`, runs `scoder` against them using
-`/bin/bash` as the sandboxed command, and asserts expected behaviour. 145
+`/bin/bash` as the sandboxed command, and asserts expected behaviour. 149
 tests cover all sandbox mechanics — this catalog is currently behind the
 actual implemented count (see the note under case 113) due to other,
 unrelated in-progress work; not fixed here.
@@ -1386,6 +1386,34 @@ preset's binds carry a display grant that only makes sense with its GUI
 running). Before the tool name, `--bind nosuchtool` fails as an unknown
 preset rather than being silently dropped.
 
+### 133. new-workspace-path-guard
+[TESTED_BY](/tests/scoder.test.ts#testNewWorkspacePathGuard)
+
+The check in front of `--new-workspace`'s delete: accepted only strictly
+inside a `~/.local/share/scoder-*` root; refused for the root itself, other
+`~/.local/share` dirs, `~/.eclipse`, `$HOME`, a `..` escape, and another
+user's home.
+
+### 134. new-workspace-reseeds-vscode-from-host
+[TESTED_BY](/tests/scoder.test.ts#testNewWorkspaceReseedsVscodeFromHost)
+
+With a throwaway `HOME`: a session's settings edit survives as designed;
+`--dry-run --new-workspace` reports "would delete" and changes nothing; the
+reset deletes the user-data-dir, and the next setup re-seeds it from the
+host's current settings, not the session's edit.
+
+### 135. new-workspace-refuses-while-in-use
+[TESTED_BY](/tests/scoder.test.ts#testNewWorkspaceRefusesWhileInUse)
+
+A process with the workspace in its argv (`-data DIR`, as Eclipse is
+launched) blocks the reset and nothing is deleted; once it exits, the
+reset goes ahead.
+
+### 136. new-workspace-needs-a-managed-preset
+[TESTED_BY](/tests/scoder.test.ts#testNewWorkspaceNeedsAManagedPreset)
+
+`--new-workspace` in a session with neither eclipse nor vscode (as tool or
+`--ide`) is a named error listing the presets it applies to.
 ### 137. env-file-controls-passthrough
 [TESTED_BY](/tests/scoder.test.ts#testEnvFileControlsPassthrough)
 

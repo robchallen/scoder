@@ -59,6 +59,10 @@ Options:
                             settings. Applies to eclipse and vscode, as the
                             tool or as --ide; refused while a session is
                             using it
+       --env NAME=VALUE    Set NAME to VALUE inside the sandbox, for this
+                            session only. Repeatable. Overrides what
+                            .sandbox/env passes through for that name.
+                            Before the tool name only
        --dry-run           Print the bwrap command without executing
 
 Setup (run once, requires sudo):
@@ -95,6 +99,7 @@ export function parseArgs(args: string[]): ParseResult {
 		sshTarget: null,
 		ide: null,
 		newWorkspace: false,
+		setEnv: [],
 		bind: [],
 		nativeDisplay: false,
 	};
@@ -222,6 +227,27 @@ export function parseArgs(args: string[]): ParseResult {
 		if (arg === "--new-workspace") {
 			options.newWorkspace = true;
 			i++;
+			continue;
+		}
+
+		// EM: --env is parsed before the tool name only, like --allow-ssh:
+		// EM: after it, `--env` is the tool's own flag as often as not
+		// EM: (`docker run --env`), and taking it would silently steal it.
+		if (arg === "--env" || arg.startsWith("--env=")) {
+			const spec = arg === "--env" ? args[i + 1] : arg.slice("--env=".length);
+			const parsed = parseEnvAssignment(spec);
+			if (!parsed) {
+				return {
+					options,
+					toolName: null,
+					toolArgs: [],
+					showHelp: false,
+					showVersion: false,
+					error: `--env must be NAME=VALUE, with NAME a valid environment variable name${spec === undefined ? "" : ` (got "${spec}")`}`,
+				};
+			}
+			options.setEnv.push(parsed);
+			i += arg === "--env" ? 2 : 1;
 			continue;
 		}
 
@@ -373,6 +399,23 @@ function extractScoderFlags(args: string[]): ExtractedScoderFlags {
 
 function isPresetName(name: string | undefined): name is string {
 	return name !== undefined && Object.hasOwn(TOOL_PRESETS, name);
+}
+
+// ### parseEnvAssignment
+// "NAME=VALUE" into its parts: split at the first "=", so the value may
+// itself contain "=" (a base64 token, a URL query) and may be empty.
+function parseEnvAssignment(
+	spec: string | undefined,
+): { name: string; value: string } | null {
+	const eq = spec?.indexOf("=") ?? -1;
+	if (spec === undefined || eq < 1) {
+		return null;
+	}
+	const name = spec.slice(0, eq);
+	if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) {
+		return null;
+	}
+	return { name, value: spec.slice(eq + 1) };
 }
 
 // EM: Shape validation only — a plausible "user@host", not proof it resolves.

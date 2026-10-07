@@ -11,6 +11,9 @@ export interface ScoderOptions {
 	// EM: (eclipse workspace, vscode user-data-dir) before setup, so it is
 	// EM: re-seeded fresh from the host.
 	newWorkspace: boolean;
+	// EM: --env NAME=VALUE (repeatable): set in this session's sandbox only,
+	// EM: in the order given; a later --env for the same name wins.
+	setEnv: Array<{ name: string; value: string }>;
 	// EM: --bind NAME (repeatable): presets whose config binds join the
 	// EM: sandbox without the preset's tool being launched.
 	bind: string[];

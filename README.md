@@ -23,6 +23,7 @@ on a separate git branch via a worktree.
 | `eclipse` | Eclipse IDE, an xpra-forwarded window, and a persisted per-project workspace (see below) |
 | `vscode` | VS Code, an xpra-forwarded window, and a managed per-project user-data-dir (see below) |
 | `vscodium` | VSCodium, set up exactly like `vscode` but with its own paths (see below) |
+| `webstorm` | WebStorm, an xpra-forwarded window, and a managed per-project config and cache (see below) |
 
 
 GUI presets don't see the host's X server at all. Each runs under an
@@ -83,6 +84,22 @@ from `~/.config/VSCodium/User`, binds `~/.vscode-oss/extensions`
 read-only, and keeps its managed user-data-dirs under
 `~/.local/share/scoder-vscodium-userdata/`. Nothing of VS Code's is read
 or bound, so the two never share state.
+
+**`webstorm`** follows the same pattern in JetBrains' terms. Each project
+gets `~/.local/share/scoder-webstorm/<project>/`: its `config/` copied
+**once** from your newest `~/.config/JetBrains/WebStorm*` (lock and port
+files left out), and its `system/` (caches and indexes, kept so the project
+isn't re-indexed every session). Plugins come read-only from the matching
+`~/.local/share/JetBrains/WebStorm*` — install them on the host. scoder
+points WebStorm at all of this by shadowing the install's own
+`bin/idea.properties` inside the sandbox with a copy that adds its paths
+(your installed file is untouched), and pre-answers the "Trust this
+project?" question. Your answers to the licence-agreement and
+usage-statistics dialogs are shared by all JetBrains IDEs and stored outside
+the config dir, so they are bound read-only from your host
+(`~/.java/.userPrefs/jetbrains`, `~/.local/share/JetBrains/consentOptions`). Your host WebStorm can run at the same time. WebStorm writes its
+own `.idea/` into the project, as it always does. The snap build is
+refused — use the tarball.
 
 ## How it works
 
@@ -218,11 +235,13 @@ scoder --dry-run opencode         # show bwrap command without running
     --allow-ssh USER@HOST  Open a single pre-authenticated ssh connection to
                          USER@HOST outside the sandbox, and expose only that
                          one connection inside it
-    --ide NAME          Run preset NAME (rstudio, eclipse, vscode, vscodium) as a
+    --ide NAME          Run preset NAME (rstudio, eclipse, vscode, vscodium,
+                         webstorm) as a
                          companion IDE in the same sandbox (see below)
     --bind NAME         Add CLI preset NAME's config binds without
                          launching it; repeatable (see below)
-    --new-workspace     Reset this project's managed eclipse/vscode/vscodium state
+    --new-workspace     Reset this project's managed eclipse/vscode/vscodium/
+                         webstorm state
                          before launch (see below)
     --native-display    For a GUI preset, draw on the host's X session
                          directly instead of forwarding windows from a
@@ -301,7 +320,7 @@ unfamiliar host key.
 ## A companion IDE (`--ide`)
 
 `--ide NAME` launches `NAME` (must have a registered preset — `rstudio`,
-`eclipse`, `vscode` and `vscodium`, following the same pattern as other tool presets)
+`eclipse`, `vscode`, `vscodium` and `webstorm`, following the same pattern as other tool presets)
 as a companion alongside the primary tool, both inside the *same* sandbox:
 
 ```bash
@@ -365,12 +384,12 @@ whatever the agent writes there takes effect the next time you run
 After the tool name, `--bind` is taken as scoder's only when its value is a
 preset name, so a tool's own `--bind` (`scoder python3 -m http.server --bind
 0.0.0.0`) passes through untouched. GUI presets (`rstudio`, `eclipse`,
-`vscode`, `vscodium`) are refused: their binds include a display, which only makes
+`vscode`, `vscodium`, `webstorm`) are refused: their binds include a display, which only makes
 sense with the GUI running — use `--ide` for that.
 
 ## Starting a project's IDE state over (`--new-workspace`)
 
-`eclipse`, `vscode` and `vscodium` keep per-project state between sessions in
+`eclipse`, `vscode`, `vscodium` and `webstorm` keep per-project state between sessions in
 directories scoder manages — an Eclipse workspace under
 `~/.local/share/scoder-eclipse-workspaces/`, a VS Code user-data-dir under
 `~/.local/share/scoder-vscode-userdata/` — seeded once from your host
@@ -393,7 +412,7 @@ It is refused while a session is still using that directory, and with
 
 ## Native display (`--native-display`)
 
-GUI presets (`rstudio`, `eclipse`, `vscode`, `vscodium`) normally run under an xpra server inside
+GUI presets (`rstudio`, `eclipse`, `vscode`, `vscodium`, `webstorm`) normally run under an xpra server inside
 the sandbox: their windows are forwarded to the host, and they never hold a
 connection to the host's X session. That isolation has a usability cost —
 xpra's translation has been reported to break hovers, popups and dialog
@@ -632,7 +651,7 @@ scoder: To discard: git worktree remove <worktree-path> && git branch -D scoder/
 - `ssh` (OpenSSH client) — only needed for `--allow-ssh`
 - `bun` (TypeScript runtime) - install via `curl -fsSL https://bun.sh/install | bash`
 - `xpra` 6.x on the host — only for GUI presets (`rstudio`, `eclipse`,
-  `vscode`, `vscodium`) without `--native-display`; `--install-dependencies` installs
+  `vscode`, `vscodium`, `webstorm`) without `--native-display`; `--install-dependencies` installs
   it from xpra's own repository, pinned to 6.5.3 (6.5.4 breaks scrolling)
 - The tool you want to sandbox (e.g. `opencode`, `copilot`, `claude`)
 - Tool-specific prerequisites must already be set up (and installed globally):

@@ -114,6 +114,31 @@ history around the moment a new line appears.
    whether to commit it bundled with that other work or split out — not
    yet resolved as of this writing.
 
+## Recurrence (2026-10-08)
+
+Reported again, now described as "spamming" the terminal rather than six
+lines in a session, with the user's guess that RStudio's autocomplete is
+the trigger (consistent with the earlier "while editing" correlation):
+
+```
+rsession-vp22681[26854]: ERROR jsonrpc error 6 (Invalid json-rpc request); OCCURRED AT rstudio::core::Error rstudio::core::json::parseJsonRpcRequest(const string&, rstudio::core::json::JsonRpcRequest*) src/cpp/core/json/JsonRpc.cpp:43; LOGGED FROM: void rstudio::core::gwt::handleLogRequest(const string&, const rstudio::core::http::Request&, rstudio::core::http::Response*) src/cpp/core/gwt/GwtLogHandler.cpp:262
+```
+
+Context that has changed since the original report, and matters:
+
+- The session ran under xpra (RStudio as the GUI child), where the IDE's
+  stdout/stderr go to the xpra log, not the terminal — and setsid has been
+  in place since. A line still reaching the terminal therefore did not
+  travel over RStudio's own stdout/stderr.
+- `rsession-<user>[pid]:` is syslog's tag format. A plausible third
+  channel is RStudio logging via syslog: `/dev/log` is not bound into the
+  sandbox, so the call either fails silently or something prints a
+  fallback to a tty. Worth checking first: rsession's logging config
+  (`logging.conf`, `log-level`, `logger-type`) and whether forcing
+  `logger-type=file` stops the terminal lines.
+- Branch at the time: `test/vscode-inmemory-secrets` (throwaway keyring
+  trial), not believed related.
+
 ## Testing
 
 No new test needed for this specific issue while unconfirmed — the fix

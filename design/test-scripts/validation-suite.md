@@ -27,7 +27,7 @@ tags: [test-script, validation]
 
 `tests/scoder.test.ts` is a self-contained integration test suite that creates
 temporary git repositories under `/tmp`, runs `scoder` against them using
-`/bin/bash` as the sandboxed command, and asserts expected behaviour. 153
+`/bin/bash` as the sandboxed command, and asserts expected behaviour. 155
 tests cover all sandbox mechanics — this catalog is currently behind the
 actual implemented count (see the note under case 113) due to other,
 unrelated in-progress work; not fixed here.
@@ -1465,6 +1465,23 @@ sets itself (`HOME`).
 `--env NOEQUALS`, `--env 1BAD=x`, `--env =x` and a bare `--env` fail with
 "`--env must be NAME=VALUE`"; after the tool name, `--env FOO=bar` stays
 in the tool's argv and sets nothing.
+
+### 144. browser-mimeapps-web-defaults-rewritten
+[TESTED_BY](/tests/scoder.test.ts#testBrowserMimeappsWebDefaultsRewritten)
+
+The staged `mimeapps.list` for `SCODER_BROWSER`: the host's web defaults
+(`x-scheme-handler/http`, `/https`, `text/html`) replaced with scoder's
+entry, other defaults and `[Added Associations]` kept, and the section
+added when the host has none. Needed because `xdg-open` consults these
+before `$BROWSER` (checked against xdg-utils' generic path).
+
+### 145. browser-env-stages-wrapper-and-binds
+[TESTED_BY](/tests/scoder.test.ts#testBrowserEnvStagesWrapperAndBinds)
+
+With `SCODER_BROWSER` set, a dry-run sets `BROWSER=/tmp/scoder-browser`,
+binds the wrapper (each word single-quoted, then `"$@"`), the desktop
+entry, and the staged `mimeapps.list` after the host's own bind of the same
+path; unset, none of it appears.
 
 ## Current Network Coverage
 

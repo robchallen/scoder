@@ -124,6 +124,38 @@ XPRA_LOG="${XPRA_LOG:-/tmp/scoder-xpra.log}"
 # `/dev/fd/63: No such file or directory`, which does not obviously point at
 # the missing symlink. Command substitution `$(...)` is a pipe and works fine,
 # which is why the --start-child quoting below is unaffected.
+# --- a throwaway keyring for the GUI program ------------------------------
+# Trial. Anything that asks the Secret Service for a store (Chrome inside
+# RStudio, libsecret users) otherwise D-Bus-activates gnome-keyring on the
+# private bus, which then raises a "create a new keyring" dialog. Starting
+# the daemon first, unlocked with a random password nobody ever needs, gives
+# them an empty store with no dialog. It lives under $HOME, the sandbox's
+# tmpfs, so it is new each session and gone at the end.
+#
+# Random, not empty: measured (gnome-keyring 50), an empty --unlock password
+# creates no "login" keyring at all, and the first store falls back to the
+# prompter — the very dialog this exists to avoid. With any non-empty
+# password the keyring is created and unlocked, and secret-tool store and
+# lookup work with no prompter started.
+#
+# A prefix on the GUI program's own command line, because the daemon must
+# register on the bus that program uses, and only its environment knows the
+# address. It execs the program, so the pid xpra and the ENTER handshake
+# track is unchanged. Without gnome-keyring installed it is a no-op.
+# Written to a file, not passed as `bash -c SCRIPT`: xpra's --start-child
+# is not parsed by bash, and a multi-line script %q-quotes to bash's own
+# $'...' form, which xpra mangled into garbage (reported: `thenntthead:
+# command not found`, RStudio never started). A path quotes trivially.
+TEMP_KEYRING_SCRIPT=/tmp/scoder-keyring.sh
+cat >"$TEMP_KEYRING_SCRIPT" <<'KEYRING'
+if command -v gnome-keyring-daemon >/dev/null; then
+	head -c 24 /dev/urandom | base64 |
+		gnome-keyring-daemon --unlock --components=secrets >/dev/null 2>&1
+fi
+exec "$@"
+KEYRING
+TEMP_KEYRING=(bash "$TEMP_KEYRING_SCRIPT")
+
 XPRA_WRAPPED=()
 xpra_wrap() {
 	# --exit-with-children=yes ties the server's lifetime to the child's, so
@@ -193,7 +225,7 @@ xpra_wrap() {
 		"--bind=$XPRA_SOCKET"
 		--daemon=no
 		--exit-with-children=yes
-		"--start-child=$(printf '%q ' "$@")"
+		"--start-child=$(printf '%q ' "${TEMP_KEYRING[@]}" "$@")"
 		# Forwarded to the client, which raises them on the user's real
 		# desktop. This is the whole of what the sandbox gets to say to the
 		# host's desktop, and it travels down the display connection rather
@@ -207,6 +239,12 @@ xpra_wrap() {
 		# without any of it reaching the host.
 		--notifications=yes
 		--printing=no
+		# Off: xpra's default intercepts xdg-open inside the session and
+		# offers to open the URL on the host's own desktop instead — a dialog
+		# reported as unexpected once SCODER_BROWSER gave the sandbox its own
+		# browser, and a path from sandbox to host that should not exist
+		# anyway: anything in the sandbox could make the host open any URL.
+		--forward-xdg-open=no
 		--input-method=keep
 		"--mmap=${XPRA_MMAP:-yes}"
 		--audio=no
@@ -324,7 +362,7 @@ if [ ${#IDE_ARGV[@]} -gt 0 ]; then
 		# EM: only the IDE's tree inherits the address (setsid execs into the
 		# EM: IDE, so the assignment is inherited by it and its children).
 		DBUS_SESSION_BUS_ADDRESS="$BUS_ADDRESS" \
-			setsid "${IDE_ARGV[@]}" </dev/null >"$IDE_LOG" 2>&1 &
+			setsid "${TEMP_KEYRING[@]}" "${IDE_ARGV[@]}" </dev/null >"$IDE_LOG" 2>&1 &
 	elif [ -n "$XPRA_SOCKET" ] && [ "$XPRA_TARGET" != harness ]; then
 		setsid "${IDE_ARGV[@]}" </dev/null >"$XPRA_LOG" 2>&1 &
 	else

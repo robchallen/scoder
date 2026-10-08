@@ -57,6 +57,11 @@ The sandbox shape:
   choices, priorities, auto/manual mode) under `/var/lib`, which nothing
   else mounts. See
   [design/implementation/issues/update-alternatives-state-not-mounted.md](/design/implementation/issues/update-alternatives-state-not-mounted.md).
+- `/dev/console` — bound to `/dev/null`. bwrap's `--dev` otherwise binds the
+  user's terminal there whenever its stdout is a tty, and `syslog()` with
+  `LOG_CONS` falls back to `/dev/console` when there is no `/dev/log` —
+  which is how RStudio's rsession errors reached pi's terminal (see
+  [the issue](../implementation/issues/rstudio-jsonrpc-error-in-pi-terminal.md)).
 - `/dev` — **two bwrap layers**, not one. The *outer* layer
   (`buildDevLayer` in `src/sandbox/builder.ts`) owns `/dev` and nothing
   else: it binds the real root straight through, unshares only the user

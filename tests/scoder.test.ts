@@ -2894,6 +2894,30 @@ test("browser-env-stages-wrapper-and-binds: SCODER_BROWSER sets BROWSER and bind
 	}
 });
 
+// ### Test: dev-console-is-dev-null
+// EM: bwrap's --dev binds the host terminal at /dev/console when stdout is
+// EM: a tty, and syslog(LOG_CONS) falls back to /dev/console with no
+// EM: /dev/log — which is how RStudio's rsession errors reached pi's
+// EM: terminal (measured: python's syslog with LOG_CONS under bwrap printed
+// EM: `ident[pid]: msg` to the pty; with this bind, nothing). The bind must
+// EM: follow the inner layer's --dev-bind /dev /dev, or that remounts over it.
+test("dev-console-is-dev-null: /dev/console inside the sandbox is /dev/null, bound after /dev itself", async () => {
+	const repoDir = await createTempRepo();
+	tempRepos.push(repoDir);
+
+	try {
+		const flat = flattenDryRun(
+			await runScoder(repoDir, ["--dry-run", "/bin/bash"]),
+		);
+		const devBind = flat.indexOf("--dev-bind /dev /dev");
+		const consoleBind = flat.indexOf("--dev-bind /dev/null /dev/console");
+		expect(devBind).toBeGreaterThan(-1);
+		expect(consoleBind).toBeGreaterThan(devBind);
+	} finally {
+		await cleanupRepo(repoDir);
+	}
+});
+
 // ### Test: dry-run-uses-pasta
 test("dry-run-uses-pasta: Dry-run output includes pasta in command", async () => {
 	const repoDir = await createTempRepo();

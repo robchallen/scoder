@@ -1,6 +1,6 @@
 ---
 target-version: 2.5.0
-status: draft
+status: resolved
 tags: [issue, sandbox, rstudio, ide-companion, logging]
 ---
 
@@ -138,6 +138,31 @@ Context that has changed since the original report, and matters:
   `logger-type=file` stops the terminal lines.
 - Branch at the time: `test/vscode-inmemory-secrets` (throwaway keyring
   trial), not believed related.
+
+## Resolution (2026-10-08)
+
+Root cause found, and it is scoder's: **`/dev/console` inside the sandbox
+was the user's terminal.**
+
+- bwrap's `--dev` binds the host tty at `/dev/console` whenever its stdout
+  is a tty (bubblewrap.c: "makes ttyname() work in the sandbox"), which
+  for an interactive session it always is.
+- rsession logs to syslog as well as to its file log (the
+  `rsession-<user>[pid]:` prefix is syslog's ident/pid tag). The sandbox
+  has no `/dev/log`, so glibc's `syslog()` with `LOG_CONS` falls back to
+  writing `/dev/console` — pi's terminal.
+- Checked on the reporting machine: rsession's fd 1 and 2 were both pipes,
+  ruling out its own stdio. Reproduced in the dev container: Python's
+  `syslog` with `LOG_CONS` under bwrap printed `rsession-test[pid]: …` to
+  the pty; with the fix, nothing.
+
+The trigger (the GWT client posting a log request rsession cannot parse,
+on every autocomplete selection change) is an RStudio bug and left alone;
+only its route to the terminal was scoder's.
+
+**Fix:** the inner layer binds `/dev/null` at `/dev/console`, after its
+`--dev-bind /dev /dev`. Console writes are accepted and dropped, for every
+program, not only RStudio. Test: `dev-console-is-dev-null`.
 
 ## Testing
 

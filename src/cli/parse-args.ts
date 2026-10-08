@@ -56,7 +56,7 @@ Options:
        --new-workspace     Delete this project's scoder-managed eclipse
                             workspace / vscode user-data-dir before launch,
                             so it is re-created fresh from your host
-                            settings. Applies to eclipse and vscode, as the
+                            settings. Applies to eclipse, vscode and vscodium, as the
                             tool or as --ide; refused while a session is
                             using it
        --env NAME=VALUE    Set NAME to VALUE inside the sandbox, for this

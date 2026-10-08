@@ -27,7 +27,7 @@ tags: [test-script, validation]
 
 `tests/scoder.test.ts` is a self-contained integration test suite that creates
 temporary git repositories under `/tmp`, runs `scoder` against them using
-`/bin/bash` as the sandboxed command, and asserts expected behaviour. 156
+`/bin/bash` as the sandboxed command, and asserts expected behaviour. 157
 tests cover all sandbox mechanics — this catalog is currently behind the
 actual implemented count (see the note under case 113) due to other,
 unrelated in-progress work; not fixed here.
@@ -1490,6 +1490,14 @@ path; unset, none of it appears.
 `--dev-bind /dev /dev`. bwrap otherwise binds the user's terminal there,
 and `syslog(LOG_CONS)` with no `/dev/log` writes to it — how RStudio's
 rsession errors reached pi's terminal.
+
+### 147. vscodium-preset-uses-its-own-paths
+[TESTED_BY](/tests/scoder.test.ts#testVscodiumPresetUsesItsOwnPaths)
+
+With a throwaway `HOME` holding both editors' state: `vscodium` runs
+`codium` with its own managed user-data-dir and `~/.vscode-oss/extensions`,
+seeds from `~/.config/VSCodium/User` (not `~/.config/Code`), and nothing of
+VS Code's — `~/.vscode`, `scoder-vscode-userdata` — is bound or created.
 
 ## Current Network Coverage
 

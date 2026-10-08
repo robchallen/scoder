@@ -3683,6 +3683,63 @@ test("new-workspace-needs-a-managed-preset: --new-workspace with no eclipse or v
 	}
 });
 
+// ### Test: vscodium-preset-uses-its-own-paths
+// EM: VSCodium is the vscode preset with VSCodium's paths: `codium`, a seed
+// EM: from ~/.config/VSCodium/User, extensions from ~/.vscode-oss, and a
+// EM: managed user-data-dir root of its own — nothing of VS Code's is read
+// EM: or bound. Throwaway HOME holding both editors' state to tell apart.
+test("vscodium-preset-uses-its-own-paths: codium, ~/.config/VSCodium seed, ~/.vscode-oss extensions, its own managed dir, none of VS Code's", async () => {
+	const repoDir = await createTempRepo();
+	tempRepos.push(repoDir);
+	const fakeBinDir = await createFakeToolDir("codium");
+	const fakeHome = `/tmp/scoder-codium-home-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
+	const managedDir = `${fakeHome}/.local/share/scoder-vscodium-userdata/${repoDir.slice(1)}`;
+	const extensionsDir = `${fakeHome}/.vscode-oss/extensions`;
+
+	try {
+		await Bun.write(
+			`${fakeHome}/.config/VSCodium/User/settings.json`,
+			'{"from":"codium"}',
+		);
+		await Bun.write(
+			`${fakeHome}/.config/Code/User/settings.json`,
+			'{"from":"code"}',
+		);
+		await Bun.write(`${extensionsDir}/.placeholder`, "");
+		await Bun.write(`${fakeHome}/.vscode/extensions/.placeholder`, "");
+
+		const output = await runScoder(
+			repoDir,
+			["--dry-run", "--no-worktree", "vscodium"],
+			{
+				PATH: `${fakeBinDir}:${process.env.PATH}`,
+				HOME: fakeHome,
+			},
+		);
+		const flat = flattenDryRun(output);
+
+		expect(flat).toContain(`--bind ${managedDir} ${managedDir}`);
+		expect(flat).toContain(`--ro-bind ${extensionsDir} ${extensionsDir}`);
+		// Joined without the wrap padding, as vscode-user-args does.
+		expect(output.replace(/\\\n\s+/g, "")).toContain(
+			`-- bash /tmp/scoder-entrypoint.sh ${fakeBinDir}/codium` +
+				` --user-data-dir ${managedDir}` +
+				` --extensions-dir ${extensionsDir}`,
+		);
+		expect(await Bun.file(`${managedDir}/User/settings.json`).text()).toBe(
+			'{"from":"codium"}',
+		);
+		expect(flat).not.toContain(`${fakeHome}/.vscode/`);
+		expect(flat).not.toContain("scoder-vscode-userdata");
+		expect(
+			await dirExists(`${fakeHome}/.local/share/scoder-vscode-userdata`),
+		).toBe(false);
+	} finally {
+		await Bun.spawn(["rm", "-rf", fakeHome, fakeBinDir]).exited;
+		await cleanupRepo(repoDir);
+	}
+});
+
 // ### Test: vscode-user-args-pass-through-untouched
 // EM: scoder's flags go in front, but they never displace or reorder the
 // EM: user's own, and any user arg at all suppresses the project-dir fill

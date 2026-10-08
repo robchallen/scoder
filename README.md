@@ -22,6 +22,7 @@ on a separate git branch via a worktree.
 | `rstudio` | RStudio Desktop config + data, an xpra-forwarded window, and pi's own binds (see below) |
 | `eclipse` | Eclipse IDE, an xpra-forwarded window, and a persisted per-project workspace (see below) |
 | `vscode` | VS Code, an xpra-forwarded window, and a managed per-project user-data-dir (see below) |
+| `vscodium` | VSCodium, set up exactly like `vscode` but with its own paths (see below) |
 
 
 GUI presets don't see the host's X server at all. Each runs under an
@@ -76,6 +77,12 @@ VS Code (or Eclipse) state over, see
 [`--new-workspace`](#starting-a-projects-ide-state-over---new-workspace).
 See `design/implementation/plans/vscode-preset.md` for the full
 investigation.
+
+**`vscodium`** is the same preset for VSCodium: it runs `codium`, seeds
+from `~/.config/VSCodium/User`, binds `~/.vscode-oss/extensions`
+read-only, and keeps its managed user-data-dirs under
+`~/.local/share/scoder-vscodium-userdata/`. Nothing of VS Code's is read
+or bound, so the two never share state.
 
 ## How it works
 
@@ -147,14 +154,14 @@ investigation.
   - **mise**: `~/.local/share/mise` and `~/.config/mise` bound read-only
   - **Desktop integration**: `~/.local/share/fonts` and
     `~/.config/mimeapps.list` bound read-only, so GUI presets (`rstudio`,
-    `eclipse`, `vscode`) render text with the host's real fonts and see
+    `eclipse`, `vscode`, `vscodium`) render text with the host's real fonts and see
     the host's file-type "open with" associations
 - **Java/Maven**: `~/.m2` bound read-write, otherwise not much works.
 - **Minimal `/dev`** — individual real host device nodes only (`null`,
   `zero`, `full`, `urandom`, `random`, `tty`, `pts`, `ptmx`, `fd`), not
   the host's whole `/dev` (which would also expose every raw disk, TPM,
   USB, and other device node on the machine). `/dev/shm` is a fresh
-  tmpfs. GUI presets (`rstudio`, `eclipse`, `vscode`) additionally bind
+  tmpfs. GUI presets (`rstudio`, `eclipse`, `vscode`, `vscodium`) additionally bind
   `/dev/dri`
   for GPU rendering when it exists on the host — needed, not optional,
   for RStudio Desktop specifically (Chromium's GPU process crashes
@@ -211,11 +218,11 @@ scoder --dry-run opencode         # show bwrap command without running
     --allow-ssh USER@HOST  Open a single pre-authenticated ssh connection to
                          USER@HOST outside the sandbox, and expose only that
                          one connection inside it
-    --ide NAME          Run preset NAME (rstudio, eclipse, vscode) as a
+    --ide NAME          Run preset NAME (rstudio, eclipse, vscode, vscodium) as a
                          companion IDE in the same sandbox (see below)
     --bind NAME         Add CLI preset NAME's config binds without
                          launching it; repeatable (see below)
-    --new-workspace     Reset this project's managed eclipse/vscode state
+    --new-workspace     Reset this project's managed eclipse/vscode/vscodium state
                          before launch (see below)
     --native-display    For a GUI preset, draw on the host's X session
                          directly instead of forwarding windows from a
@@ -294,7 +301,7 @@ unfamiliar host key.
 ## A companion IDE (`--ide`)
 
 `--ide NAME` launches `NAME` (must have a registered preset — `rstudio`,
-`eclipse` and `vscode`, following the same pattern as other tool presets)
+`eclipse`, `vscode` and `vscodium`, following the same pattern as other tool presets)
 as a companion alongside the primary tool, both inside the *same* sandbox:
 
 ```bash
@@ -358,12 +365,12 @@ whatever the agent writes there takes effect the next time you run
 After the tool name, `--bind` is taken as scoder's only when its value is a
 preset name, so a tool's own `--bind` (`scoder python3 -m http.server --bind
 0.0.0.0`) passes through untouched. GUI presets (`rstudio`, `eclipse`,
-`vscode`) are refused: their binds include a display, which only makes
+`vscode`, `vscodium`) are refused: their binds include a display, which only makes
 sense with the GUI running — use `--ide` for that.
 
 ## Starting a project's IDE state over (`--new-workspace`)
 
-`eclipse` and `vscode` keep per-project state between sessions in
+`eclipse`, `vscode` and `vscodium` keep per-project state between sessions in
 directories scoder manages — an Eclipse workspace under
 `~/.local/share/scoder-eclipse-workspaces/`, a VS Code user-data-dir under
 `~/.local/share/scoder-vscode-userdata/` — seeded once from your host
@@ -386,7 +393,7 @@ It is refused while a session is still using that directory, and with
 
 ## Native display (`--native-display`)
 
-GUI presets (`rstudio`, `eclipse`, `vscode`) normally run under an xpra server inside
+GUI presets (`rstudio`, `eclipse`, `vscode`, `vscodium`) normally run under an xpra server inside
 the sandbox: their windows are forwarded to the host, and they never hold a
 connection to the host's X session. That isolation has a usability cost —
 xpra's translation has been reported to break hovers, popups and dialog
@@ -625,7 +632,7 @@ scoder: To discard: git worktree remove <worktree-path> && git branch -D scoder/
 - `ssh` (OpenSSH client) — only needed for `--allow-ssh`
 - `bun` (TypeScript runtime) - install via `curl -fsSL https://bun.sh/install | bash`
 - `xpra` 6.x on the host — only for GUI presets (`rstudio`, `eclipse`,
-  `vscode`) without `--native-display`; `--install-dependencies` installs
+  `vscode`, `vscodium`) without `--native-display`; `--install-dependencies` installs
   it from xpra's own repository, pinned to 6.5.3 (6.5.4 breaks scrolling)
 - The tool you want to sandbox (e.g. `opencode`, `copilot`, `claude`)
 - Tool-specific prerequisites must already be set up (and installed globally):
@@ -634,7 +641,7 @@ scoder: To discard: git worktree remove <worktree-path> && git branch -D scoder/
   - `opencode`: install from https://opencode.ai
   - `pi`: install from https://pi.dev
   - `eclipse`: the [import-projects plugin](https://github.com/robchallen/eclipse-import-projects-plugin)
-  - `vscode`: the .deb, .rpm or tarball build (not the snap)
+  - `vscode` / `vscodium`: the .deb, .rpm or tarball build (not the snap)
 
 ## Install
 

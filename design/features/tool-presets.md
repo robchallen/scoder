@@ -359,6 +359,13 @@ sandboxed session silently inheriting host Electron switches is the
 failure mode this preset avoids everywhere else), and anything
 secret-bearing.
 
+**vscodium** is the same preset built from a second set of paths
+(`vscodeFamilyPreset` with `VSCODIUM` rather than `VSCODE`): the `codium`
+binary, a seed from `~/.config/VSCodium/User`, extensions from
+`~/.vscode-oss/extensions`, and managed user-data-dirs under
+`~/.local/share/scoder-vscodium-userdata/`. Every decision above applies to
+both; only the paths differ, and neither flavour reads or binds the other's.
+
 `~/.continue` (the Continue extension's config, models and API keys,
 chat sessions and codebase index — kept outside the user-data-dir) binds
 **read-write** when it exists and is never created when it does not:

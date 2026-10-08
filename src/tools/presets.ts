@@ -482,6 +482,43 @@ async function resolveEclipseLayout(
 // EM: See design/implementation/plans/vscode-preset.md.
 const SCODER_VSCODE_USERDATA_DIRNAME = "scoder-vscode-userdata";
 
+// EM: VS Code and VSCodium are one preset with two settings. VSCodium is
+// EM: VS Code's open build: the same Electron app, CLI and flags, but its
+// EM: own binary, config dir and extensions tree, so a session of one never
+// EM: touches the other's state — including scoder's managed user-data-dir,
+// EM: which gets a root of its own per flavour.
+interface VscodeFlavor {
+	/** Shown in messages. */
+	name: string;
+	/** The binary on PATH. */
+	command: string;
+	/** Host config dir under $HOME; its User/ is the one-time seed source. */
+	hostConfigDir: string;
+	/** Extensions tree under $HOME, bound read-only. */
+	extensionsDir: string;
+	/** scoder's managed per-project user-data-dir root in ~/.local/share. */
+	userDataDirname: string;
+	installHint: string;
+}
+
+const VSCODE: VscodeFlavor = {
+	name: "VS Code",
+	command: "code",
+	hostConfigDir: ".config/Code",
+	extensionsDir: ".vscode/extensions",
+	userDataDirname: SCODER_VSCODE_USERDATA_DIRNAME,
+	installHint: "Install VS Code: https://code.visualstudio.com/download",
+};
+
+const VSCODIUM: VscodeFlavor = {
+	name: "VSCodium",
+	command: "codium",
+	hostConfigDir: ".config/VSCodium",
+	extensionsDir: ".vscode-oss/extensions",
+	userDataDirname: "scoder-vscodium-userdata",
+	installHint: "Install VSCodium: https://vscodium.com/#install",
+};
+
 interface VscodeLayout {
 	userDataHostDir: string;
 	userDataSandboxDir: string;
@@ -535,18 +572,19 @@ async function seedVscodeSettingsFromHost(
 // EM: same repo share it, which is right: same code, same settings.
 async function resolveVscodeLayout(
 	hostProjectDir: string,
+	flavor: VscodeFlavor,
 ): Promise<VscodeLayout> {
 	const realHome = getRealHome();
 	const homePrefixes = await resolveHomePrefixes();
 	const userDataHostDir = await managedProjectDir(
-		SCODER_VSCODE_USERDATA_DIRNAME,
+		flavor.userDataDirname,
 		hostProjectDir,
 	);
 	const isNew = !(await dirExists(userDataHostDir));
 	await ensureDir(userDataHostDir);
 	if (isNew) {
 		await seedVscodeSettingsFromHost(
-			`${realHome}/.config/Code/User`,
+			`${realHome}/${flavor.hostConfigDir}/User`,
 			userDataHostDir,
 		);
 	}
@@ -1243,16 +1281,23 @@ export const TOOL_PRESETS: Record<string, ToolPreset> = {
 	// EM: carries its evidence in
 	// EM: design/implementation/plans/vscode-preset.md; the short version is
 	// EM: on the vscode helper block above.
-	vscode: {
-		description: "VS Code",
+	vscode: vscodeFamilyPreset(VSCODE),
+	vscodium: vscodeFamilyPreset(VSCODIUM),
+};
+
+// ### vscodeFamilyPreset
+// The vscode preset, for either flavour (VS Code or VSCodium).
+function vscodeFamilyPreset(flavor: VscodeFlavor): ToolPreset {
+	return {
+		description: flavor.name,
 		// EM: The binary is `code`; the preset key is what users type.
-		command: "code",
+		command: flavor.command,
 		// EM: The whole managed user-data-dir: settings, UI state, the
 		// EM: remembered prompts, workspace storage. Extensions live in the
-		// EM: host's ~/.vscode/extensions and ~/.continue is the host's own,
+		// EM: host's extensions tree and ~/.continue is the host's own,
 		// EM: so neither is touched.
 		managedWorkspaceDir: (hostProjectDir) =>
-			managedProjectDir(SCODER_VSCODE_USERDATA_DIRNAME, hostProjectDir),
+			managedProjectDir(flavor.userDataDirname, hostProjectDir),
 		// EM: No ideShutdown: that field records measurements, not priors
 		// EM: (see ide-shutdown-presets-record-measured-signals), and vscode
 		// EM: has none yet. The expected shape is TERM/process-first —
@@ -1272,7 +1317,7 @@ export const TOOL_PRESETS: Record<string, ToolPreset> = {
 			// EM: The managed user-data-dir, read-write at its mirrored
 			// EM: path; creation and one-time seeding happen host-side in
 			// EM: resolveVscodeLayout.
-			const layout = await resolveVscodeLayout(process.cwd());
+			const layout = await resolveVscodeLayout(process.cwd(), flavor);
 			pushIntermediateDirs(
 				dirs,
 				sandboxHome,
@@ -1290,13 +1335,13 @@ export const TOOL_PRESETS: Record<string, ToolPreset> = {
 			// EM: running session. The accepted cost — "Install" inside the
 			// EM: sandbox writes to tmpfs and vanishes — is the plan's
 			// EM: decision 3, to be revisited on real experience.
-			const extensionsDir = `${realHome}/.vscode/extensions`;
+			const extensionsDir = `${realHome}/${flavor.extensionsDir}`;
 			if (await dirExists(extensionsDir)) {
-				pushIntermediateDirs(dirs, sandboxHome, ".vscode/extensions");
+				pushIntermediateDirs(dirs, sandboxHome, flavor.extensionsDir);
 				binds.push({
 					type: "ro-bind",
 					source: extensionsDir,
-					dest: `${sandboxHome}/.vscode/extensions`,
+					dest: `${sandboxHome}/${flavor.extensionsDir}`,
 				});
 			}
 
@@ -1336,10 +1381,10 @@ export const TOOL_PRESETS: Record<string, ToolPreset> = {
 			};
 		},
 		validate: async () => {
-			const codePath = await resolveCommandPath("code");
+			const codePath = await resolveCommandPath(flavor.command);
 			if (!codePath) {
-				error("code not found in PATH");
-				error("Install VS Code: https://code.visualstudio.com/download");
+				error(`${flavor.command} not found in PATH`);
+				error(flavor.installHint);
 				return false;
 			}
 			// EM: The which-spelling catches /snap/bin/code directly; the
@@ -1351,7 +1396,7 @@ export const TOOL_PRESETS: Record<string, ToolPreset> = {
 				// EM: unresolvable symlink; the which-spelling still decides.
 			}
 			if (isSnapInstall(codePath) || isSnapInstall(codeReal)) {
-				error("the VS Code snap is not supported as a scoder preset");
+				error(`the ${flavor.name} snap is not supported as a scoder preset`);
 				error(`  found ${codePath}`);
 				error("  its build expects snap's own confinement at runtime;");
 				error("  install the .deb, .rpm or tarball build instead");
@@ -1370,12 +1415,12 @@ export const TOOL_PRESETS: Record<string, ToolPreset> = {
 			// EM: launch project in both modes (eclipse's resolveEclipseLayout
 			// EM: makes the same choice for the same reason: a throwaway
 			// EM: worktree path must not fork a new per-session settings dir).
-			const layout = await resolveVscodeLayout(process.cwd());
+			const layout = await resolveVscodeLayout(process.cwd(), flavor);
 			const scoderArgs = [
 				"--user-data-dir",
 				layout.userDataSandboxDir,
 				"--extensions-dir",
-				`${getRealHome()}/.vscode/extensions`,
+				`${getRealHome()}/${flavor.extensionsDir}`,
 				// EM: The sandboxed install is disposable; auto-update
 				// EM: half-upgrading it mid-session or nagging across its
 				// EM: tmpfs serves nothing — updates belong to the host
@@ -1419,8 +1464,8 @@ export const TOOL_PRESETS: Record<string, ToolPreset> = {
 			}
 			return [...scoderArgs, sandboxProjectDir];
 		},
-	},
-};
+	};
+}
 
 // ### piConfigBinds
 // Shared between the `pi` preset and `rstudio` (pi runs inside RStudio's

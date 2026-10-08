@@ -142,12 +142,19 @@ XPRA_LOG="${XPRA_LOG:-/tmp/scoder-xpra.log}"
 # register on the bus that program uses, and only its environment knows the
 # address. It execs the program, so the pid xpra and the ENTER handshake
 # track is unchanged. Without gnome-keyring installed it is a no-op.
-TEMP_KEYRING=(
-	bash -c 'if command -v gnome-keyring-daemon >/dev/null; then
-		head -c 24 /dev/urandom | base64 | gnome-keyring-daemon --unlock --components=secrets >/dev/null 2>&1
-	fi
-	exec "$@"' scoder-keyring
-)
+# Written to a file, not passed as `bash -c SCRIPT`: xpra's --start-child
+# is not parsed by bash, and a multi-line script %q-quotes to bash's own
+# $'...' form, which xpra mangled into garbage (reported: `thenntthead:
+# command not found`, RStudio never started). A path quotes trivially.
+TEMP_KEYRING_SCRIPT=/tmp/scoder-keyring.sh
+cat >"$TEMP_KEYRING_SCRIPT" <<'KEYRING'
+if command -v gnome-keyring-daemon >/dev/null; then
+	head -c 24 /dev/urandom | base64 |
+		gnome-keyring-daemon --unlock --components=secrets >/dev/null 2>&1
+fi
+exec "$@"
+KEYRING
+TEMP_KEYRING=(bash "$TEMP_KEYRING_SCRIPT")
 
 XPRA_WRAPPED=()
 xpra_wrap() {

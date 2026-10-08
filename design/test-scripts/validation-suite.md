@@ -27,7 +27,7 @@ tags: [test-script, validation]
 
 `tests/scoder.test.ts` is a self-contained integration test suite that creates
 temporary git repositories under `/tmp`, runs `scoder` against them using
-`/bin/bash` as the sandboxed command, and asserts expected behaviour. 155
+`/bin/bash` as the sandboxed command, and asserts expected behaviour. 156
 tests cover all sandbox mechanics — this catalog is currently behind the
 actual implemented count (see the note under case 113) due to other,
 unrelated in-progress work; not fixed here.
@@ -1482,6 +1482,14 @@ With `SCODER_BROWSER` set, a dry-run sets `BROWSER=/tmp/scoder-browser`,
 binds the wrapper (each word single-quoted, then `"$@"`), the desktop
 entry, and the staged `mimeapps.list` after the host's own bind of the same
 path; unset, none of it appears.
+
+### 146. dev-console-is-dev-null
+[TESTED_BY](/tests/scoder.test.ts#testDevConsoleIsDevNull)
+
+`/dev/console` is bound to `/dev/null` after the inner layer's
+`--dev-bind /dev /dev`. bwrap otherwise binds the user's terminal there,
+and `syslog(LOG_CONS)` with no `/dev/log` writes to it — how RStudio's
+rsession errors reached pi's terminal.
 
 ## Current Network Coverage
 

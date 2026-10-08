@@ -284,6 +284,21 @@ export async function buildBwrapCommand(
 		// EM: directory there anyway.
 		"--tmpfs",
 		"/dev/shm",
+		// EM: bwrap's --dev binds the host's terminal at /dev/console whenever
+		// EM: its stdout is a tty (bubblewrap.c, "makes ttyname() work in the
+		// EM: sandbox") — so in an interactive session /dev/console *is* the
+		// EM: user's terminal. glibc's syslog() with LOG_CONS falls back to
+		// EM: /dev/console when /dev/log is unreachable, which inside the
+		// EM: sandbox it always is. Reported: RStudio's rsession, logging an
+		// EM: error on every autocomplete selection change, printed
+		// EM: `rsession-<user>[pid]: ERROR jsonrpc error 6 ...` into pi's
+		// EM: terminal, though its stdout and stderr were both pipes (checked
+		// EM: via /proc/<pid>/fd). /dev/null in its place: console writes are
+		// EM: accepted and dropped, and nothing in the sandbox reaches the
+		// EM: terminal except through the foreground tool's own stdio.
+		"--dev-bind",
+		"/dev/null",
+		"/dev/console",
 		"--proc",
 		"/proc",
 		"--tmpfs",

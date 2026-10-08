@@ -23,7 +23,7 @@ localhost services by default.
 
 [HAS_FEATURE](./features/git-worktree-isolation.md) - Optional git worktree mode that isolates changes to a scoped branch in /tmp.
 
-[HAS_FEATURE](./features/tool-presets.md) - Built-in configuration presets for opencode, claude, copilot, pi, rstudio, eclipse, vscode, and vscodium with tool-specific config/data binds. `--bind NAME` adds a CLI preset's binds to another tool's sandbox without launching it. `--new-workspace` resets eclipse's/vscode's scoder-managed per-project state, re-seeded from the host.
+[HAS_FEATURE](./features/tool-presets.md) - Built-in configuration presets for opencode, claude, copilot, pi, rstudio, eclipse, vscode, vscodium, and webstorm with tool-specific config/data binds. `--bind NAME` adds a CLI preset's binds to another tool's sandbox without launching it. `--new-workspace` resets eclipse's/vscode's scoder-managed per-project state, re-seeded from the host.
 
 [HAS_FEATURE](./features/infrastructure-protection.md) - Default and user-configurable protection of critical files (.github/, .gitignore, lockfiles) via .sandbox/readonly.
 

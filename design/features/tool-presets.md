@@ -366,6 +366,41 @@ binary, a seed from `~/.config/VSCodium/User`, extensions from
 `~/.local/share/scoder-vscodium-userdata/`. Every decision above applies to
 both; only the paths differ, and neither flavour reads or binds the other's.
 
+### webstorm (and JetBrains IDEs generally)
+
+`jetbrainsPreset(product)` applies the vscode pattern in JetBrains' terms;
+only WebStorm is registered, the only product tried so far. JetBrains also
+allows one running instance per config directory (a second launch hands
+off over the port file in the system directory), so the sandbox gets a
+managed per-project copy under `~/.local/share/scoder-webstorm/<project>/`:
+`config/` seeded **once** from the host's newest `~/.config/JetBrains/WebStorm*`
+(`cp -a`, then `.lock`/`port`/`port.lock`/`.port` removed — runtime state that
+would point at a host instance), and `system/` (caches, indexes, logs)
+persisted beside it because re-indexing every session is slow. Plugins
+come read-only from the matching `~/.local/share/JetBrains/WebStorm*`. The
+overrides — `idea.config.path`, `idea.system.path`, `idea.log.path`,
+`idea.plugins.path` and `idea.trust.all.projects=true` (the equivalent of
+vscode's `--disable-workspace-trust`) — reach WebStorm by **shadowing the
+install's own `bin/idea.properties`** inside the sandbox: a staged copy of
+the original with the overrides appended (a later key wins), bound over it.
+`WEBSTORM_PROPERTIES` naming a separate file was the first design and is
+kept for `webstorm.sh`, but the native launcher (`bin/webstorm` is an ELF)
+ignores it: reported with the variable and file both present in the
+sandbox, WebStorm's own diagnostics showed the default
+`~/.config/JetBrains/WebStorm2026.2` config dir — the sandbox's throwaway
+home — so every session ran the first-start wizard and trust dialog,
+lacked the licence and host settings, and lost its MCP configuration at
+exit.
+
+The EULA and usage-statistics answers are cross-product and live outside
+any product dir — `~/.java/.userPrefs/jetbrains` (Java preferences) and
+`~/.local/share/JetBrains/consentOptions` — so with everything else
+carried over, both dialogs still appeared on every start. They are bound
+read-only from the host when present: the host's answers apply, and the
+sandbox cannot change them. Another JetBrains
+product is one more `JetBrainsProduct` entry (name, binary, directory
+prefix, properties variable).
+
 `~/.continue` (the Continue extension's config, models and API keys,
 chat sessions and codebase index — kept outside the user-data-dir) binds
 **read-write** when it exists and is never created when it does not:

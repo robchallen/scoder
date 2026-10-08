@@ -10,6 +10,7 @@ import {
 	resolveHomePrefixes,
 	toSandboxPath,
 } from "../utils/paths.ts";
+import { stageFile } from "../utils/session.ts";
 
 // EM: Tool preset system for opencode, claude, copilot, and pi
 // EM: Implements tool-presets feature with tool-specific config/data bindings
@@ -673,6 +674,275 @@ async function requireHostX11(): Promise<boolean> {
 	return true;
 }
 
+// ### jetbrains
+// EM: JetBrains IDEs, the vscode pattern in JetBrains' terms. One running
+// EM: instance per config directory is a hard rule of theirs too (a second
+// EM: launch hands off over the port file in the system directory), so the
+// EM: sandbox gets a managed per-project copy rather than the host's dirs:
+// EM: config seeded once from the host's newest product directory, the
+// EM: system directory (caches and indexes, expensive to rebuild) persisted
+// EM: beside it, plugins read-only from the host. JetBrains redirects all
+// EM: of these through an idea.properties file named by <PRODUCT>_PROPERTIES,
+// EM: which scoder stages — the analogue of vscode's --user-data-dir.
+// EM: Generic over the product; only WebStorm is registered, because only
+// EM: WebStorm has been tried. Another product is one more JetBrainsProduct.
+interface JetBrainsProduct {
+	name: string;
+	command: string;
+	/** Versioned dir prefix under ~/.config/JetBrains, e.g. "WebStorm". */
+	dirPrefix: string;
+	/** Env var the launcher reads for an extra idea.properties. */
+	propertiesEnv: string;
+	/** scoder's managed root in ~/.local/share. */
+	managedDirname: string;
+	installHint: string;
+}
+
+const WEBSTORM: JetBrainsProduct = {
+	name: "WebStorm",
+	command: "webstorm",
+	dirPrefix: "WebStorm",
+	propertiesEnv: "WEBSTORM_PROPERTIES",
+	managedDirname: "scoder-webstorm",
+	installHint: "Install WebStorm: https://www.jetbrains.com/webstorm/download/",
+};
+
+// EM: Runtime files, not settings: copying them would hand the sandbox a
+// EM: stale lock or port that points at a host instance.
+const JETBRAINS_SEED_EXCLUDE = [".lock", "port", "port.lock", ".port"];
+
+/** Where the staged idea.properties lands inside the sandbox. */
+const JETBRAINS_PROPERTIES_DEST = "/tmp/scoder-idea.properties";
+
+// ### newestJetBrainsDir
+// The host's newest versioned directory for a product under `parent`
+// (WebStorm2025.2 over WebStorm2024.3), or null.
+async function newestJetBrainsDir(
+	parent: string,
+	prefix: string,
+): Promise<string | null> {
+	let names: string[];
+	try {
+		names = await readdir(parent);
+	} catch {
+		return null;
+	}
+	const versions = names
+		.filter((n) => n.startsWith(prefix) && /^\d/.test(n.slice(prefix.length)))
+		.sort((a, b) => b.localeCompare(a, undefined, { numeric: true }));
+	return versions[0] ?? null;
+}
+
+interface JetBrainsLayout {
+	managedHostDir: string;
+	configHostDir: string;
+	systemHostDir: string;
+	pluginsHostDir: string | null;
+}
+
+// ### resolveJetBrainsLayout
+// Idempotent like resolveVscodeLayout: creates the managed dir and seeds
+// config/ only the first time.
+async function resolveJetBrainsLayout(
+	hostProjectDir: string,
+	product: JetBrainsProduct,
+): Promise<JetBrainsLayout> {
+	const realHome = getRealHome();
+	const managedHostDir = await managedProjectDir(
+		product.managedDirname,
+		hostProjectDir,
+	);
+	const configHostDir = `${managedHostDir}/config`;
+	const systemHostDir = `${managedHostDir}/system`;
+	const version = await newestJetBrainsDir(
+		`${realHome}/.config/JetBrains`,
+		product.dirPrefix,
+	);
+
+	if (!(await dirExists(configHostDir))) {
+		await ensureDir(configHostDir);
+		if (version) {
+			const source = `${realHome}/.config/JetBrains/${version}`;
+			await Bun.spawn(["cp", "-a", `${source}/.`, configHostDir]).exited;
+			for (const name of JETBRAINS_SEED_EXCLUDE) {
+				await Bun.spawn(["rm", "-rf", `${configHostDir}/${name}`]).exited;
+			}
+			info(`Seeded ${product.name} settings from ${source}`);
+		}
+	}
+	await ensureDir(systemHostDir);
+
+	const plugins = version
+		? `${realHome}/.local/share/JetBrains/${version}`
+		: null;
+	return {
+		managedHostDir,
+		configHostDir,
+		systemHostDir,
+		pluginsHostDir: plugins && (await dirExists(plugins)) ? plugins : null,
+	};
+}
+
+// ### jetbrainsPreset
+function jetbrainsPreset(product: JetBrainsProduct): ToolPreset {
+	return {
+		description: product.name,
+		command: product.command,
+		gui: true,
+		managedWorkspaceDir: (hostProjectDir) =>
+			managedProjectDir(product.managedDirname, hostProjectDir),
+		configBinds: async (realHome, sandboxHome) => {
+			const binds: BindMount[] = [];
+			const dirs: string[] = [];
+			const gui = await guiDisplayBinds(realHome, sandboxHome);
+			binds.push(...(gui.binds ?? []));
+			dirs.push(...(gui.dirs ?? []));
+
+			const homePrefixes = await resolveHomePrefixes();
+			const layout = await resolveJetBrainsLayout(process.cwd(), product);
+			const managedSandboxDir = toSandboxPath(
+				layout.managedHostDir,
+				homePrefixes,
+			);
+			pushIntermediateDirs(
+				dirs,
+				sandboxHome,
+				managedSandboxDir.slice(sandboxHome.length + 1),
+			);
+			binds.push({
+				type: "bind",
+				source: layout.managedHostDir,
+				dest: managedSandboxDir,
+			});
+
+			let pluginsSandboxDir: string | null = null;
+			if (layout.pluginsHostDir) {
+				pluginsSandboxDir = toSandboxPath(layout.pluginsHostDir, homePrefixes);
+				pushIntermediateDirs(
+					dirs,
+					sandboxHome,
+					pluginsSandboxDir.slice(sandboxHome.length + 1),
+				);
+				binds.push({
+					type: "ro-bind",
+					source: layout.pluginsHostDir,
+					dest: pluginsSandboxDir,
+				});
+			}
+
+			// EM: idea.trust.all.projects: the "Trust this project?" dialog
+			// EM: protects the user's real machine from an untrusted folder;
+			// EM: inside scoder that is already answered — vscode's
+			// EM: --disable-workspace-trust, for the same reason.
+			const properties = [
+				`idea.config.path=${toSandboxPath(layout.configHostDir, homePrefixes)}`,
+				`idea.system.path=${toSandboxPath(layout.systemHostDir, homePrefixes)}`,
+				`idea.log.path=${toSandboxPath(layout.systemHostDir, homePrefixes)}/log`,
+				...(pluginsSandboxDir
+					? [`idea.plugins.path=${pluginsSandboxDir}`]
+					: []),
+				"idea.trust.all.projects=true",
+				"",
+			].join("\n");
+			const staged = await stageFile(JETBRAINS_PROPERTIES_DEST);
+			await Bun.write(staged, properties);
+			binds.push({
+				type: "ro-bind",
+				source: staged,
+				dest: JETBRAINS_PROPERTIES_DEST,
+			});
+
+			// EM: The install's own bin/idea.properties, shadowed with the
+			// EM: original plus these overrides (a later key wins in a
+			// EM: properties file). Load-bearing: the native launcher
+			// EM: (bin/webstorm is an ELF since 2024-ish) ignores
+			// EM: <PRODUCT>_PROPERTIES — reported, with the env var and file
+			// EM: both present in the sandbox, as Help → diagnostics showing
+			// EM: the default ~/.config/JetBrains config dir, a fresh
+			// EM: first-run wizard and trust dialog every session, and MCP
+			// EM: settings lost at exit. Every launcher reads bin/idea.properties;
+			// EM: the env var is kept for webstorm.sh. The host file is untouched.
+			const launcher = await resolveCommandPath(product.command);
+			if (launcher) {
+				let binDir = dirname(launcher);
+				try {
+					binDir = dirname(await realpath(launcher));
+				} catch {
+					// EM: unresolvable symlink; the which-spelling's dir it is.
+				}
+				const installProps = `${binDir}/idea.properties`;
+				let original = "";
+				try {
+					original = await Bun.file(installProps).text();
+				} catch {
+					// EM: No such file: the overrides alone.
+				}
+				const dest = toSandboxPath(installProps, homePrefixes);
+				const shadow = await stageFile(dest);
+				await Bun.write(
+					shadow,
+					`${original}${original.endsWith("\n") || original === "" ? "" : "\n"}# scoder overrides\n${properties}`,
+				);
+				binds.push({ type: "ro-bind", source: shadow, dest });
+			}
+
+			// EM: The licence-agreement and usage-statistics answers live
+			// EM: outside every product's config dir, shared by all JetBrains
+			// EM: IDEs: the EULA in Java's user preferences, the data-sharing
+			// EM: consent in consentOptions. Reported: with config, licence and
+			// EM: plugins all carried over, both dialogs still appeared on every
+			// EM: start. Read-only from the host, where the user has already
+			// EM: answered them: the sandbox sees the same answers and cannot
+			// EM: change them. Existence-gated, nothing created.
+			for (const rel of [
+				".java/.userPrefs/jetbrains",
+				".local/share/JetBrains/consentOptions",
+			]) {
+				const source = `${realHome}/${rel}`;
+				if (await dirExists(source)) {
+					pushIntermediateDirs(dirs, sandboxHome, rel);
+					binds.push({
+						type: "ro-bind",
+						source,
+						dest: `${sandboxHome}/${rel}`,
+					});
+				}
+			}
+
+			const piSpec = await piConfigBinds(realHome, sandboxHome);
+			return {
+				binds: [...binds, ...(piSpec.binds ?? [])],
+				dirs: [...dirs, ...(piSpec.dirs ?? [])],
+				env: { ...gui.env, [product.propertiesEnv]: JETBRAINS_PROPERTIES_DEST },
+			};
+		},
+		validate: async () => {
+			const path = await resolveCommandPath(product.command);
+			if (!path) {
+				error(`${product.command} not found in PATH`);
+				error(product.installHint);
+				return false;
+			}
+			let real = path;
+			try {
+				real = await realpath(path);
+			} catch {
+				// EM: unresolvable symlink; the which-spelling still decides.
+			}
+			if (isSnapInstall(path) || isSnapInstall(real)) {
+				error(`the ${product.name} snap is not supported as a scoder preset`);
+				error("  install the tarball build instead");
+				return false;
+			}
+			return await requireGuiDisplay();
+		},
+		// EM: Fill-if-empty, as rstudio and vscode: open the project unless
+		// EM: the user named something to open.
+		resolveArgs: async (_host, sandboxProjectDir, existingArgs) =>
+			existingArgs.length > 0 ? existingArgs : [sandboxProjectDir],
+	};
+}
+
 // ### TOOL_PRESETS
 // [IMPLEMENTS](/design/features/tool-presets.md)
 // EM: Mapping of tool names to preset configurations for sandboxing
@@ -1283,6 +1553,7 @@ export const TOOL_PRESETS: Record<string, ToolPreset> = {
 	// EM: on the vscode helper block above.
 	vscode: vscodeFamilyPreset(VSCODE),
 	vscodium: vscodeFamilyPreset(VSCODIUM),
+	webstorm: jetbrainsPreset(WEBSTORM),
 };
 
 // ### vscodeFamilyPreset

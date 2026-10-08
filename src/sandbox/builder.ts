@@ -17,6 +17,7 @@ import type {
 import { warning } from "../utils/logger.ts";
 import { getRealHome } from "../utils/paths.ts";
 import { stageFile } from "../utils/session.ts";
+import { browserSetup } from "./browser.ts";
 import entrypointScript from "./entrypoint.sh" with { type: "text" };
 import {
 	getSandboxGid,
@@ -367,6 +368,20 @@ export async function buildBwrapCommand(
 		}
 	}
 
+	// EM: SCODER_BROWSER — see src/sandbox/browser.ts. After every other
+	// EM: bind, so its mimeapps.list mounts over the host's at the same path.
+	const browser = process.env.SCODER_BROWSER
+		? await browserSetup(process.env.SCODER_BROWSER, getRealHome(), sandboxHome)
+		: null;
+	if (browser) {
+		for (const dir of browser.dirs) {
+			cmd.push("--dir", dir);
+		}
+		for (const bind of browser.binds) {
+			cmd.push(`--${bind.type}`, bind.source, bind.dest);
+		}
+	}
+
 	const sandboxPath = await buildSandboxPath(sandboxProjDir, sandboxHome);
 	const sandboxUsername = getSandboxUsername();
 
@@ -425,6 +440,11 @@ export async function buildBwrapCommand(
 	// EM: the bind destination inside the sandbox, not the host's own path.
 	if (toolEnv) {
 		for (const [key, value] of Object.entries(toolEnv)) {
+			cmd.push("--setenv", key, value);
+		}
+	}
+	if (browser) {
+		for (const [key, value] of Object.entries(browser.env)) {
 			cmd.push("--setenv", key, value);
 		}
 	}

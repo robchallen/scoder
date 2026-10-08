@@ -18,6 +18,7 @@ import {
 	getWorktreesParentDir,
 	relocateWorktree,
 } from "../src/git/worktree.ts";
+import { withWebDefaults } from "../src/sandbox/browser.ts";
 import type { XpraWrap } from "../src/sandbox/builder.ts";
 import {
 	buildDevLayer,
@@ -2799,6 +2800,96 @@ test("env-flag-rejects-malformed-and-stays-out-of-tool-argv: bad --env specs fai
 		expect(flat).toMatch(new RegExp(`-- ${piDir}/pi\\s+--env FOO=bar\n`));
 	} finally {
 		await Bun.spawn(["rm", "-rf", piDir]).exited;
+		await cleanupRepo(repoDir);
+	}
+});
+
+// ### Test: browser-mimeapps-web-defaults-rewritten
+// EM: The staged mimeapps.list is the host's, with only the web types'
+// EM: defaults pointed at scoder's browser entry: xdg-open consults these
+// EM: before $BROWSER, so leaving the host's in place would launch the host
+// EM: default without SCODER_BROWSER's flags. Every other line survives.
+test("browser-mimeapps-web-defaults-rewritten: web defaults replaced, other associations and sections kept, section added when missing", () => {
+	const host = [
+		"[Default Applications]",
+		"x-scheme-handler/https=google-chrome.desktop",
+		"text/plain=gedit.desktop",
+		"text/html=firefox.desktop",
+		"",
+		"[Added Associations]",
+		"x-scheme-handler/https=firefox.desktop;",
+		"",
+	].join("\n");
+	const out = withWebDefaults(host, "scoder-browser.desktop");
+	expect(out).toContain("x-scheme-handler/http=scoder-browser.desktop");
+	expect(out).toContain("x-scheme-handler/https=scoder-browser.desktop");
+	expect(out).toContain("text/html=scoder-browser.desktop");
+	expect(out).toContain("text/plain=gedit.desktop");
+	expect(out).not.toContain("google-chrome.desktop");
+	expect(out).not.toContain("text/html=firefox.desktop");
+	// Added Associations is not where defaults live: left alone.
+	expect(out).toContain(
+		"[Added Associations]\nx-scheme-handler/https=firefox.desktop;",
+	);
+
+	const fresh = withWebDefaults("", "scoder-browser.desktop");
+	expect(fresh).toContain("[Default Applications]");
+	expect(fresh).toContain("x-scheme-handler/https=scoder-browser.desktop");
+});
+
+// ### Test: browser-env-stages-wrapper-and-binds
+// EM: SCODER_BROWSER in a dry-run: BROWSER points at the wrapper, the
+// EM: wrapper, desktop entry and staged mimeapps.list are bound, and the
+// EM: mimeapps bind comes after the host's own so it is the one mounted.
+// EM: Unset, nothing of it appears.
+test("browser-env-stages-wrapper-and-binds: SCODER_BROWSER sets BROWSER and binds the wrapper and a mimeapps.list over the host's", async () => {
+	const repoDir = await createTempRepo();
+	tempRepos.push(repoDir);
+	const fakeHome = `/tmp/scoder-brw-home-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
+	const kept: string[] = [];
+
+	try {
+		await Bun.write(
+			`${fakeHome}/.config/mimeapps.list`,
+			"[Default Applications]\n",
+		);
+		const run = await runScoderRaw(repoDir, ["--dry-run", "/bin/bash"], {
+			HOME: fakeHome,
+			SCODER_BROWSER: "sh --incognito",
+			SCODER_KEEP_SESSION_TMP: "1",
+		});
+		expect(run.code).toBe(0);
+		const flat = flattenDryRun(run.stdout);
+		expect(flat).toContain("--setenv BROWSER /tmp/scoder-browser");
+		const wrapper = flat.match(
+			/--ro-bind (\/tmp\/scoder-[0-9a-f]{8}\/tmp\/scoder-browser) \/tmp\/scoder-browser/,
+		);
+		expect(wrapper).not.toBeNull();
+		kept.push(wrapper![1]);
+		expect(await Bun.file(wrapper![1]).text()).toBe(
+			"#!/bin/sh\nexec 'sh' '--incognito' \"$@\"\n",
+		);
+		expect(flat).toContain(
+			`${fakeHome}/.local/share/applications/scoder-browser.desktop`,
+		);
+		const mimeDest = `${fakeHome}/.config/mimeapps.list`;
+		const hostBind = flat.indexOf(`--ro-bind ${mimeDest} ${mimeDest}`);
+		const ours = flat.search(
+			new RegExp(`--ro-bind /tmp/scoder-[0-9a-f]{8}${mimeDest} ${mimeDest}`),
+		);
+		expect(hostBind).toBeGreaterThan(-1);
+		expect(ours).toBeGreaterThan(hostBind);
+
+		const unset = await runScoder(repoDir, ["--dry-run", "/bin/bash"], {
+			HOME: fakeHome,
+		});
+		expect(unset).not.toContain("scoder-browser");
+		expect(unset).not.toContain("--setenv BROWSER");
+	} finally {
+		for (const path of kept) {
+			await removeSessionRoot(path);
+		}
+		await Bun.spawn(["rm", "-rf", fakeHome]).exited;
 		await cleanupRepo(repoDir);
 	}
 });

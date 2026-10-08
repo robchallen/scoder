@@ -551,6 +551,7 @@ you start scoder in — none of them is passed into the sandbox (that is
 | `XPRA_*` | Any host variable starting `XPRA_` is forwarded to the xpra server in the sandbox. `XPRA_SCROLL_ENCODING` also applies to the host client, where scoder defaults it to `1`; set it to override. |
 | `GTK_OVERLAY_SCROLLING` | Inherited by GUI presets, so `GTK_OVERLAY_SCROLLING=0` keeps scrollbars visible as on the rest of your desktop. |
 | `RSTUDIO_CHROMIUM_ARGUMENTS` | Forwarded to RStudio, for Chromium flags (e.g. GPU workarounds). |
+| `SCODER_BROWSER` | The browser links open in, inside the sandbox — a command line, e.g. `google-chrome --incognito --no-first-run --no-default-browser-check --disable-component-update`. Sets `BROWSER` and overrides the web-link defaults of your `mimeapps.list` there, so `xdg-open` (VS Code, RStudio, R's `browseURL`) and `$BROWSER` users all run it; your other file associations are kept. Split on whitespace only, so an argument cannot contain a space. |
 
 **Timing** — mostly for the test suite; each is in milliseconds, default `2000`.
 

@@ -207,6 +207,12 @@ xpra_wrap() {
 		# without any of it reaching the host.
 		--notifications=yes
 		--printing=no
+		# Off: xpra's default intercepts xdg-open inside the session and
+		# offers to open the URL on the host's own desktop instead — a dialog
+		# reported as unexpected once SCODER_BROWSER gave the sandbox its own
+		# browser, and a path from sandbox to host that should not exist
+		# anyway: anything in the sandbox could make the host open any URL.
+		--forward-xdg-open=no
 		--input-method=keep
 		"--mmap=${XPRA_MMAP:-yes}"
 		--audio=no

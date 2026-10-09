@@ -15,47 +15,67 @@ A `jupyterlab` preset, usable as the tool (`scoder jupyterlab`) or as a
 companion (`scoder pi --ide jupyterlab`). Unlike the other IDE presets it is
 not a GUI program: it is a **server**, and its UI is a browser page. The
 server runs in the sandbox like everything else; the question this plan is
-mostly about is **which browser** shows it, and how it reaches the server.
+mostly about is **which browser** shows it. Decided: **a browser inside the
+sandbox**, under xpra like the other GUI presets — there is no host-browser
+mode and no inbound port.
 
 ## How it differs from the other IDEs
 
 | | vscode / webstorm / rstudio | jupyterlab |
 |---|---|---|
 | Process | a GUI window | a web server (`jupyter lab --no-browser`) |
-| Display | xpra (or `--native-display`) | none needed in the default design |
+| Display | xpra (or `--native-display`) | xpra (or `--native-display`), for the browser |
 | Singleton | one instance per config dir | none — servers coexist, each with its own port and runtime files |
-| UI | the window | a browser at `http://127.0.0.1:<port>/lab?token=<token>` |
+| UI | the window | a browser inside the sandbox at `http://127.0.0.1:8888/lab?token=<token>` |
 
 ## Design
 
-### 1. The browser: the host's, through one loopback-only forwarded port
+### 1. The browser: inside the sandbox, started by Jupyter
 
-Default: the user's **host browser** connects to the sandboxed server.
+The server and the browser both run in the sandbox. Jupyter is the preset's
+program — the one xpra wraps (`gui: true`) — and it starts the browser
+itself once it is ready to serve, through its own setting:
 
-- scoder picks a free host port at start-up and generates a random token.
-- It launches `jupyter lab --no-browser --ip=127.0.0.1 --port=<port>
-  --IdentityProvider.token=<token>` inside the sandbox.
-- pasta forwards that one port **host → sandbox, bound to the host's
-  loopback only** (`-t 127.0.0.1/<port>`). Today scoder runs pasta with
-  `--tcp-ports none`; this would be the first inbound port, and binding it
-  to `127.0.0.1` is load-bearing — pasta's default binds all interfaces,
-  which would put the server on the LAN.
-- scoder prints the URL with the token at start-up and, optionally, opens
-  it with the host's `xdg-open` (host side, outside the sandbox).
+```
+jupyter lab --ip=127.0.0.1 --port=8888 \
+    --IdentityProvider.token=<token> \
+    --ServerApp.browser='/tmp/scoder-browser %s'
+```
 
-What this grants, stated plainly: the host browser renders pages the
-sandboxed server serves. That is the same exposure as visiting any website
-— the page runs under the browser's same-origin rules, on its own
-`127.0.0.1:<port>` origin — not access to the host. The token keeps other
-local users and pages off the server. The alternative is isolated but
-worse to use:
+`/tmp/scoder-browser` is the `SCODER_BROWSER` wrapper that already exists
+(src/sandbox/browser.ts): the same command and flags the user chose for
+opening links — e.g. `google-chrome --incognito --no-first-run
+--no-default-browser-check --disable-component-update`, with `--app=` worth
+considering for a window without browser chrome. If `SCODER_BROWSER` is
+unset, the preset fails up front with a named error rather than guessing a
+browser (or falls back to the first of a short known list — open question).
 
-### 1b. Alternative: a browser inside the sandbox, under xpra
+**Why not the host's browser.** Considered and rejected
+(2026-10-09). Forwarding one loopback-only port is not itself the problem;
+handing the sandbox a page in the user's everyday browser is:
 
-`SCODER_JUPYTER_BROWSER=sandbox` (or similar): run a browser inside the
-sandbox under xpra, like the GUI presets, pointed at the server; no inbound
-port at all. Uses `SCODER_BROWSER` if set. Full isolation, at the cost of
-xpra's usability and a second browser profile.
+- cookies are not separated by port, so a page on `localhost:8888` shares
+  `localhost` cookies with every other local web app — including a host
+  Jupyter's login cookie, which is code execution on the host;
+- the page can send requests from the browser to other host `localhost`
+  services, which scoder otherwise keeps out of reach (cross-origin rules
+  stop most responses being read, not the requests; services that allow
+  local origins, as Ollama does by default, can be read in full);
+- plus the ordinary hazards of an untrusted page: downloads into the real
+  Downloads folder, look-alike prompts, browser bugs.
+
+A browser inside the sandbox has none of these: its `localhost` is the
+sandbox's, pasta keeps the host's loopback out of reach, its profile is
+thrown away with the session, and downloads land in the sandbox. The cost
+is xpra's usual usability and a fresh profile each session — the same
+trade the IDE presets already make.
+
+**Ports.** The sandbox has its own network namespace, so Jupyter can use
+fixed ports — `8888` for the server, `3001` for jupyter-ai's MCP server —
+with no collision with the host or with another session. Nothing is
+forwarded in either direction. The token is random per session: inside the
+sandbox it guards little (the agent there may read it, and is meant to use
+it for MCP), but it keeps Jupyter's normal auth on.
 
 ### 2. Finding JupyterLab: uv tool environments
 
@@ -98,8 +118,11 @@ reasoning as `~/.claude`'s hooks. Design:
 
 ### 4. Lifecycle
 
-As `--ide`, the server is the background companion, the agent in front;
-ENTER on the agent's exit asks it to stop. `ideShutdown`: TERM,
+As `--ide`, Jupyter (and the browser it started) is the background
+companion under xpra, the agent in front; ENTER on the agent's exit asks it
+to stop. Closing the browser window does not stop the server — Jupyter is
+xpra's child, not the browser — which is right while a kernel is running,
+and is what `File → Shut Down` is for. `ideShutdown`: TERM,
 process-first (Jupyter shuts kernels down cleanly on SIGTERM) — to be
 measured, as for the other IDEs. As the tool, it runs in the foreground and
 Ctrl-C stops it.
@@ -115,38 +138,43 @@ the host, outside the sandbox. That is the strongest reason for this
 preset: with Jupyter inside, the same server is on the sandbox's own
 `localhost:3001` and its kernels are confined.
 
-The agent and server share the sandbox, so an MCP server for notebooks
-(`jupyter-mcp-server`, or jupyter-ai's) reaches the Jupyter server at
-`127.0.0.1:<port>` with the token. scoder knows both, so the `--ide`
+The agent and server share the sandbox, so jupyter-ai's MCP server is at
+`http://localhost:3001/mcp` and the Jupyter server at `127.0.0.1:8888`
+with the token. scoder knows both, so the `--ide`
 `AGENTS.md` note can include them, letting the agent write the MCP config
 without asking. The per-setup details go in the skill's "Known working
 setups", as for the other IDEs.
 
 ## Implementation steps
 
-1. **uv tool environments** (section 2) — useful on its own; verify with a
-   uv-installed tool already in use (e.g. `hf`).
-2. pasta loopback-only inbound forward for one port; verify from the host
-   that it is reachable on `127.0.0.1` and **not** on the LAN address.
-3. `jupyterlab` preset: free port + token, launch args, config binds and
-   env, start-up URL line, optional host `xdg-open`.
+1. ~~**uv tool environments**~~ — done (fix/uv-tools).
+2. **Spike, by hand:** inside a session with `SCODER_BROWSER` set, run the
+   `jupyter lab ... --ServerApp.browser=...` line above under xpra (e.g. as
+   `scoder` running it as the tool once the preset is `gui: true`, or with
+   `--native-display` for a first look); confirm the browser opens on the
+   lab URL and the MCP server logs on 3001.
+3. `jupyterlab` preset: `gui: true`, token generation, launch args, config
+   binds (`~/.jupyter` ro, managed settings/workspaces dirs, kernelspecs
+   ro), env, and a named error when `SCODER_BROWSER` is unset.
 4. `ideShutdown` measured; `--new-workspace` via `managedWorkspaceDir`.
-5. AGENTS.md note with URL/token under `--ide`; skill setup entry.
-6. Optional in-sandbox browser mode (1b).
-7. Docs and tests (dry-run: forward flag bound to 127.0.0.1, args, binds,
-   env; unit: port/token generation).
+5. AGENTS.md note under `--ide` naming the server URL and token, and the
+   MCP endpoint; skill "Known working setups" entry.
+6. Docs and tests (dry-run: launch args, binds, env, no inbound forward;
+   unit: token generation).
 
 ## Open questions
 
-1. Host browser by default (1) or sandboxed browser (1b)? This plan
-   recommends (1), with (1b) as an option.
-2. Open the host browser automatically, or only print the URL?
-3. Bind all of `~/.local/share/uv/tools` or only the tool being run? The
-   former is simpler and read-only; the latter is tighter.
+1. With `SCODER_BROWSER` unset: refuse with a named error, or fall back to
+   the first of a short known list (`chromium`, `google-chrome`, `firefox`)
+   found on the host?
+2. `--app=<url>` (a bare window) as a recommended addition to the user's
+   browser flags for this preset, or left to them?
+3. Bind all of `~/.local/share/uv/tools` or only the tool being run? (Done
+   as all, read-only, in fix/uv-tools; revisit only if it matters.)
 4. Does `jupyter-ai` need anything beyond the read-only tool environment
    (a writable cache, model credentials via `.sandbox/env`)?
-5. pasta's exact spelling for a loopback-bound inbound port, and whether
-   it coexists with the live `.sandbox/ports` re-attach.
+5. Does the browser's GPU path need anything beyond what the IDE presets
+   already bind (`/dev/dri`)?
 
 [HAS_FEATURE](/design/features/tool-presets.md)
 [HAS_FEATURE](/design/features/network-isolation.md)

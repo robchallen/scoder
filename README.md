@@ -179,6 +179,10 @@ refused — use the tarball.
     in the tool's config file — can access user-installed packages.
   - **Rust**: `~/.rustup` and `~/.cargo/bin` bound read-only
   - **mise**: `~/.local/share/mise` and `~/.config/mise` bound read-only
+  - **uv tools**: `~/.local/share/uv/tools` and `~/.local/share/uv/python`
+    bound read-only, so tools installed with `uv tool install` (`hf`,
+    `jupyter`, ...) run from `~/.local/bin` as on the host; install and
+    upgrade them on the host
   - **Desktop integration**: `~/.local/share/fonts` and
     `~/.config/mimeapps.list` bound read-only, so GUI presets (`rstudio`,
     `eclipse`, `vscode`, `vscodium`, `positron`) render text with the host's real fonts and see

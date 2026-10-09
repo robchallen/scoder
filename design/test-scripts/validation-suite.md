@@ -27,7 +27,7 @@ tags: [test-script, validation]
 
 `tests/scoder.test.ts` is a self-contained integration test suite that creates
 temporary git repositories under `/tmp`, runs `scoder` against them using
-`/bin/bash` as the sandboxed command, and asserts expected behaviour. 166
+`/bin/bash` as the sandboxed command, and asserts expected behaviour. 167
 tests cover all sandbox mechanics — this catalog is currently behind the
 actual implemented count (see the note under case 113) due to other,
 unrelated in-progress work; not fixed here.
@@ -1572,6 +1572,14 @@ The parser keeps `PI_*` and `*_TOKEN`, refuses `*`, `**` and `PI-*`.
 A dry-run with `PI_*` in `.sandbox/env` passes the host's `PI_ALPHA` and
 `PI_BETA`, and start-up reports what each pattern matched, including a
 pattern that matched nothing.
+
+### 157. uv-tool-environments-bound
+[TESTED_BY](/tests/scoder.test.ts#testUvToolEnvironmentsBound)
+
+With a throwaway `HOME` laid out as `uv tool install` leaves it, a dry-run
+binds `~/.local/share/uv/tools` and `~/.local/share/uv/python` read-only,
+and the `~/.local/bin/hf` symlink into the tool's venv survives into the
+session's `~/.local/bin` snapshot as a link, not a copied script.
 
 ## Current Network Coverage
 

@@ -74,6 +74,8 @@ function fixedBindDestinations(realHome: string): string[] {
 		`${realHome}/.local/bin`,
 		`${realHome}/.local/share/fonts`,
 		`${realHome}/.local/share/mise`,
+		`${realHome}/.local/share/uv/tools`,
+		`${realHome}/.local/share/uv/python`,
 		`${realHome}/.m2`,
 		`${realHome}/.npmrc`,
 		`${realHome}/.pypirc`,
@@ -100,6 +102,8 @@ function sandboxMountPrefixes(realHome: string): string[] {
 	return [
 		`${realHome}/.local/bin`,
 		`${realHome}/.local/share/mise`,
+		`${realHome}/.local/share/uv/tools`,
+		`${realHome}/.local/share/uv/python`,
 		`${realHome}/.config/mise`,
 		`${realHome}/.config/gh`,
 		`${realHome}/.cargo/bin`,

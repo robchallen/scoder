@@ -72,7 +72,12 @@ uv-installed tool, not just this one:
 
 Plugins (`jupyter-ai`, `jupyter-mcp-server`, kernels) are installed on the
 host with `uv tool install jupyterlab --with <pkg> --force`; the tool
-environment is read-only inside, as extensions are for vscode.
+environment is read-only inside, as extensions are for vscode. Confirmed on
+the user's machine: `uv tool install jupyterlab --with jupyter-ai --force`
+is what adds jupyter-ai — `uv pip install` targets a project venv, not the
+tool's. **Done since this plan was written:** `~/.local/share/uv/tools` and
+`~/.local/share/uv/python` are now bound read-only (fix/uv-tools), so
+uv-installed tools run in the sandbox.
 
 ### 3. Configuration: read-only host config, per-project writable state
 
@@ -100,6 +105,15 @@ measured, as for the other IDEs. As the tool, it runs in the foreground and
 Ctrl-C stops it.
 
 ### 5. MCP
+
+Observed with Jupyter running **on the host**: jupyter-ai starts an MCP
+server, logging `Starting MCP server 'Jupyter MCP Server' with transport
+'http' on http://localhost:3001/mcp`. Adding `3001` to `.sandbox/ports`
+lets a sandboxed agent use it today — but that server and its kernels run
+on the host, so an agent executing cells through it runs arbitrary code on
+the host, outside the sandbox. That is the strongest reason for this
+preset: with Jupyter inside, the same server is on the sandbox's own
+`localhost:3001` and its kernels are confined.
 
 The agent and server share the sandbox, so an MCP server for notebooks
 (`jupyter-mcp-server`, or jupyter-ai's) reaches the Jupyter server at

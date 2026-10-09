@@ -1,6 +1,6 @@
 ---
 name: working-in-a-scoder-sandbox
-description: 'Use when the current git branch matches `scoder/*`, when `$SCODER_SANDBOX` is `1`, or when the user says you are in a scoder sandbox or scoder worktree (including `--no-worktree` mode). Also use if you hit an unexpected read-only filesystem error, a broken symlink, or a missing command on a machine that should have it — these are the practical signs of a scoder sandbox now that paths inside it look identical to a normal checkout. Do NOT use for generic Git advice outside scoder or for unrelated sandbox/container environments.'
+description: 'Use when the current git branch matches `scoder/*`, when `$SCODER_SANDBOX` is `1`, or when the user says you are in a scoder sandbox or scoder worktree (including `--no-worktree` mode). Also use when the user wants to connect the agent to an IDE or MCP server inside a scoder session (RStudio/btw, VS Code, VSCodium, Positron, Eclipse, WebStorm, or a host MCP service), and if you hit an unexpected read-only filesystem error, a broken symlink, or a missing command on a machine that should have it — these are the practical signs of a scoder sandbox now that paths inside it look identical to a normal checkout. Do NOT use for generic Git advice outside scoder or for unrelated sandbox/container environments.'
 license: MIT
 allowed-tools: Read Bash Grep Glob
 ---
@@ -163,6 +163,217 @@ yourself.
 - **Removing one**: `wt remove` or `git worktree remove <path>`. Don't
   `rm -rf` it — that leaves a stale registration in the repo's git metadata,
   which the user then has to `git worktree prune` themselves.
+
+## Connecting to an IDE or host MCP server
+
+Users ask for this as "connect to my IDE", "set up MCP for RStudio/VS Code/
+WebStorm", or "let the agent drive Eclipse". The setup is mostly a
+conversation: you write the agent-side config, and walk the user through the
+steps only they can do.
+
+**What you can do** — write the agent's MCP config in the project
+(`.mcp.json`, or whatever file this agent reads). **Merge, never overwrite**:
+read the existing file first and add or update only the server entries you
+are setting up; the user may have others, and the file may be committed.
+
+**What only the user can do** — tell them, step by step:
+
+- Install extensions/plugins **on the host**: the IDE's extensions directory
+  is read-only in the sandbox, so an install from inside it vanishes at exit.
+- Create or copy API tokens in the IDE's settings, then give you the token
+  (or put it in the config themselves).
+- For a server on the **host** (not inside the sandbox), add its port to
+  `.sandbox/ports` — that file is read-only to you. Port-forwarded host
+  services are reached at `localhost:<port>` as usual.
+- Restart the agent session (or reload its MCP config) so the new server is
+  picked up.
+
+**Where IDE servers are reachable** — with `scoder <agent> --ide <ide>`, the
+IDE runs in the *same* sandbox, so its server is on this sandbox's own
+`localhost`: no port forwarding needed. Paths mirror the host's, so a
+project path in a config is the same on both sides.
+
+**`npx mcp-remote` bridges** download `mcp-remote` on every session unless
+npm's cache persists. If start-up is slow, suggest the user add
+`$HOME/.npm` to `.sandbox/readwrite`.
+
+### Known working setups
+
+The entries below are from setups that worked. Adjust names, ports and
+tokens; confirm ports against what the IDE's settings show.
+
+#### RStudio: btw
+
+The R side is automatic. Inside the sandbox, scoder overlays the project's
+`.Rprofile` with:
+
+```r
+if (interactive() && requireNamespace("btw", quietly = TRUE)) {
+  btw::btw_mcp_session()
+}
+```
+
+so every interactive R session in the IDE registers itself with
+[mcptools](https://posit-dev.github.io/mcptools/). The agent side runs btw's
+MCP server, which connects to that live session. Needs the `btw` package installed in your R
+library (`~/R` is bound read-only).
+
+```json
+{
+  "mcpServers": {
+    "r-btw": {
+      "type": "stdio",
+      "command": "Rscript",
+      "args": [
+        "-e",
+        "btw::btw_mcp_server(tools=btw::btw_tools(c('cran','docs','pkg','env','run','sessioninfo','ide')))"
+      ],
+      "env": {},
+      "directTools": true
+    }
+  }
+}
+```
+
+#### VS Code, VSCodium: vscode-mcp-server
+
+The [vscode-mcp-server](https://github.com/Romixof/vscode-mcp-server)
+extension runs an MCP server inside the editor. Install it on the host
+(the extensions directory is read-only in the sandbox) using the "Install from VSIX..." option, then configure its
+API token in the sandboxed editor's settings — they live in scoder's
+managed per-project user-data-dir, so set them once per project (or put
+them in your host settings before the project's first session, when they
+are seeded).
+
+```json
+{
+  "mcpServers": {
+    "vscode-mcp-server": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "mcp-remote@next",
+        "http://localhost:3400/mcp",
+        "--header",
+        "Authorization:Bearer <api-token>"
+      ],
+      "directTools": true
+    }
+  }
+}
+```
+
+The api token sits in the project's MCP config, readable by the agent — which
+is the point: it is the agent's key to the editor, not a host credential.
+
+It must match whatever is configured in the "vscode-mcp-server" configuration
+settings in vscode (search the setting menu for `@ext:Romixo.vscode-mcp-server`
+and particularly `vscode-mcp-server.auth.apiKey` and `vscode-mcp-server.auth.mode`).
+
+#### Positron: vscode-mcp-server and btw
+
+Needs the same configuration as both vscode and Rstudio to allow for both
+environment access as well as ide interaction. The `btw` "ide" option is Rstudio
+specific so not enabled for positron.
+
+```json
+{
+  "mcpServers": {
+    "r-btw": {
+      "type": "stdio",
+      "command": "Rscript",
+      "args": [
+        "-e",
+        "btw::btw_mcp_server(tools=btw::btw_tools(c('cran','docs','pkg','env','run','sessioninfo')))"
+      ],
+      "env": {},
+      "directTools": true
+    },
+    "vscode-mcp-server": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "mcp-remote@next",
+        "http://localhost:3400/mcp",
+        "--header",
+        "Authorization:Bearer <api-token>"
+      ],
+      "directTools": true
+    }
+  }
+}
+```
+
+#### Eclipse: AssistAI
+
+Control of eclipse by an agent is achieved with the [AssistAI plugin](https://marketplace.eclipse.org/content/assistai-eclipse-ide-mcp-server-ai-agents).
+This is installed as normal through its update site and configured through
+`Window > Preferences... > AssistAI` where an API token should be generated.
+
+This publishes several MCP endpoints, each of which needs an entry like the
+following:
+
+```json
+{
+  "mcpServers": {
+    "eclipse-ide": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "mcp-remote",
+        "http://localhost:8124/mcp/eclipse-ide",
+        "--allow-http",
+        "--header",
+        "Authorization:Bearer <api-token>"
+      ],
+      "directTools": true
+    },
+    ... more servers ...
+  }
+}
+```
+
+The default set of published MCP endpoints are:
+
+```
+http://localhost:8124/mcp/eclipse-ide
+http://localhost:8124/mcp/duck-duck-search
+http://localhost:8124/mcp/time
+http://localhost:8124/mcp/webpage-reader
+http://localhost:8124/mcp/memory
+http://localhost:8124/mcp/eclipse-coder
+http://localhost:8124/mcp/eclipse-runner
+http://localhost:8124/mcp/eclipse-context
+http://localhost:8124/mcp/eclipse-git
+http://localhost:8124/mcp/eclipse-pde
+```
+
+#### WebStorm: built-in MCP server
+
+WebStorm has an MCP server built in (Settings → Tools → MCP Server). Its
+settings persist in scoder's managed per-project config, so enable it once
+per project. Depending on the settings selected there, there is the option to
+pick different transports, and copy the configuration but the `.mcp.json` is
+as follows:
+
+```json
+{
+  "mcpServers": {
+    "webstorm": {
+      "type": "sse",
+      "url": "http://127.0.0.1:64542/sse",
+      "headers": {
+        "IJ_MCP_SERVER_PROJECT_PATH": "<project-path>"
+      },
+      "directTools": true
+    }
+  }
+}
+```
+
+Use the port shown in WebStorm's MCP Server settings. `<project-path>` is
+the project's real absolute path — paths inside the sandbox mirror the
+host's, so it is the same path on both sides.
 
 ## Troubleshooting
 

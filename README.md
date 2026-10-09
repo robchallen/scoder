@@ -385,193 +385,36 @@ preferences and an empty workspace: you can import the project by hand
 (it then stays in that workspace, which persists), but dependency projects
 are no longer imported for you.
 
-## IDE MCP servers
+## IDE and host MCP servers
 
-With `--ide`, the agent and the IDE run in the **same sandbox**, so an
-IDE's MCP server is reachable on the sandbox's own `localhost` (or a socket
-inside it) — no port forwarding, and nothing crosses the sandbox boundary.
-The agent finds it through its normal MCP configuration (e.g. the
-project's `.mcp.json`). The configurations below are starting points; edit
-names, ports and paths to match your setup.
+The simplest way to connect your agent to an IDE (or to an MCP service
+running on the host) is to **ask the agent to help**, with the scoder skill
+installed (see below). It writes the agent-side MCP config, merging into
+your `.mcp.json`, and walks you through the parts only you can do: installing
+the IDE extension on the host, creating an API token, adding a host port to
+`.sandbox/ports`, and restarting the agent. The skill carries the known
+working setups for RStudio and Positron (btw), VS Code, VSCodium and Positron
+(vscode-mcp-server), Eclipse (AssistAI) and WebStorm (built in).
 
-Several of them bridge to an HTTP server with `npx -y mcp-remote`. The
-sandbox's home is fresh each session, so npm's cache is too, and
-`mcp-remote` is downloaded again at every start. To keep the cache, add
-`$HOME/.npm` to the project's `.sandbox/readwrite` (or to
-`~/.config/scoder/readwrite` for new projects).
+Two facts worth knowing either way. With `--ide`, the agent and the IDE
+share one sandbox, so an IDE's MCP server is on the sandbox's own
+`localhost` — no port forwarding. A server on the **host** needs its port
+in `.sandbox/ports`.
 
-### RStudio: btw
+### Installing the scoder skill
 
-The R side is automatic. Inside the sandbox, scoder overlays the project's
-`.Rprofile` with:
+The skill (`skills/working-in-a-scoder-sandbox/` in this repository)
+teaches an agent how a scoder sandbox behaves — what is read-only, how
+worktrees work, how to set up MCP — so it can help instead of guessing.
+Link it where your agent looks for skills:
 
-```r
-if (interactive() && requireNamespace("btw", quietly = TRUE)) {
-  btw::btw_mcp_session()
-}
+```bash
+mkdir -p ~/.agents/skills && ln -s "$PWD/skills/working-in-a-scoder-sandbox" ~/.agents/skills/
+mkdir -p ~/.claude/skills && ln -s "$PWD/skills/working-in-a-scoder-sandbox" ~/.claude/skills/   # Claude Code
 ```
 
-so every interactive R session in the IDE registers itself with
-[mcptools](https://posit-dev.github.io/mcptools/). The agent side runs btw's
-MCP server, which connects to that live session. Needs the `btw` package installed in your R
-library (`~/R` is bound read-only).
-
-```json
-{
-  "mcpServers": {
-    "r-btw": {
-      "type": "stdio",
-      "command": "Rscript",
-      "args": [
-        "-e",
-        "btw::btw_mcp_server(tools=btw::btw_tools(c('cran','docs','pkg','env','run','sessioninfo','ide')))"
-      ],
-      "env": {},
-      "directTools": true
-    }
-  }
-}
-```
-
-### VS Code, VSCodium: vscode-mcp-server
-
-The [vscode-mcp-server](https://github.com/Romixof/vscode-mcp-server)
-extension runs an MCP server inside the editor. Install it on the host
-(the extensions directory is read-only in the sandbox) using the "Install from VSIX..." option, then configure its
-API token in the sandboxed editor's settings — they live in scoder's
-managed per-project user-data-dir, so set them once per project (or put
-them in your host settings before the project's first session, when they
-are seeded).
-
-```json
-{
-  "mcpServers": {
-    "vscode-mcp-server": {
-      "command": "npx",
-      "args": [
-        "-y",
-        "mcp-remote@next",
-        "http://localhost:3400/mcp",
-        "--header",
-        "Authorization:Bearer <api-token>"
-      ],
-      "directTools": true
-    }
-  }
-}
-```
-
-The api token sits in the project's MCP config, readable by the agent — which
-is the point: it is the agent's key to the editor, not a host credential.
-
-It must match whatever is configured in the "vscode-mcp-server" configuration
-settings in vscode (search the setting menu for `@ext:Romixo.vscode-mcp-server`
-and particularly `vscode-mcp-server.auth.apiKey` and `vscode-mcp-server.auth.mode`).
-
-### Positron: vscode-mcp-server and btw
-
-Needs the same configuration as both vscode and Rstudio to allow for both
-environment access as well as ide interaction. The `btw` "ide" option is Rstudio
-specific so not enabled for positron.
-
-```json
-{
-  "mcpServers": {
-    "r-btw": {
-      "type": "stdio",
-      "command": "Rscript",
-      "args": [
-        "-e",
-        "btw::btw_mcp_server(tools=btw::btw_tools(c('cran','docs','pkg','env','run','sessioninfo')))"
-      ],
-      "env": {},
-      "directTools": true
-    },
-    "vscode-mcp-server": {
-      "command": "npx",
-      "args": [
-        "-y",
-        "mcp-remote@next",
-        "http://localhost:3400/mcp",
-        "--header",
-        "Authorization:Bearer <api-token>"
-      ],
-      "directTools": true
-    }
-  }
-}
-```
-
-### Eclipse: AssistAI
-
-Control of eclipse by an agent is achieved with the [AssistAI plugin](https://marketplace.eclipse.org/content/assistai-eclipse-ide-mcp-server-ai-agents).
-This is installed as normal through its update site and configured through
-`Window > Preferences... > AssistAI` where an API token should be generated.
-
-This publishes several MCP endpoints, each of which needs an entry like the
-following:
-
-```json
-{
-  "mcpServers": {
-    "eclipse-ide": {
-      "command": "npx",
-      "args": [
-        "-y",
-        "mcp-remote",
-        "http://localhost:8124/mcp/eclipse-ide",
-        "--allow-http",
-        "--header",
-        "Authorization:Bearer <api-token>"
-      ],
-      "directTools": true
-    },
-    ... more servers ...
-  }
-}
-```
-
-The default set of published MCP endpoints are:
-
-```
-http://localhost:8124/mcp/eclipse-ide
-http://localhost:8124/mcp/duck-duck-search
-http://localhost:8124/mcp/time
-http://localhost:8124/mcp/webpage-reader
-http://localhost:8124/mcp/memory
-http://localhost:8124/mcp/eclipse-coder
-http://localhost:8124/mcp/eclipse-runner
-http://localhost:8124/mcp/eclipse-context
-http://localhost:8124/mcp/eclipse-git
-http://localhost:8124/mcp/eclipse-pde
-```
-
-### WebStorm: built-in MCP server
-
-WebStorm has an MCP server built in (Settings → Tools → MCP Server). Its
-settings persist in scoder's managed per-project config, so enable it once
-per project. Depending on the settings selected there, there is the option to
-pick different transports, and copy the configuration but the `.mcp.json` is
-as follows:
-
-```json
-{
-  "mcpServers": {
-    "webstorm": {
-      "type": "sse",
-      "url": "http://127.0.0.1:64542/sse",
-      "headers": {
-        "IJ_MCP_SERVER_PROJECT_PATH": "<project-path>"
-      },
-      "directTools": true
-    }
-  }
-}
-```
-
-Use the port shown in WebStorm's MCP Server settings. `<project-path>` is
-the project's real absolute path — paths inside the sandbox mirror the
-host's, so it is the same path on both sides.
+`~/.agents` is copied into each session at start-up, symlinks resolved, so
+a link works and edits show up in the next session.
 
 ## Another preset's paths, without its tool (`--bind`)
 
@@ -816,6 +659,33 @@ the sandbox's own; and `SUDO_USER`/`SUDO_UID`/`SUDO_GID`, so that under
 `USER`, `LOGNAME`, `TERM` and `LANG`, plus `MCPTOOLS_SOCKET_DIR` for
 `rstudio`. Everything else in the sandbox's environment — `SHELL` and
 `EDITOR` included — is there because `.sandbox/env` lists it.
+
+## Worktrees inside a session (worktrunk)
+
+Every session, direct or worktree mode, binds one directory read-write for
+git worktrees: `$HOME/<parent-of-repo>/worktrees/<repo-name>/` — for
+`~/Git/scoder` that is `~/Git/worktrees/scoder/`. scoder's own `-w`
+worktree is the `scoder` leaf inside it. It is the **only** place a new
+worktree can go from inside the sandbox: anywhere else is unbound, so a
+worktree created there is unwritable, or gone at the end of the session.
+
+[worktrunk](https://github.com/max-sixty/worktrunk) (`wt`) works out of the
+box: scoder sets `WORKTRUNK_WORKTREE_PATH` in the sandbox to that directory
+plus `{{ branch | sanitize }}`, so `wt switch --create feature/auth` lands
+at `~/Git/worktrees/scoder/feature-auth`, overriding your own worktrunk
+config for the session only (`~/.config/worktrunk/config.toml` is bound
+read-only). Plain `git worktree add` works too, given a path under that
+directory.
+
+Worth knowing:
+
+- **Don't name a branch `scoder`** (or anything that sanitizes to it): its
+  worktree would collide with scoder's own.
+- **Repos outside `$HOME`**: scoder still puts the worktrees directory under
+  `$HOME` (`/srv/code/proj` → `~/srv/code/worktrees/proj/`) so it can be
+  bound, which is not where your host-side worktrunk config would put them.
+- **Remove worktrees with `wt remove` or `git worktree remove`**, not
+  `rm -rf`, or git keeps a stale registration until `git worktree prune`.
 
 ## After a session
 

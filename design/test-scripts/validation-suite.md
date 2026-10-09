@@ -27,7 +27,7 @@ tags: [test-script, validation]
 
 `tests/scoder.test.ts` is a self-contained integration test suite that creates
 temporary git repositories under `/tmp`, runs `scoder` against them using
-`/bin/bash` as the sandboxed command, and asserts expected behaviour. 158
+`/bin/bash` as the sandboxed command, and asserts expected behaviour. 160
 tests cover all sandbox mechanics — this catalog is currently behind the
 actual implemented count (see the note under case 113) due to other,
 unrelated in-progress work; not fixed here.
@@ -1511,6 +1511,20 @@ own `bin/idea.properties` is shadowed by a staged copy (original first,
 overrides after; the host file unchanged) because the native launcher ignores
 `WEBSTORM_PROPERTIES`, the project directory is the argument, and a second
 run does not re-seed.
+
+### 149. positron-preset-uses-its-own-paths
+[TESTED_BY](/tests/scoder.test.ts#testPositronPresetUsesItsOwnPaths)
+
+The vscodium case for Positron: `positron` with its own managed
+user-data-dir and `~/.positron/extensions`, seeded from
+`~/.config/Positron/User`, and nothing of VS Code's bound or created.
+
+### 150. rprofile-overlay-for-r-ides-only
+[TESTED_BY](/tests/scoder.test.ts#testRprofileOverlayForRIdesOnly)
+
+`positron` and `rstudio` both overlay the project's `.Rprofile` with the
+shared btw hook (`if (interactive() ...) btw::btw_mcp_session()`); `vscode`
+does not touch it.
 
 ## Current Network Coverage
 

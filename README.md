@@ -23,6 +23,7 @@ on a separate git branch via a worktree.
 | `eclipse` | Eclipse IDE, an xpra-forwarded window, and a persisted per-project workspace (see below) |
 | `vscode` | VS Code, an xpra-forwarded window, and a managed per-project user-data-dir (see below) |
 | `vscodium` | VSCodium, set up exactly like `vscode` but with its own paths (see below) |
+| `positron` | Positron (Posit's VS Code-based IDE), set up exactly like `vscode` with its own paths (see below) |
 | `webstorm` | WebStorm, an xpra-forwarded window, and a managed per-project config and cache (see below) |
 
 
@@ -84,6 +85,15 @@ from `~/.config/VSCodium/User`, binds `~/.vscode-oss/extensions`
 read-only, and keeps its managed user-data-dirs under
 `~/.local/share/scoder-vscodium-userdata/`. Nothing of VS Code's is read
 or bound, so the two never share state.
+
+**`positron`** is the same again for Positron: it runs `positron`, seeds
+from `~/.config/Positron/User`, binds `~/.positron/extensions` read-only,
+and keeps its managed user-data-dirs under
+`~/.local/share/scoder-positron-userdata/`. `~/.positron-shared` (state
+shared between running instances) is not bound. Like `rstudio`, it
+overlays the project's `.Rprofile` inside the sandbox with a
+`btw::btw_mcp_session()` call (interactive sessions only, when btw is
+installed), so `pi` alongside it can drive the live R session.
 
 **`webstorm`** follows the same pattern in JetBrains' terms. Each project
 gets `~/.local/share/scoder-webstorm/<project>/`: its `config/` copied
@@ -171,14 +181,14 @@ refused — use the tarball.
   - **mise**: `~/.local/share/mise` and `~/.config/mise` bound read-only
   - **Desktop integration**: `~/.local/share/fonts` and
     `~/.config/mimeapps.list` bound read-only, so GUI presets (`rstudio`,
-    `eclipse`, `vscode`, `vscodium`) render text with the host's real fonts and see
+    `eclipse`, `vscode`, `vscodium`, `positron`) render text with the host's real fonts and see
     the host's file-type "open with" associations
 - **Java/Maven**: `~/.m2` bound read-write, otherwise not much works.
 - **Minimal `/dev`** — individual real host device nodes only (`null`,
   `zero`, `full`, `urandom`, `random`, `tty`, `pts`, `ptmx`, `fd`), not
   the host's whole `/dev` (which would also expose every raw disk, TPM,
   USB, and other device node on the machine). `/dev/shm` is a fresh
-  tmpfs. GUI presets (`rstudio`, `eclipse`, `vscode`, `vscodium`) additionally bind
+  tmpfs. GUI presets (`rstudio`, `eclipse`, `vscode`, `vscodium`, `positron`) additionally bind
   `/dev/dri`
   for GPU rendering when it exists on the host — needed, not optional,
   for RStudio Desktop specifically (Chromium's GPU process crashes
@@ -236,12 +246,12 @@ scoder --dry-run opencode         # show bwrap command without running
                          USER@HOST outside the sandbox, and expose only that
                          one connection inside it
     --ide NAME          Run preset NAME (rstudio, eclipse, vscode, vscodium,
-                         webstorm) as a
+                         positron, webstorm) as a
                          companion IDE in the same sandbox (see below)
     --bind NAME         Add CLI preset NAME's config binds without
                          launching it; repeatable (see below)
     --new-workspace     Reset this project's managed eclipse/vscode/vscodium/
-                         webstorm state
+                         positron/webstorm state
                          before launch (see below)
     --native-display    For a GUI preset, draw on the host's X session
                          directly instead of forwarding windows from a
@@ -320,7 +330,7 @@ unfamiliar host key.
 ## A companion IDE (`--ide`)
 
 `--ide NAME` launches `NAME` (must have a registered preset — `rstudio`,
-`eclipse`, `vscode`, `vscodium` and `webstorm`, following the same pattern as other tool presets)
+`eclipse`, `vscode`, `vscodium`, `positron` and `webstorm`, following the same pattern as other tool presets)
 as a companion alongside the primary tool, both inside the *same* sandbox:
 
 ```bash
@@ -384,12 +394,12 @@ whatever the agent writes there takes effect the next time you run
 After the tool name, `--bind` is taken as scoder's only when its value is a
 preset name, so a tool's own `--bind` (`scoder python3 -m http.server --bind
 0.0.0.0`) passes through untouched. GUI presets (`rstudio`, `eclipse`,
-`vscode`, `vscodium`, `webstorm`) are refused: their binds include a display, which only makes
+`vscode`, `vscodium`, `positron`, `webstorm`) are refused: their binds include a display, which only makes
 sense with the GUI running — use `--ide` for that.
 
 ## Starting a project's IDE state over (`--new-workspace`)
 
-`eclipse`, `vscode`, `vscodium` and `webstorm` keep per-project state between sessions in
+`eclipse`, `vscode`, `vscodium`, `positron` and `webstorm` keep per-project state between sessions in
 directories scoder manages — an Eclipse workspace under
 `~/.local/share/scoder-eclipse-workspaces/`, a VS Code user-data-dir under
 `~/.local/share/scoder-vscode-userdata/` — seeded once from your host
@@ -412,7 +422,7 @@ It is refused while a session is still using that directory, and with
 
 ## Native display (`--native-display`)
 
-GUI presets (`rstudio`, `eclipse`, `vscode`, `vscodium`, `webstorm`) normally run under an xpra server inside
+GUI presets (`rstudio`, `eclipse`, `vscode`, `vscodium`, `positron`, `webstorm`) normally run under an xpra server inside
 the sandbox: their windows are forwarded to the host, and they never hold a
 connection to the host's X session. That isolation has a usability cost —
 xpra's translation has been reported to break hovers, popups and dialog
@@ -651,7 +661,7 @@ scoder: To discard: git worktree remove <worktree-path> && git branch -D scoder/
 - `ssh` (OpenSSH client) — only needed for `--allow-ssh`
 - `bun` (TypeScript runtime) - install via `curl -fsSL https://bun.sh/install | bash`
 - `xpra` 6.x on the host — only for GUI presets (`rstudio`, `eclipse`,
-  `vscode`, `vscodium`, `webstorm`) without `--native-display`; `--install-dependencies` installs
+  `vscode`, `vscodium`, `positron`, `webstorm`) without `--native-display`; `--install-dependencies` installs
   it from xpra's own repository, pinned to 6.5.3 (6.5.4 breaks scrolling)
 - The tool you want to sandbox (e.g. `opencode`, `copilot`, `claude`)
 - Tool-specific prerequisites must already be set up (and installed globally):
@@ -660,7 +670,7 @@ scoder: To discard: git worktree remove <worktree-path> && git branch -D scoder/
   - `opencode`: install from https://opencode.ai
   - `pi`: install from https://pi.dev
   - `eclipse`: the [import-projects plugin](https://github.com/robchallen/eclipse-import-projects-plugin)
-  - `vscode` / `vscodium`: the .deb, .rpm or tarball build (not the snap)
+  - `vscode` / `vscodium` / `positron`: the .deb, .rpm or tarball build (not the snap)
 
 ## Install
 

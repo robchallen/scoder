@@ -200,8 +200,9 @@ refused — use the tarball.
   root lists ports forwarded into the sandbox (an MCP server, a local
   research-tool API, an LLM endpoint), live-reloaded if edited mid-session.
   If a local OpenAI-compatible API is listening on port `11434` (the Ollama
-  default) it is auto-detected at startup and appended to `.sandbox/ports`
-  automatically. Override the probed port with `SCODER_LLM_PORT`. See
+  default), or port `11435` serves an OpenAI-style `/v1/models`, it is
+  auto-detected at startup and appended to `.sandbox/ports` automatically.
+  Override the primary probed port with `SCODER_LLM_PORT`. See
   [persistent host-loopback ports](#persistent-host-loopback-ports-an-sandboxports-file)
   below.
 - **No ssh access by default** — with `--allow-ssh user@host`, scoder opens a
@@ -522,7 +523,8 @@ file's presence and content is the entire mechanism, same as
   file that could silently mean less than it looks like is the wrong
   failure mode.
 - **Auto-detection persists automatically**: if a local OpenAI-compatible
-  API is listening on port `11434` (override with `SCODER_LLM_PORT`) it is
+  API is listening on port `11434` (override with `SCODER_LLM_PORT`), or
+  port `11435` answers `GET /v1/models` with an OpenAI-style model list, it is
   appended to `.sandbox/ports` — additively, only once — so the next session,
   and every teammate's session, has it without anyone naming the port
   again. Skipped entirely under `--dry-run`.
@@ -630,7 +632,7 @@ you start scoder in — none of them is passed into the sandbox (that is
 |----------|--------|
 | `SCODER_NATIVE_DISPLAY=1` | Same as `--native-display`. |
 | `SCODER_BIND` | Same as `--bind`, for each preset named (comma- or space-separated, e.g. `claude,copilot`); added to any `--bind` flags. |
-| `SCODER_LLM_PORT` | The host port probed for a local OpenAI-compatible API at startup (default `11434`, Ollama's). When something answers, the port is forwarded and appended to `.sandbox/ports`. |
+| `SCODER_LLM_PORT` | The host port probed for a local OpenAI-compatible API at startup (default `11434`, Ollama's). When something answers, the port is forwarded and appended to `.sandbox/ports`. Port `11435` is also probed, and taken only if it serves an OpenAI-style `/v1/models`. |
 | `SCODER_KEEP_SESSION_TMP` | Any non-empty value keeps the session's temp root (`/tmp/scoder-<id>`) after exit instead of deleting it — the staged files scoder put in front of the sandbox, and the IDE/xpra log. Useful with `--dry-run` to inspect what it built. |
 | `XDG_CONFIG_HOME` | Where the user defaults live: `$XDG_CONFIG_HOME/scoder/`, else `~/.config/scoder/`. |
 

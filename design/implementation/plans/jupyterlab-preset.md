@@ -77,6 +77,30 @@ forwarded in either direction. The token is random per session: inside the
 sandbox it guards little (the agent there may read it, and is meant to use
 it for MCP), but it keeps Jupyter's normal auth on.
 
+### 1c. Logs stay out of the terminal — in every mode
+
+Jupyter's server log is verbose, and the browser it starts adds its own.
+Like the other GUI programs, none of it may reach the terminal: it goes to
+the session log scoder already prints the host path of at start-up
+(`IDE log on the host: …` / `xpra log on the host: …`).
+
+Today that is only true for a **companion** (`--ide`): entrypoint.sh
+redirects the IDE's output to `$IDE_LOG`/`$XPRA_LOG`. As the **primary
+tool** it is not:
+
+- under xpra (`XPRA_TARGET=harness`), the entrypoint runs the xpra-wrapped
+  program in the foreground on the terminal — xpra's log and the program's
+  output both land there;
+- under `--native-display`, the primary tool is exec'd directly, with no
+  entrypoint, so its output is the terminal.
+
+This is a gap for every GUI preset, not just this one (`scoder rstudio`
+presumably shows it today — to confirm). Fix it generally, before or with
+this preset: when the primary tool is a GUI preset, its output goes to the
+session log, and the terminal shows one line instead — where the log is,
+and that Ctrl-C (or closing the program) ends the session. Native mode then
+needs the entrypoint (or an equivalent redirect) for a GUI primary too.
+
 ### 2. Finding JupyterLab: uv tool environments
 
 `uv tool install jupyterlab` puts it in `~/.local/share/uv/tools/jupyterlab/`;
@@ -153,14 +177,16 @@ setups", as for the other IDEs.
    `scoder` running it as the tool once the preset is `gui: true`, or with
    `--native-display` for a first look); confirm the browser opens on the
    lab URL and the MCP server logs on 3001.
-3. `jupyterlab` preset: `gui: true`, token generation, launch args, config
+3. **GUI primary output to the log** (section 1c), for all GUI presets;
+   check `scoder rstudio` first to confirm the gap.
+4. `jupyterlab` preset: `gui: true`, token generation, launch args, config
    binds (`~/.jupyter` ro, managed settings/workspaces dirs, kernelspecs
    ro), env, and a named error when `SCODER_BROWSER` is unset.
-4. `ideShutdown` measured; `--new-workspace` via `managedWorkspaceDir`.
-5. AGENTS.md note under `--ide` naming the server URL and token, and the
+5. `ideShutdown` measured; `--new-workspace` via `managedWorkspaceDir`.
+6. AGENTS.md note under `--ide` naming the server URL and token, and the
    MCP endpoint; skill "Known working setups" entry.
-6. Docs and tests (dry-run: launch args, binds, env, no inbound forward;
-   unit: token generation).
+7. Docs and tests (dry-run: launch args, binds, env, no inbound forward;
+   output redirected for a GUI primary; unit: token generation).
 
 ## Open questions
 

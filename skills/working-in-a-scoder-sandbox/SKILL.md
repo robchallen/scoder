@@ -310,8 +310,29 @@ Control of eclipse by an agent is achieved with the [AssistAI plugin](https://ma
 This is installed as normal through its update site and configured through
 `Window > Preferences... > AssistAI` where an API token should be generated.
 
-This publishes several MCP endpoints, each of which needs an entry like the
-following:
+**Finding the port and token yourself** — you usually need not ask the user.
+AssistAI keeps its settings in an Eclipse preferences file:
+
+```
+~/.eclipse/.metadata/.plugins/org.eclipse.core.runtime/.settings/com.github.gradusnikov.eclipse.plugin.assistai.main.prefs
+```
+
+If it is not there, look for the same relative path
+(`.metadata/.plugins/org.eclipse.core.runtime/.settings/com.github.gradusnikov.eclipse.plugin.assistai.main.prefs`)
+under scoder's managed workspace,
+`~/.local/share/scoder-eclipse-workspaces/<project>/`. The file says whether
+HTTP MCP is enabled, which port it uses (8124 by default) and the generated
+token. If HTTP MCP is off or there is no token yet, ask the user to enable it
+and generate one under `Window > Preferences... > AssistAI`.
+
+For working in the IDE, the Eclipse-specific endpoints are the useful ones:
+`eclipse-ide`, `eclipse-coder`, `eclipse-runner`, `eclipse-context`,
+`eclipse-git` and `eclipse-pde` (the others — search, time, webpage reader,
+memory — duplicate tools you likely have already). After writing the config,
+check each endpoint answers an MCP `initialize` call before telling the user
+it is set up.
+
+Each endpoint needs an entry like the following:
 
 ```json
 {

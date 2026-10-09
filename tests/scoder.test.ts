@@ -3223,6 +3223,184 @@ test("terminal-restored-after-exit: a tty gets the restore sequence and a scroll
 	expect(TERMINAL_RESTORE_SEQUENCE).not.toContain("\x1b[3J");
 });
 
+// ### Test: jupyterlab-preset-layout
+// EM: JupyterLab runs inside the sandbox and opens SCODER_BROWSER's wrapper
+// EM: itself; ~/.jupyter (host-executed config) is read-only; only kernels/
+// EM: of the host data dir is bound, so host servers' runtime tokens and the
+// EM: notebook-trust secret stay out — of the binds and of the one-time
+// EM: seed; lab settings and data persist per project; a GUI primary's
+// EM: output goes to the session log. Throwaway HOME.
+test("jupyterlab-preset-layout: launch args, read-only config and kernels, per-project seeded state, host runtime and trust secret kept out", async () => {
+	const repoDir = await createTempRepo();
+	tempRepos.push(repoDir);
+	const binDir = await createFakeToolDir("jupyter-lab");
+	const home = `/tmp/scoder-jlhome-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
+	const data = `${home}/.local/share/jupyter`;
+	const managed = `${home}/.local/share/scoder-jupyterlab/${repoDir.slice(1)}`;
+	const env = {
+		PATH: `${binDir}:${process.env.PATH}`,
+		HOME: home,
+		SCODER_BROWSER: "sh --incognito",
+	};
+
+	try {
+		await Bun.write(
+			`${home}/.jupyter/jupyter_server_config.py`,
+			"# host config\n",
+		);
+		await Bun.write(`${home}/.jupyter/lab/user-settings/theme.json`, "{}");
+		await Bun.write(`${data}/kernels/py/kernel.json`, "{}");
+		await Bun.write(`${data}/runtime/jpserver-1.json`, '{"token":"HOSTTOKEN"}');
+		await Bun.write(`${data}/notebook_secret`, "HOSTSECRET");
+		await Bun.write(`${data}/jupyter_ai/config.json`, '{"model":"m"}');
+
+		const run = await runScoderRaw(
+			repoDir,
+			["--dry-run", "--no-worktree", "jupyterlab"],
+			env,
+		);
+		expect(run.code).toBe(0);
+		const flat = flattenDryRun(run.stdout);
+
+		const args = flat.match(/--IdentityProvider\.token=([0-9a-f]{48})/);
+		expect(args).not.toBeNull();
+		expect(flat).toContain("--ip=127.0.0.1");
+		expect(flat).toContain("--port=8888");
+		expect(flat).toContain("--ServerApp.browser=/tmp/scoder-browser %s");
+		expect(flat).toContain("--ServerApp.use_redirect_file=False");
+		expect(flat).toContain("--setenv BROWSER /tmp/scoder-browser");
+
+		expect(flat).toContain(`--ro-bind ${home}/.jupyter ${home}/.jupyter`);
+		expect(flat).toContain(`--ro-bind ${data}/kernels ${data}/kernels`);
+		expect(flat).toContain(`--bind ${managed} ${managed}`);
+		expect(flat).not.toMatch(new RegExp(`--(ro-)?bind ${data} `));
+		expect(flat).not.toContain("HOSTTOKEN");
+		expect(flat).toContain(
+			`--setenv JUPYTERLAB_SETTINGS_DIR ${managed}/settings`,
+		);
+		expect(flat).toContain(`--setenv JUPYTER_DATA_DIR ${managed}/data`);
+		expect(flat).toContain(
+			`--setenv JUPYTER_PATH ${home}/.local/share/jupyter`,
+		);
+		expect(flat).toContain("--setenv HARNESS_LOG /tmp/scoder-xpra.log");
+
+		expect(await fileExists(`${managed}/settings/theme.json`)).toBe(true);
+		expect(
+			await Bun.file(`${managed}/data/jupyter_ai/config.json`).text(),
+		).toBe('{"model":"m"}');
+		expect(await dirExists(`${managed}/data/runtime`)).toBe(false);
+		expect(await dirExists(`${managed}/data/kernels`)).toBe(false);
+		expect(await fileExists(`${managed}/data/notebook_secret`)).toBe(false);
+
+		const noBrowser = await runScoderRaw(
+			repoDir,
+			["--dry-run", "--no-worktree", "jupyterlab"],
+			{
+				...env,
+				SCODER_BROWSER: "",
+			},
+		);
+		expect(noBrowser.code).not.toBe(0);
+		expect(noBrowser.stderr).toContain("needs SCODER_BROWSER");
+	} finally {
+		await Bun.spawn(["rm", "-rf", home, binDir]).exited;
+		await cleanupRepo(repoDir);
+	}
+});
+
+// ### Test: jupyterlab-companion-note-gives-url-and-token
+// EM: With `--ide jupyterlab` beside an agent, the AGENTS.md note names the
+// EM: server URL with the session's token (the same one Jupyter is started
+// EM: with) and jupyter-ai's MCP endpoint, so the agent can set up MCP.
+test("jupyterlab-companion-note-gives-url-and-token: AGENTS.md carries the server URL, the launch token and the MCP endpoint", async () => {
+	const repoDir = await createTempRepo();
+	tempRepos.push(repoDir);
+	const piDir = await createFakeToolDir("pi");
+	const jlDir = await createFakeToolDir("jupyter-lab");
+	const kept: string[] = [];
+
+	try {
+		const run = await runScoderRaw(
+			repoDir,
+			["--dry-run", "--no-worktree", "pi", "--ide", "jupyterlab"],
+			{
+				PATH: `${piDir}:${jlDir}:${process.env.PATH}`,
+				SCODER_BROWSER: "sh",
+				SCODER_KEEP_SESSION_TMP: "1",
+			},
+		);
+		expect(run.code).toBe(0);
+		const flat = flattenDryRun(run.stdout);
+		const token = flat.match(/--IdentityProvider\.token=([0-9a-f]{48})/)?.[1];
+		expect(token).toBeDefined();
+		const overlay = flat.match(
+			new RegExp(
+				`--ro-bind (/tmp/scoder-[0-9a-f]{8}${repoDir}/AGENTS\\.md) ${repoDir}/AGENTS\\.md`,
+			),
+		);
+		expect(overlay).not.toBeNull();
+		kept.push(overlay![1]);
+		const text = await Bun.file(overlay![1]).text();
+		expect(text).toContain(`http://127.0.0.1:8888/lab?token=${token}`);
+		expect(text).toContain("http://localhost:3001/mcp");
+		// A companion's output already goes to the log; no HARNESS_LOG for pi.
+		expect(flat).not.toContain("--setenv HARNESS_LOG");
+	} finally {
+		for (const path of kept) await removeSessionRoot(path);
+		await Bun.spawn(["rm", "-rf", piDir, jlDir]).exited;
+		await cleanupRepo(repoDir);
+	}
+});
+
+// ### Test: gui-primary-output-goes-to-log
+// EM: The entry point's HARNESS_LOG contract: with it set, the primary
+// EM: tool's stdout and stderr land in the file, not the terminal, and its
+// EM: stdin is /dev/null; without it, the tool keeps the terminal.
+test("gui-primary-output-goes-to-log: HARNESS_LOG sends the primary tool's output to the file; unset, it stays on the terminal", async () => {
+	const dir = `/tmp/scoder-harnesslog-${Date.now()}`;
+	const log = `${dir}/gui.log`;
+	await Bun.write(`${dir}/.keep`, "");
+	const tool = [
+		"bash",
+		"-c",
+		'echo to-stdout; echo to-stderr >&2; read -t 1 x && echo "stdin:$x"; true',
+	];
+
+	try {
+		const withLog = Bun.spawn(["bash", ENTRYPOINT_SRC, ...tool], {
+			env: {
+				...process.env,
+				HARNESS_ARGC: String(tool.length),
+				IDE_ARGC: "0",
+				HARNESS_LOG: log,
+			},
+			stdin: new Blob(["typed\n"]),
+			stdout: "pipe",
+			stderr: "pipe",
+		});
+		await withLog.exited;
+		const out = await new Response(withLog.stdout).text();
+		const err = await new Response(withLog.stderr).text();
+		const logged = await Bun.file(log).text();
+		expect(out).not.toContain("to-stdout");
+		expect(err).not.toContain("to-stderr");
+		expect(err).toContain("going to its log");
+		expect(logged).toContain("to-stdout");
+		expect(logged).toContain("to-stderr");
+		expect(logged).not.toContain("stdin:typed");
+
+		const plain = Bun.spawn(["bash", ENTRYPOINT_SRC, ...tool], {
+			env: { ...process.env, HARNESS_ARGC: String(tool.length), IDE_ARGC: "0" },
+			stdout: "pipe",
+			stderr: "pipe",
+		});
+		await plain.exited;
+		expect(await new Response(plain.stdout).text()).toContain("to-stdout");
+	} finally {
+		await Bun.spawn(["rm", "-rf", dir]).exited;
+	}
+});
+
 // ### Test: dry-run-uses-pasta
 test("dry-run-uses-pasta: Dry-run output includes pasta in command", async () => {
 	const repoDir = await createTempRepo();
@@ -4766,6 +4944,7 @@ test.skipIf(!xpraTestToolsAvailable)(
 					...process.env,
 					PATH: `${shimDir}:${process.env.PATH}`,
 					DISPLAY: display,
+					SCODER_KEEP_SESSION_TMP: "1",
 				},
 				stdout: "pipe",
 				stderr: "pipe",
@@ -4773,6 +4952,22 @@ test.skipIf(!xpraTestToolsAvailable)(
 			await proc.exited;
 			const elapsedMs = Date.now() - started;
 			const stderr = await new Response(proc.stderr).text();
+			// EM: The xpra server's own output is in the session log now, not
+			// EM: the terminal (a GUI primary logs like a companion — see
+			// EM: gui-primary-output-goes-to-log), so the server-side lines
+			// EM: below are checked in scoder's stderr plus that log.
+			const xpraLogPath = stderr.match(
+				/xpra log on the host: (\/tmp\/scoder-[0-9a-f]{8}\/tmp\/scoder-xpra\.log)/,
+			)?.[1];
+			const xpraLog = xpraLogPath
+				? await Bun.file(xpraLogPath)
+						.text()
+						.catch(() => "")
+				: "";
+			if (xpraLogPath) {
+				await removeSessionRoot(xpraLogPath);
+			}
+			const serverOut = `${stderr}\n${xpraLog}`;
 
 			// EM: Surfaced on failure rather than swallowed: everything this
 			// EM: test depends on (bwrap, the pasta shim, xpra's own startup)
@@ -4810,20 +5005,20 @@ test.skipIf(!xpraTestToolsAvailable)(
 			// EM: change could easily undo while everything still ran. The
 			// EM: server logs this line to its own output, which in
 			// EM: XPRA_TARGET=harness mode is scoder's.
-			expect(stderr).toContain("mmap transfers");
+			expect(serverOut).toContain("mmap transfers");
 
 			// EM: And the two things that keep this session's inotify
 			// EM: footprint at 1 instance instead of 8, out of the 128 the
 			// EM: kernel allows per *user* — the budget RStudio exhausted with
 			// EM: `system error 24 (Too many open files)`.
-			expect(stderr).not.toContain("watching for applications menu");
+			expect(serverOut).not.toContain("watching for applications menu");
 
 			// EM: --input-method=keep rather than =none. `none` does not mean
 			// EM: "no input method": xpra reads it as "fall back to xim" and
 			// EM: sets GTK_IM_MODULE=xim, which Eclipse's SWT warns is
 			// EM: unsupported. Asserted because the difference between the two
 			// EM: spellings is invisible until an IDE complains.
-			expect(stderr).not.toContain("GTK_IM_MODULE=xim");
+			expect(serverOut).not.toContain("GTK_IM_MODULE=xim");
 
 			// The GUI program got a display, and it is xpra's own virtual one
 			// inside the sandbox — not the host's :89.
@@ -4958,8 +5153,13 @@ test("native-display-grants-host-x11-with-private-bus: the flag grants host X11 
 		expect(flat).toContain(`--setenv XAUTHORITY ${SANDBOX_HOME}/.Xauthority`);
 
 		// Direct form: the private session bus is a wrap of the exec vector,
-		// never an environment grant — and its wrapper is present.
-		expect(flat).toMatch(/-- dbus-run-session\s+--\s+\S*rstudio/);
+		// never an environment grant — and its wrapper is present. A GUI
+		// primary now runs through the entry point so its output goes to
+		// the session log (HARNESS_LOG), with the wrap as its harness argv.
+		expect(flat).toMatch(
+			/-- bash \/tmp\/scoder-entrypoint\.sh dbus-run-session\s+--\s+\S*rstudio/,
+		);
+		expect(flat).toContain("--setenv HARNESS_LOG /tmp/scoder-ide.log");
 		expect(flat).not.toContain("--setenv DBUS_SESSION_BUS_ADDRESS");
 
 		// The /run invariant the whole plan started from: tmpfs still there,
@@ -4971,13 +5171,15 @@ test("native-display-grants-host-x11-with-private-bus: the flag grants host X11 
 		expect(flat).not.toMatch(/--ro-bind \/run\//);
 		expect(flat).not.toMatch(/--bind \/run\//);
 
-		// xpra is entirely out of this path: no socket dir, no env, and no
-		// entry point — the direct form still direct-execs, so the
-		// `if (ideBin || xpra)` gate did not grow for it.
+		// xpra is entirely out of this path: no socket dir, no env. The
+		// entry point *is* used now — not for a bus (still the exec-vector
+		// wrap above) but so a GUI primary's output goes to the session log
+		// rather than the terminal; Decision 5's "direct form direct-execs"
+		// gave way to that.
 		expect(flat).not.toContain("XPRA_SOCKET");
 		expect(flat).not.toContain("XPRA_MMAP");
 		expect(flat).not.toMatch(/--bind \/tmp\/scoder-[0-9a-f]{8}\/xpra/);
-		expect(flat).not.toContain("scoder-entrypoint.sh");
+		expect(flat).not.toContain("--setenv DBUS_BUS");
 	} finally {
 		await x11.cleanup();
 		await Bun.spawn(["rm", "-rf", fakeBinDir]).exited;

@@ -25,6 +25,7 @@ on a separate git branch via a worktree.
 | `vscodium` | VSCodium, set up exactly like `vscode` but with its own paths (see below) |
 | `positron` | Positron (Posit's VS Code-based IDE), set up exactly like `vscode` with its own paths (see below) |
 | `webstorm` | WebStorm, an xpra-forwarded window, and a managed per-project config and cache (see below) |
+| `jupyterlab` | JupyterLab, served inside the sandbox and shown in a browser that also runs inside it (see below) |
 
 
 GUI presets don't see the host's X server at all. Each runs under an
@@ -110,6 +111,24 @@ the config dir, so they are bound read-only from your host
 (`~/.java/.userPrefs/jetbrains`, `~/.local/share/JetBrains/consentOptions`). Your host WebStorm can run at the same time. WebStorm writes its
 own `.idea/` into the project, as it always does. The snap build is
 refused — use the tarball.
+
+**`jupyterlab`** runs `jupyter-lab` (install it with `uv tool install
+jupyterlab`, adding plugins with `--with`, e.g. `--with jupyter-ai`). The
+server runs inside the sandbox, and so does the browser that shows it:
+Jupyter opens your `SCODER_BROWSER` command (required for this preset) in
+the sandbox, under xpra like the other GUI presets. Your host's browser is
+never used — a page from the sandbox in your everyday browser would share
+its `localhost` cookies and could reach host-only services. Nothing is
+forwarded in or out; the server is on the sandbox's own
+`127.0.0.1:8888` with a token per session. `~/.jupyter` is read-only
+(its config runs as code on the host), host kernels are visible
+read-only, and lab settings, layouts and Jupyter's data (jupyter-ai's
+settings among them) persist per project under
+`~/.local/share/scoder-jupyterlab/`, copied once from yours — never your
+host's runtime files or notebook-trust secret. The server log goes to the
+session log, not the terminal; Ctrl-C ends the session. With
+`scoder pi --ide jupyterlab`, the agent is told the server URL, token and
+jupyter-ai's MCP endpoint.
 
 ## How it works
 
@@ -483,7 +502,7 @@ It is refused while a session is still using that directory, and with
 
 ## Native display (`--native-display`)
 
-GUI presets (`rstudio`, `eclipse`, `vscode`, `vscodium`, `positron`, `webstorm`) normally run under an xpra server inside
+GUI presets (`rstudio`, `eclipse`, `vscode`, `vscodium`, `positron`, `webstorm`, `jupyterlab`) normally run under an xpra server inside
 the sandbox: their windows are forwarded to the host, and they never hold a
 connection to the host's X session. That isolation has a usability cost —
 xpra's translation has been reported to break hovers, popups and dialog
@@ -713,6 +732,10 @@ Worth knowing:
   `rm -rf`, or git keeps a stale registration until `git worktree prune`.
 
 ## After a session
+
+A GUI preset run as the tool itself (`scoder rstudio`, `scoder jupyterlab`)
+sends its output to the session log, like a companion IDE, and scoder
+prints where at start-up; the terminal just shows that line.
 
 When the tool exits, scoder puts your terminal back — leaves any alternate
 screen, shows the cursor, turns off mouse reporting and bracketed paste,

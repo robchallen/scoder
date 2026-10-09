@@ -337,7 +337,11 @@ async function main(): Promise<void> {
 	// EM: it and can offer to connect to it over MCP.
 	const companionIde =
 		options.ide && idePreset
-			? { key: options.ide, name: idePreset.description }
+			? {
+					key: options.ide,
+					name: idePreset.description,
+					note: idePreset.agentsNote?.(),
+				}
 			: undefined;
 
 	const guiTarget: "harness" | "ide" | null = idePreset?.gui
@@ -853,10 +857,13 @@ async function main(): Promise<void> {
 	// EM: path (builder.ts, stageEntrypointLog), so printing the host half is
 	// EM: a path that opens; it lives under the session staging root and so
 	// EM: dies with the session, which is the deal being disclosed here.
-	if (ideBin || xpra) {
+	// EM: A GUI primary tool logs there too (builder.ts, HARNESS_LOG), so
+	// EM: it needs the line as much as a companion does.
+	if (ideBin || xpra || guiTarget === "harness") {
 		const logDest = entrypointLogDest(xpra);
+		const what = xpra ? "xpra" : guiTarget === "harness" ? "GUI" : "IDE";
 		info(
-			`${xpra ? "xpra" : "IDE"} log on the host: ${sessionPath(logDest)} — at ${logDest} inside the sandbox, removed when the session ends`,
+			`${what} log on the host: ${sessionPath(logDest)} — at ${logDest} inside the sandbox, removed when the session ends`,
 		);
 	}
 

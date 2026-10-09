@@ -27,7 +27,7 @@ tags: [test-script, validation]
 
 `tests/scoder.test.ts` is a self-contained integration test suite that creates
 temporary git repositories under `/tmp`, runs `scoder` against them using
-`/bin/bash` as the sandboxed command, and asserts expected behaviour. 168
+`/bin/bash` as the sandboxed command, and asserts expected behaviour. 171
 tests cover all sandbox mechanics — this catalog is currently behind the
 actual implemented count (see the note under case 113) due to other,
 unrelated in-progress work; not fixed here.
@@ -1588,6 +1588,31 @@ on, mouse and bracketed paste off, attributes reset, `ESC[H ESC[2J`, never
 `ESC[3J`) to a tty only; a pipe and `SCODER_KEEP_SCREEN` get nothing.
 Checked by hand under a real pty: the exact bytes, and `stty sane` running
 cleanly.
+
+### 159. jupyterlab-preset-layout
+[TESTED_BY](/tests/scoder.test.ts#testJupyterlabPresetLayout)
+
+With a throwaway `HOME`: launch args (loopback, port 8888, a 48-hex token,
+the browser wrapper, the http URL rather than a redirect file),
+`~/.jupyter` and `kernels/` read-only, the managed dir read-write, the
+Jupyter env redirections, `HARNESS_LOG` set; the host data dir never bound
+whole and its runtime token never in the command; the seed copies lab
+settings and jupyter-ai's data but not `runtime/`, `kernels/` or
+`notebook_secret`. No `SCODER_BROWSER` is a named error.
+
+### 160. jupyterlab-companion-note-gives-url-and-token
+[TESTED_BY](/tests/scoder.test.ts#testJupyterlabCompanionNoteGivesUrlAndToken)
+
+`pi --ide jupyterlab`: the `AGENTS.md` note has the server URL with the
+same token Jupyter is launched with, and the MCP endpoint; no
+`HARNESS_LOG` for the agent.
+
+### 161. gui-primary-output-goes-to-log
+[TESTED_BY](/tests/scoder.test.ts#testGuiPrimaryOutputGoesToLog)
+
+entrypoint.sh with `HARNESS_LOG`: the primary tool's stdout and stderr go
+to the file and its stdin is `/dev/null`; without it, output stays on the
+terminal.
 
 ## Current Network Coverage
 

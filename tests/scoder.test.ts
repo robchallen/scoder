@@ -2918,6 +2918,174 @@ test("dev-console-is-dev-null: /dev/console inside the sandbox is /dev/null, bou
 	}
 });
 
+// ### Test: scoder-skill-injected-into-agents-snapshot
+// EM: The skill used to be fetched by the agent with `npx skills add`, which
+// EM: cannot work inside: ~/.agents is a read-only snapshot. scoder now adds
+// EM: its own copy to the snapshot — even when the host has no ~/.agents —
+// EM: unless the user installed one, which wins. The host is never written.
+test("scoder-skill-injected-into-agents-snapshot: the bundled skill is added to the ~/.agents snapshot unless the user has their own", async () => {
+	const repoDir = await createTempRepo();
+	tempRepos.push(repoDir);
+	const bundled = await Bun.file(
+		`${import.meta.dir}/../skills/working-in-a-scoder-sandbox/SKILL.md`,
+	).text();
+	const homes: string[] = [];
+	const kept: string[] = [];
+	const snapshotSkill = (flat: string, home: string) => {
+		const m = flat.match(
+			new RegExp(
+				`--ro-bind (/tmp/scoder-[0-9a-f]{8}${home}/\\.agents) ${home}/\\.agents`,
+			),
+		);
+		expect(m).not.toBeNull();
+		kept.push(m![1]);
+		return `${m![1]}/skills/working-in-a-scoder-sandbox/SKILL.md`;
+	};
+
+	try {
+		// No ~/.agents on the host at all.
+		const bare = `/tmp/scoder-skillhome-${Date.now()}-a`;
+		homes.push(bare);
+		await Bun.write(`${bare}/.placeholder`, "");
+		const run1 = await runScoderRaw(repoDir, ["--dry-run", "/bin/bash"], {
+			HOME: bare,
+			SCODER_KEEP_SESSION_TMP: "1",
+		});
+		expect(run1.code).toBe(0);
+		expect(
+			await Bun.file(snapshotSkill(flattenDryRun(run1.stdout), bare)).text(),
+		).toBe(bundled);
+		expect(await dirExists(`${bare}/.agents`)).toBe(false);
+
+		// The user's own copy wins.
+		const own = `/tmp/scoder-skillhome-${Date.now()}-b`;
+		homes.push(own);
+		await Bun.write(
+			`${own}/.agents/skills/working-in-a-scoder-sandbox/SKILL.md`,
+			"mine",
+		);
+		const run2 = await runScoderRaw(repoDir, ["--dry-run", "/bin/bash"], {
+			HOME: own,
+			SCODER_KEEP_SESSION_TMP: "1",
+		});
+		expect(
+			await Bun.file(snapshotSkill(flattenDryRun(run2.stdout), own)).text(),
+		).toBe("mine");
+	} finally {
+		for (const path of kept) await removeSessionRoot(path);
+		await Bun.spawn(["rm", "-rf", ...homes]).exited;
+		await cleanupRepo(repoDir);
+	}
+});
+
+// ### Test: scoder-skill-bound-for-claude-code
+// EM: Claude Code reads ~/.claude/skills, bound read-write from the host, so
+// EM: the skill is a staged copy bound read-only over it — after the
+// EM: ~/.claude bind, or that would cover it — and skipped when the user's
+// EM: own SKILL.md is there. (An empty leftover mountpoint is not "own".)
+test("scoder-skill-bound-for-claude-code: claude sessions get the skill bound over ~/.claude/skills unless the user has their own", async () => {
+	const repoDir = await createTempRepo();
+	tempRepos.push(repoDir);
+	const claudeBin = await createFakeToolDir("claude");
+	const home = `/tmp/scoder-claudeskill-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
+	const dest = `${home}/.claude/skills/working-in-a-scoder-sandbox`;
+	const env = { PATH: `${claudeBin}:${process.env.PATH}`, HOME: home };
+
+	try {
+		await Bun.write(`${home}/.claude/settings.json`, "{}");
+		// A leftover empty mountpoint from an earlier session.
+		await Bun.spawn(["mkdir", "-p", dest]).exited;
+		const flat = flattenDryRun(
+			await runScoder(repoDir, ["--dry-run", "--no-worktree", "claude"], env),
+		);
+		const claudeBind = flat.indexOf(`--bind ${home}/.claude ${home}/.claude`);
+		const skillBind = flat.search(
+			new RegExp(`--ro-bind /tmp/scoder-[0-9a-f]{8}${dest} ${dest}`),
+		);
+		expect(claudeBind).toBeGreaterThan(-1);
+		expect(skillBind).toBeGreaterThan(claudeBind);
+
+		await Bun.write(`${dest}/SKILL.md`, "mine");
+		const own = flattenDryRun(
+			await runScoder(repoDir, ["--dry-run", "--no-worktree", "claude"], env),
+		);
+		expect(own).not.toMatch(new RegExp(`--ro-bind \\S+ ${dest}`));
+
+		// A symlinked ~/.claude/skills (commonly to ~/.agents/skills): no
+		// bind. Reported: bwrap could not make the mountpoint through it, so
+		// the session failed to launch.
+		await Bun.spawn(["rm", "-rf", `${home}/.claude/skills`]).exited;
+		await Bun.write(`${home}/.agents/skills/.keep`, "");
+		await Bun.spawn([
+			"ln",
+			"-s",
+			`${home}/.agents/skills`,
+			`${home}/.claude/skills`,
+		]).exited;
+		const linked = flattenDryRun(
+			await runScoder(repoDir, ["--dry-run", "--no-worktree", "claude"], env),
+		);
+		expect(linked).not.toMatch(new RegExp(`--ro-bind \\S+ ${dest}`));
+	} finally {
+		await Bun.spawn(["rm", "-rf", home, claudeBin]).exited;
+		await cleanupRepo(repoDir);
+	}
+});
+
+// ### Test: agents-md-overlay-names-companion-ide
+// EM: With --ide, the AGENTS.md overlay tells the agent which IDE is beside
+// EM: it and to offer an MCP connection once; without --ide it says nothing
+// EM: of the sort. The overlay no longer tells the agent to `npx skills add`.
+test("agents-md-overlay-names-companion-ide: --ide adds the MCP offer line naming the IDE; no --ide, no line", async () => {
+	const repoDir = await createTempRepo();
+	tempRepos.push(repoDir);
+	const piDir = await createFakeToolDir("pi");
+	const rstudioDir = await createFakeToolDir("rstudio");
+	const env = {
+		PATH: `${piDir}:${rstudioDir}:${process.env.PATH}`,
+		SCODER_KEEP_SESSION_TMP: "1",
+	};
+	const kept: string[] = [];
+	const overlayText = async (stdout: string) => {
+		const m = flattenDryRun(stdout).match(
+			new RegExp(
+				`--ro-bind (/tmp/scoder-[0-9a-f]{8}${repoDir}/AGENTS\\.md) ${repoDir}/AGENTS\\.md`,
+			),
+		);
+		expect(m).not.toBeNull();
+		kept.push(m![1]);
+		return Bun.file(m![1]).text();
+	};
+
+	try {
+		const withIde = await overlayText(
+			(
+				await runScoderRaw(
+					repoDir,
+					["--dry-run", "--no-worktree", "pi", "--ide", "rstudio"],
+					env,
+				)
+			).stdout,
+		);
+		expect(withIde).toContain(
+			"The user has launched RStudio Desktop alongside you",
+		);
+		expect(withIde).toContain("`--ide rstudio`");
+		expect(withIde).not.toContain("npx skills add");
+
+		const without = await overlayText(
+			(await runScoderRaw(repoDir, ["--dry-run", "--no-worktree", "pi"], env))
+				.stdout,
+		);
+		expect(without).not.toContain("alongside you");
+		expect(without).toContain("working-in-a-scoder-sandbox");
+	} finally {
+		for (const path of kept) await removeSessionRoot(path);
+		await Bun.spawn(["rm", "-rf", piDir, rstudioDir]).exited;
+		await cleanupRepo(repoDir);
+	}
+});
+
 // ### Test: dry-run-uses-pasta
 test("dry-run-uses-pasta: Dry-run output includes pasta in command", async () => {
 	const repoDir = await createTempRepo();

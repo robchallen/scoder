@@ -406,15 +406,22 @@ in `.sandbox/ports`.
 The skill (`skills/working-in-a-scoder-sandbox/` in this repository)
 teaches an agent how a scoder sandbox behaves — what is read-only, how
 worktrees work, how to set up MCP — so it can help instead of guessing.
-Link it where your agent looks for skills:
 
-```bash
-mkdir -p ~/.agents/skills && ln -s "$PWD/skills/working-in-a-scoder-sandbox" ~/.agents/skills/
-mkdir -p ~/.claude/skills && ln -s "$PWD/skills/working-in-a-scoder-sandbox" ~/.claude/skills/   # Claude Code
-```
+**Agents that read `~/.agents/skills` (pi and others) get it automatically**:
+scoder carries the skill and adds it to the session's copy of `~/.agents`,
+nothing written to your real one. If you have installed your own copy
+there, yours is used instead.
 
-`~/.agents` is copied into each session at start-up, symlinks resolved, so
-a link works and edits show up in the next session.
+**Claude Code** reads `~/.claude/skills` instead, and gets it there too: a
+read-only copy is mounted at `~/.claude/skills/working-in-a-scoder-sandbox`
+inside the session. Your real `~/.claude` is untouched except for one
+thing — the empty `working-in-a-scoder-sandbox` directory left as the mount
+point (it needs somewhere to attach). If you install your own copy there,
+with a `SKILL.md`, yours is used instead. If your `~/.claude/skills` is a symlink (to `~/.agents/skills`, say), it is left alone — pointing at `~/.agents/skills`, Claude sees the skill there anyway.
+
+With `--ide`, scoder also tells the agent (through the sandbox's
+`AGENTS.md` note) which IDE is running beside it, and asks it to offer once
+to set up an MCP connection if none is configured.
 
 ## Another preset's paths, without its tool (`--bind`)
 

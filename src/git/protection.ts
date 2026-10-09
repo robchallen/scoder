@@ -6,6 +6,9 @@ import {
 	readlink,
 	stat,
 } from "node:fs/promises";
+import scoderSkill from "../../skills/working-in-a-scoder-sandbox/SKILL.md" with {
+	type: "text",
+};
 import { resolvConfDest } from "../sandbox/builder.ts";
 import type { LiveOverlay } from "../sandbox/overlays.ts";
 import { renderOverlay } from "../sandbox/overlays.ts";
@@ -157,6 +160,7 @@ export interface ProtectionConfig {
 export async function setupProtection(
 	sourceDir: string,
 	sandboxProjDir: string,
+	companionIde?: CompanionIde,
 ): Promise<ProtectionConfig> {
 	const protectedPaths: string[] = [];
 	const safeBinds: BindMount[] = [];
@@ -217,7 +221,11 @@ export async function setupProtection(
 
 	// EM: Rendered here so the file exists before bwrap binds it; the watcher
 	// EM: started in launchSandbox keeps it in step thereafter.
-	const agentsOverlay = await _setupAgentsMdOverlay(sourceDir, sandboxProjDir);
+	const agentsOverlay = await _setupAgentsMdOverlay(
+		sourceDir,
+		sandboxProjDir,
+		companionIde,
+	);
 	await renderOverlay(agentsOverlay);
 	const overlays: LiveOverlay[] = [agentsOverlay];
 	const agentsMdOverlay = sessionPath(agentsOverlay.dest);
@@ -637,9 +645,18 @@ async function findProtectedPaths(
 // EM: purpose is telling the agent how to behave is the wrong way round: the
 // EM: moment you most want to correct an agent's instructions is while it is
 // EM: working, and the only remedy was to restart the session.
+/** The --ide companion running beside the agent, for the AGENTS.md note. */
+export interface CompanionIde {
+	/** The preset key the user typed, e.g. "webstorm". */
+	key: string;
+	/** Its display name, e.g. "WebStorm". */
+	name: string;
+}
+
 async function _setupAgentsMdOverlay(
 	sourceDir: string,
 	sandboxProjDir: string,
+	companionIde?: CompanionIde,
 ): Promise<LiveOverlay> {
 	const agentsSrc = `${sourceDir}/AGENTS.md`;
 	const realHome = getRealHome();
@@ -663,10 +680,19 @@ This section is injected by scoder inside the sandbox and is not part of the rep
 
 - You are running inside a scoder sandbox.
 - Your \`$HOME\` is \`${realHome}\`, the real host home directory.
-- \`stdio\` MCP servers run inside the sandbox and are subject to its restrictions; \`localhost\` http ones run outside it and are not, so they can reach files you cannot.
+- \`stdio\` MCP servers, and an IDE started with \`--ide\`, run inside the sandbox under its restrictions. A \`localhost\` port forwarded through \`.sandbox/ports\` reaches a process on the host instead, outside the sandbox, which can reach files you cannot.
 - You cannot edit files like \`AGENTS.md\` or \`.agents/*\` or other configuration files, so do not try. Ask the user to edit them instead.
-- Read the \`working-in-a-scoder-sandbox\` skill: \`npx skills add https://github.com/robchallen/scoder/tree/main/skills/working-in-a-scoder-sandbox\`
+- Read the \`working-in-a-scoder-sandbox\` skill (installed for you in \`~/.agents/skills\`) before working around anything the sandbox blocks.
 `;
+
+	// EM: An IDE launched beside the agent is the moment an MCP connection
+	// EM: is most useful and least likely to be set up yet. Asking the agent
+	// EM: to check and offer once puts the skill's setup guidance in play
+	// EM: without scoder generating any MCP config itself.
+	if (companionIde) {
+		sandboxSection = `${sandboxSection}- The user has launched ${companionIde.name} alongside you in this sandbox (\`--ide ${companionIde.key}\`). Check whether you have an MCP server configured for it; if not, offer once to set one up, using the \`working-in-a-scoder-sandbox\` skill.
+`;
+	}
 
 	if (isWorktreeMountPath(sourceDir, realHome)) {
 		sandboxSection = `${sandboxSection}
@@ -953,23 +979,31 @@ export async function setupAgentsSnapshot(): Promise<BindMount | null> {
 	const realHome = getRealHome();
 	const agentsSrc = `${realHome}/.agents`;
 
-	if (!(await fileOrDirExists(agentsSrc))) {
-		return null;
-	}
-
 	const snapshotDir = await stageDir(`${realHome}/.agents`);
 
-	try {
-		await safeCopyDirRecursive(agentsSrc, snapshotDir);
-	} catch (err) {
-		error(`Failed to snapshot ~/.agents: ${err}`);
-		error(
-			"scoder copies ~/.agents at startup so symlinked skills resolve in the sandbox",
-		);
-		process.exit(1);
+	if (await fileOrDirExists(agentsSrc)) {
+		try {
+			await safeCopyDirRecursive(agentsSrc, snapshotDir);
+		} catch (err) {
+			error(`Failed to snapshot ~/.agents: ${err}`);
+			error(
+				"scoder copies ~/.agents at startup so symlinked skills resolve in the sandbox",
+			);
+			process.exit(1);
+		}
+		info(`Snapshotting ${agentsSrc} to ${snapshotDir}`);
 	}
 
-	info(`Snapshotting ${agentsSrc} to ${snapshotDir}`);
+	// EM: scoder's own skill, carried in the binary and added to the copy
+	// EM: unless the user installed one (theirs, e.g. a symlink into their
+	// EM: clone, wins). It used to be fetched by the agent with `npx skills
+	// EM: add`, which cannot work from inside: ~/.agents is this read-only
+	// EM: snapshot. A user with no ~/.agents at all still gets one holding
+	// EM: just the skill. Only the snapshot changes — never the host's.
+	const skillFile = `${snapshotDir}/skills/working-in-a-scoder-sandbox/SKILL.md`;
+	if (!(await fileOrDirExists(skillFile))) {
+		await Bun.write(skillFile, scoderSkill);
+	}
 
 	return {
 		type: "ro-bind",

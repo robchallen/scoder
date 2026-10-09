@@ -172,3 +172,16 @@ Six test cases verify:
    since the sandbox's `$HOME` is the real host `$HOME`).
 6. **home-installed-tool-runs**: A tool symlinked from `~/.local/bin` into
    `~/.local/share` actually executes inside the sandbox.
+
+## uv tool environments
+
+`uv tool install <pkg>` puts a symlink in `~/.local/bin` pointing into
+`~/.local/share/uv/tools/<pkg>/bin`, whose scripts run that venv's python —
+itself usually a link into `~/.local/share/uv/python`, uv's managed
+interpreters. Until both trees were bound (read-only, in
+`buildExtraBinds`) and listed in `sandboxMountPrefixes`, such a symlink was
+judged unresolvable and its target *copied* into the snapshot; the copy's
+interpreter line still named the unbound venv, so every uv tool failed with
+`cannot execute: required file not found` (reported for `hf`). Now the
+symlink is kept as a link and resolves through the binds. Verified under
+bwrap with a uv-shaped layout: fails without the binds, runs with them.

@@ -1059,6 +1059,24 @@ async function buildExtraBinds(
 		});
 	}
 
+	// EM: uv tool environments (`uv tool install hf`): ~/.local/bin holds a
+	// EM: symlink into ~/.local/share/uv/tools/<tool>/bin, whose scripts'
+	// EM: interpreter is that venv's python — itself usually a symlink into
+	// EM: ~/.local/share/uv/python, uv's managed interpreters. Neither was
+	// EM: bound: reported as `hf: cannot execute: required file not found`,
+	// EM: for every uv-installed tool. Read-only, like ~/.rustup: tools run,
+	// EM: but installing or upgrading them is done on the host.
+	for (const rel of [".local/share/uv/tools", ".local/share/uv/python"]) {
+		const dir = `${realHome}/${rel}`;
+		if (await dirExists(dir)) {
+			binds.push({
+				type: "ro-bind",
+				source: dir,
+				dest: `${sandboxHome}/${rel}`,
+			});
+		}
+	}
+
 	const cargoBinDir = `${realHome}/.cargo/bin`;
 	if (await dirExists(cargoBinDir)) {
 		binds.push({

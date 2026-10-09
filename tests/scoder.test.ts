@@ -3247,6 +3247,60 @@ test("no-worktree-mode: --no-worktree bypasses worktree creation", async () => {
 	}
 });
 
+// ### Test: uv-tool-environments-bound
+// EM: `uv tool install` puts a symlink in ~/.local/bin pointing into
+// EM: ~/.local/share/uv/tools/<tool>/bin, whose scripts' interpreter is the
+// EM: venv's python, itself a link into ~/.local/share/uv/python. Neither
+// EM: was bound, and the launcher was copied rather than linked — reported as
+// EM: `hf: cannot execute: required file not found`. Both trees are bound
+// EM: read-only now, and the symlink survives into the snapshot as a link.
+test("uv-tool-environments-bound: uv tools and managed pythons are bound read-only, and ~/.local/bin links into them stay links", async () => {
+	const repoDir = await createTempRepo();
+	tempRepos.push(repoDir);
+	const home = `/tmp/scoder-uvhome-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
+	const tools = `${home}/.local/share/uv/tools`;
+	const pythons = `${home}/.local/share/uv/python`;
+	const kept: string[] = [];
+
+	try {
+		await Bun.write(`${pythons}/cpython-3.12/bin/.keep`, "");
+		await Bun.write(`${tools}/huggingface-hub/bin/hf`, "#!/bin/sh\necho hf\n");
+		await Bun.spawn(["chmod", "+x", `${tools}/huggingface-hub/bin/hf`]).exited;
+		await Bun.spawn(["mkdir", "-p", `${home}/.local/bin`]).exited;
+		await Bun.spawn([
+			"ln",
+			"-s",
+			`${tools}/huggingface-hub/bin/hf`,
+			`${home}/.local/bin/hf`,
+		]).exited;
+
+		const run = await runScoderRaw(repoDir, ["--dry-run", "/bin/bash"], {
+			HOME: home,
+			SCODER_KEEP_SESSION_TMP: "1",
+		});
+		expect(run.code).toBe(0);
+		const flat = flattenDryRun(run.stdout);
+		expect(flat).toContain(`--ro-bind ${tools} ${tools}`);
+		expect(flat).toContain(`--ro-bind ${pythons} ${pythons}`);
+
+		const snapshot = flat.match(
+			new RegExp(
+				`--ro-bind (/tmp/scoder-[0-9a-f]{8}${home}/\\.local/bin) ${home}/\\.local/bin`,
+			),
+		);
+		expect(snapshot).not.toBeNull();
+		kept.push(snapshot![1]);
+		expect(readlinkSync(`${snapshot![1]}/hf`)).toBe(
+			`${tools}/huggingface-hub/bin/hf`,
+		);
+		expect(run.stderr).not.toContain("Copied target: hf");
+	} finally {
+		for (const path of kept) await removeSessionRoot(path);
+		await Bun.spawn(["rm", "-rf", home]).exited;
+		await cleanupRepo(repoDir);
+	}
+});
+
 // ### Test: local-bin-symlink-resolved
 test("local-bin-symlink-resolved: Symlink in ~/.local/bin pointing outside sandbox is resolved via forwarding shim", async () => {
 	// Set up test artifacts

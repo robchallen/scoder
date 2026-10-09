@@ -20,3 +20,6 @@ test*.sh
 
 # Agent skills snapshot (runtime artifact)
 .agents/
+.mcp.json
+.idea/
+.sandbox/

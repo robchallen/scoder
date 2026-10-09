@@ -327,6 +327,8 @@ You must have connected to the target at least once before, outside scoder:
 the master connection uses `BatchMode`, so it will not prompt to accept an
 unfamiliar host key.
 
+
+
 ## A companion IDE (`--ide`)
 
 `--ide NAME` launches `NAME` (must have a registered preset — `rstudio`,
@@ -357,9 +359,10 @@ actually safe: both processes share one project, one filesystem view, one
 set of restrictions — nothing crosses the sandbox boundary at all, unlike
 connecting to an IDE running natively on the host. The `rstudio` preset
 also sets `MCPTOOLS_SOCKET_DIR` to a writable sandbox path, so
-`mcptools::mcp_session()`/`mcp_server()` work out of the box — no project
-`.Rprofile` line needed (its own default location, `/run/user/<uid>`, is
-read-only inside the sandbox).
+`mcptools::mcp_session()`/`mcp_server()` agree on a socket directory out
+of the box. (mcptools' own default, `$XDG_RUNTIME_DIR/mcptools`, also works
+now — `/run/user/<uid>` is a private, writable directory inside the
+sandbox — which is why Positron needs no such setting.)
 
 A companion IDE's output goes to a log file rather than your terminal.
 scoder prints where at startup — for example `IDE log on the host:
@@ -368,11 +371,214 @@ xpra is running, which carries the IDE's output too). It is the place to
 look when an IDE window never appears. The file is removed when the
 session ends; set `SCODER_KEEP_SESSION_TMP=1` to keep it.
 
+**Why `eclipse` needs the import-projects plugin.** scoder gives each
+project its own persistent Eclipse workspace (under
+`~/.local/share/scoder-eclipse-workspaces/`) and seeds its *preferences*
+from your most recent real workspace on first use — but a workspace starts
+with no projects in it, and Eclipse itself has no command-line way to add
+one. scoder launches Eclipse with `-data <managed workspace> -importProject
+<project>`, plus one `-importProject` for each `$HOME/...` dependency in
+`.sandbox/readonly`; `-importProject` is the
+[import-projects plugin](https://github.com/robchallen/eclipse-import-projects-plugin)'s
+flag, not Eclipse's. Without the plugin, Eclipse opens with the right
+preferences and an empty workspace: you can import the project by hand
+(it then stays in that workspace, which persists), but dependency projects
+are no longer imported for you.
+
+## IDE MCP servers
+
+With `--ide`, the agent and the IDE run in the **same sandbox**, so an
+IDE's MCP server is reachable on the sandbox's own `localhost` (or a socket
+inside it) — no port forwarding, and nothing crosses the sandbox boundary.
+The agent finds it through its normal MCP configuration (e.g. the
+project's `.mcp.json`). The configurations below are starting points; edit
+names, ports and paths to match your setup.
+
+Several of them bridge to an HTTP server with `npx -y mcp-remote`. The
+sandbox's home is fresh each session, so npm's cache is too, and
+`mcp-remote` is downloaded again at every start. To keep the cache, add
+`$HOME/.npm` to the project's `.sandbox/readwrite` (or to
+`~/.config/scoder/readwrite` for new projects).
+
+### RStudio: btw
+
+The R side is automatic. Inside the sandbox, scoder overlays the project's
+`.Rprofile` with:
+
+```r
+if (interactive() && requireNamespace("btw", quietly = TRUE)) {
+  btw::btw_mcp_session()
+}
+```
+
+so every interactive R session in the IDE registers itself with
+[mcptools](https://posit-dev.github.io/mcptools/). The agent side runs btw's
+MCP server, which connects to that live session. Needs the `btw` package installed in your R
+library (`~/R` is bound read-only).
+
+```json
+{
+  "mcpServers": {
+    "r-btw": {
+      "type": "stdio",
+      "command": "Rscript",
+      "args": [
+        "-e",
+        "btw::btw_mcp_server(tools=btw::btw_tools(c('cran','docs','pkg','env','run','sessioninfo','ide')))"
+      ],
+      "env": {},
+      "directTools": true
+    }
+  }
+}
+```
+
+### VS Code, VSCodium: vscode-mcp-server
+
+The [vscode-mcp-server](https://github.com/Romixof/vscode-mcp-server)
+extension runs an MCP server inside the editor. Install it on the host
+(the extensions directory is read-only in the sandbox) using the "Install from VSIX..." option, then configure its
+API token in the sandboxed editor's settings — they live in scoder's
+managed per-project user-data-dir, so set them once per project (or put
+them in your host settings before the project's first session, when they
+are seeded).
+
+```json
+{
+  "mcpServers": {
+    "vscode-mcp-server": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "mcp-remote@next",
+        "http://localhost:3400/mcp",
+        "--header",
+        "Authorization:Bearer <api-token>"
+      ],
+      "directTools": true
+    }
+  }
+}
+```
+
+The api token sits in the project's MCP config, readable by the agent — which
+is the point: it is the agent's key to the editor, not a host credential.
+
+It must match whatever is configured in the "vscode-mcp-server" configuration
+settings in vscode (search the setting menu for `@ext:Romixo.vscode-mcp-server`
+and particularly `vscode-mcp-server.auth.apiKey` and `vscode-mcp-server.auth.mode`).
+
+### Positron: vscode-mcp-server and btw
+
+Needs the same configuration as both vscode and Rstudio to allow for both
+environment access as well as ide interaction. The `btw` "ide" option is Rstudio
+specific so not enabled for positron.
+
+```json
+{
+  "mcpServers": {
+    "r-btw": {
+      "type": "stdio",
+      "command": "Rscript",
+      "args": [
+        "-e",
+        "btw::btw_mcp_server(tools=btw::btw_tools(c('cran','docs','pkg','env','run','sessioninfo')))"
+      ],
+      "env": {},
+      "directTools": true
+    },
+    "vscode-mcp-server": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "mcp-remote@next",
+        "http://localhost:3400/mcp",
+        "--header",
+        "Authorization:Bearer <api-token>"
+      ],
+      "directTools": true
+    }
+  }
+}
+```
+
+### Eclipse: AssistAI
+
+Control of eclipse by an agent is achieved with the [AssistAI plugin](https://marketplace.eclipse.org/content/assistai-eclipse-ide-mcp-server-ai-agents).
+This is installed as normal through its update site and configured through
+`Window > Preferences... > AssistAI` where an API token should be generated.
+
+This publishes several MCP endpoints, each of which needs an entry like the
+following:
+
+```json
+{
+  "mcpServers": {
+    "eclipse-ide": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "mcp-remote",
+        "http://localhost:8124/mcp/eclipse-ide",
+        "--allow-http",
+        "--header",
+        "Authorization:Bearer <api-token>"
+      ],
+      "directTools": true
+    },
+    ... more servers ...
+  }
+}
+```
+
+The default set of published MCP endpoints are:
+
+```
+http://localhost:8124/mcp/eclipse-ide
+http://localhost:8124/mcp/duck-duck-search
+http://localhost:8124/mcp/time
+http://localhost:8124/mcp/webpage-reader
+http://localhost:8124/mcp/memory
+http://localhost:8124/mcp/eclipse-coder
+http://localhost:8124/mcp/eclipse-runner
+http://localhost:8124/mcp/eclipse-context
+http://localhost:8124/mcp/eclipse-git
+http://localhost:8124/mcp/eclipse-pde
+```
+
+### WebStorm: built-in MCP server
+
+WebStorm has an MCP server built in (Settings → Tools → MCP Server). Its
+settings persist in scoder's managed per-project config, so enable it once
+per project. Depending on the settings selected there, there is the option to
+pick different transports, and copy the configuration but the `.mcp.json` is
+as follows:
+
+```json
+{
+  "mcpServers": {
+    "webstorm": {
+      "type": "sse",
+      "url": "http://127.0.0.1:64542/sse",
+      "headers": {
+        "IJ_MCP_SERVER_PROJECT_PATH": "<project-path>"
+      },
+      "directTools": true
+    }
+  }
+}
+```
+
+Use the port shown in WebStorm's MCP Server settings. `<project-path>` is
+the project's real absolute path — paths inside the sandbox mirror the
+host's, so it is the same path on both sides.
+
 ## Another preset's paths, without its tool (`--bind`)
 
 `--bind NAME` adds preset `NAME`'s config binds to the sandbox without
 launching `NAME` — for when one agent needs another's state (its skills,
-sessions or config) but only one of them should run:
+sessions or config) or you want to use the SDK of another agent but only one
+of them should run:
 
 ```bash
 scoder pi --bind claude                   # pi runs; ~/.claude etc. are in its sandbox
@@ -426,11 +632,11 @@ GUI presets (`rstudio`, `eclipse`, `vscode`, `vscodium`, `positron`, `webstorm`)
 the sandbox: their windows are forwarded to the host, and they never hold a
 connection to the host's X session. That isolation has a usability cost —
 xpra's translation has been reported to break hovers, popups and dialog
-placement — and `--native-display` opts out of it:
+placement most notably in eclipse — and `--native-display` opts out of it:
 
 ```
-scoder --native-display rstudio
-SCODER_NATIVE_DISPLAY=1 scoder rstudio     # same thing
+scoder --native-display eclipse
+SCODER_NATIVE_DISPLAY=1 scoder eclipse     # same thing
 ```
 
 Read the warning this prints before using it: a sandboxed program on the

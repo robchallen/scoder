@@ -1,13 +1,33 @@
 ---
 target-version: 2.11.0
-status: draft
+status: implemented
 tags: [plan, ide, jupyter, network, preset]
 ---
 
 # JupyterLab Preset
 
-> **Plan — not implemented.** Nothing here is measured yet; the open
-> questions at the end are what the first implementation step answers.
+> **Implemented (2026-10-09)** — feat/jupyterlab, merged to main as
+> 2b9d39e; tested on the user's desktop. As built, against this plan:
+>
+> - Sandboxed browser only, as decided: `jupyter-lab` is the xpra-wrapped
+>   program and opens the `SCODER_BROWSER` wrapper via
+>   `--ServerApp.browser`. Open question 1 resolved as **refuse with a
+>   named error** when `SCODER_BROWSER` is unset.
+> - Added from the headless check against JupyterLab 4.6.4:
+>   `--ServerApp.use_redirect_file=False`, so the browser gets the real
+>   `http://127.0.0.1:8888/lab?token=…` URL rather than a `file:` redirect
+>   page in the runtime dir.
+> - GUI-primary output to the session log (section 1c) done for **all** GUI
+>   presets, via `HARNESS_LOG` in the entry point; native GUI primaries now
+>   go through the entry point for it.
+> - `~/.local/share/jupyter`: only `kernels/` bound read-only (via
+>   `JUPYTER_PATH`); the per-project seed leaves out `runtime/`, `kernels/`,
+>   `notebook_secret` and `nbsignatures.db`.
+> - The `--ide` AGENTS.md note comes from a new `agentsNote` preset hook.
+> - **Not done:** `ideShutdown` is left at the default. SIGTERM was seen to
+>   stop the server cleanly in the headless run, but the ENTER-to-close
+>   path under bwrap was not measured, and the field records measurements.
+>   `--app=<url>` (open question 2) was left to the user's browser flags.
 
 ## Summary
 

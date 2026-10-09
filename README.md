@@ -644,6 +644,7 @@ you start scoder in — none of them is passed into the sandbox (that is
 | `SCODER_NATIVE_DISPLAY=1` | Same as `--native-display`. |
 | `SCODER_BIND` | Same as `--bind`, for each preset named (comma- or space-separated, e.g. `claude,copilot`); added to any `--bind` flags. |
 | `SCODER_LLM_PORT` | The host port probed for a local OpenAI-compatible API at startup (default `11434`, Ollama's). When something answers, the port is forwarded and appended to `.sandbox/ports`. Port `11435` is also probed, and taken only if it serves an OpenAI-style `/v1/models`. |
+| `SCODER_KEEP_SCREEN` | Any non-empty value leaves the terminal as the tool left it on exit. By default scoder resets terminal modes (alternate screen, hidden cursor, mouse reporting, bracketed paste, raw input) and clears the screen, keeping scrollback. |
 | `SCODER_KEEP_SESSION_TMP` | Any non-empty value keeps the session's temp root (`/tmp/scoder-<id>`) after exit instead of deleting it — the staged files scoder put in front of the sandbox, and the IDE/xpra log. Useful with `--dry-run` to inspect what it built. |
 | `XDG_CONFIG_HOME` | Where the user defaults live: `$XDG_CONFIG_HOME/scoder/`, else `~/.config/scoder/`. |
 
@@ -708,6 +709,12 @@ Worth knowing:
   `rm -rf`, or git keeps a stale registration until `git worktree prune`.
 
 ## After a session
+
+When the tool exits, scoder puts your terminal back — leaves any alternate
+screen, shows the cursor, turns off mouse reporting and bracketed paste,
+resets raw input (`stty sane`) — and clears the screen. Scrollback is kept,
+and in worktree mode the session summary is printed after the clear. Set
+`SCODER_KEEP_SCREEN=1` to skip it.
 
 ### Direct mode (default)
 

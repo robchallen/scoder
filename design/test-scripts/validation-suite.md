@@ -27,7 +27,7 @@ tags: [test-script, validation]
 
 `tests/scoder.test.ts` is a self-contained integration test suite that creates
 temporary git repositories under `/tmp`, runs `scoder` against them using
-`/bin/bash` as the sandboxed command, and asserts expected behaviour. 166
+`/bin/bash` as the sandboxed command, and asserts expected behaviour. 167
 tests cover all sandbox mechanics — this catalog is currently behind the
 actual implemented count (see the note under case 113) due to other,
 unrelated in-progress work; not fixed here.
@@ -1572,6 +1572,15 @@ The parser keeps `PI_*` and `*_TOKEN`, refuses `*`, `**` and `PI-*`.
 A dry-run with `PI_*` in `.sandbox/env` passes the host's `PI_ALPHA` and
 `PI_BETA`, and start-up reports what each pattern matched, including a
 pattern that matched nothing.
+
+### 158. terminal-restored-after-exit
+[TESTED_BY](/tests/scoder.test.ts#testTerminalRestoredAfterExit)
+
+`restoreTerminal` writes the restore sequence (alternate screen off, cursor
+on, mouse and bracketed paste off, attributes reset, `ESC[H ESC[2J`, never
+`ESC[3J`) to a tty only; a pipe and `SCODER_KEEP_SCREEN` get nothing.
+Checked by hand under a real pty: the exact bytes, and `stty sane` running
+cleanly.
 
 ## Current Network Coverage
 

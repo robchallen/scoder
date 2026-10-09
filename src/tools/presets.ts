@@ -1127,15 +1127,11 @@ export const TOOL_PRESETS: Record<string, ToolPreset> = {
 				!(await isSymlink(`${realHome}/${skillRel}`)) &&
 				!(await fileExists(`${realHome}/${skillRel}/SKILL.md`))
 			) {
-				// EM: Make the parent ourselves. Reported once without a symlink
-				// EM: in play: the same "Can't mkdir .../working-in-a-scoder-
-				// EM: sandbox: No such file or directory", then fine on the next
-				// EM: launch. Unconfirmed theory: the host had no ~/.claude/skills
-				// EM: and its (older, Ubuntu 24.04) bwrap creates only the leaf
-				// EM: mountpoint, not missing parents — this container's newer
-				// EM: bwrap does create them, so it cannot reproduce it. Creating
-				// EM: the empty skills dir is the same side effect already
-				// EM: accepted for the mountpoint itself.
+				// EM: Make the parent ourselves, as cheap insurance: a bind's
+				// EM: mountpoint needs its parent, and on some bwrap versions a
+				// EM: missing one is an error rather than created. The empty
+				// EM: skills dir is the same side effect already accepted for
+				// EM: the mountpoint itself.
 				await ensureDir(`${realHome}/.claude/skills`);
 				const staged = await stageFile(`${sandboxHome}/${skillRel}/SKILL.md`);
 				await Bun.write(staged, scoderSkill);

@@ -45,16 +45,21 @@ the directory, since the leftover mountpoint is an empty directory.
 Verified under bwrap: readable, read-only inside, only the empty directory
 left on the host.
 
-**Open — keep an eye on it.** A first launch failed with `bwrap: Can't mkdir
-~/.claude/skills/working-in-a-scoder-sandbox: No such file or directory`;
-the next launch worked. Two causes are covered: a symlinked
-`~/.claude/skills` (reproduced here with bwrap — now skipped) and a
-missing `~/.claude/skills` on an older bwrap that does not create parent
-mountpoint directories (unconfirmed; the dev container's newer bwrap does
-create them — scoder now creates `skills/` itself first). The reporter
-says no symlink existed, so the second theory, or something else, is the
-live one. If it recurs: note the bwrap version (`bwrap --version`) and
-`ls -la ~/.claude ~/.claude/skills` from just before the launch.
+**Resolved: symlinked skills directories.** A first launch failed with
+`bwrap: Can't mkdir ~/.claude/skills/working-in-a-scoder-sandbox: No such
+file or directory`. Cause, confirmed by the reporter: `~/.claude/skills` was
+a symlink to `~/.agents/skills` — a common way to share skills between
+agents. The `~/.claude` bind brings the symlink in, but its target (the
+`~/.agents` snapshot) is mounted *later* in the inner layer, so at the
+moment of the skill bind the symlink dangles and bwrap cannot make a
+mountpoint through it. Reproduced under bwrap. The Claude bind is now
+skipped when `~/.claude/skills`, or the skill path itself, is a symlink;
+once the snapshot is mounted the symlink resolves to it, and it already
+holds the injected skill. The reverse arrangement (`~/.agents/skills`
+linking to a real `~/.claude/skills`) needs no special case: the snapshot
+is copied with symlinks resolved, and the Claude bind goes to a real
+directory. scoder also creates a missing `~/.claude/skills` before binding,
+as cheap insurance.
 
 ## Implementation
 

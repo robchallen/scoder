@@ -94,8 +94,11 @@ tool** it is not:
 - under `--native-display`, the primary tool is exec'd directly, with no
   entrypoint, so its output is the terminal.
 
-This is a gap for every GUI preset, not just this one (`scoder rstudio`
-presumably shows it today — to confirm). Fix it generally, before or with
+This is a gap for every GUI preset, not just this one — **confirmed
+2026-10-09: `scoder rstudio` logs to the terminal.** Harmless there (the
+terminal is not used for anything else), but inconsistent, and Jupyter's
+log is noisier and never stops. **Decided: fix it for all GUI presets as
+part of this work (step 3), not just for Jupyter.** Fix it generally, before or with
 this preset: when the primary tool is a GUI preset, its output goes to the
 session log, and the terminal shows one line instead — where the log is,
 and that Ctrl-C (or closing the program) ends the session. Native mode then
@@ -177,8 +180,9 @@ setups", as for the other IDEs.
    `scoder` running it as the tool once the preset is `gui: true`, or with
    `--native-display` for a first look); confirm the browser opens on the
    lab URL and the MCP server logs on 3001.
-3. **GUI primary output to the log** (section 1c), for all GUI presets;
-   check `scoder rstudio` first to confirm the gap.
+3. **GUI primary output to the log** (section 1c), for all GUI presets —
+   gap confirmed with `scoder rstudio`; one change in the entrypoint (plus
+   native mode routing a GUI primary through it).
 4. `jupyterlab` preset: `gui: true`, token generation, launch args, config
    binds (`~/.jupyter` ro, managed settings/workspaces dirs, kernelspecs
    ro), env, and a named error when `SCODER_BROWSER` is unset.

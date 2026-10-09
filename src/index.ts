@@ -333,6 +333,13 @@ async function main(): Promise<void> {
 	// EM: arrangement --ide exists for. This is the same precedence the xpra
 	// EM: wrap has always applied, now computed once because native mode needs
 	// EM: it too — for its own guard, its warning, and its bus.
+	// EM: Named in the AGENTS.md overlay so the agent knows an IDE is beside
+	// EM: it and can offer to connect to it over MCP.
+	const companionIde =
+		options.ide && idePreset
+			? { key: options.ide, name: idePreset.description }
+			: undefined;
+
 	const guiTarget: "harness" | "ide" | null = idePreset?.gui
 		? "ide"
 		: preset?.gui
@@ -449,6 +456,7 @@ async function main(): Promise<void> {
 		protectionConfig = await setupProtection(
 			worktreeInfo.worktreeDir,
 			sandboxProjDir,
+			companionIde,
 		);
 
 		const agentsSnapshotBind = await setupAgentsSnapshot();
@@ -508,7 +516,7 @@ async function main(): Promise<void> {
 		// EM: that has no relation to where it actually lives.
 		sandboxProjDir = toSandboxPath(cwd, homePrefixes);
 		await prepareConfigDir(cwd, options.dryRun);
-		protectionConfig = await setupProtection(cwd, sandboxProjDir);
+		protectionConfig = await setupProtection(cwd, sandboxProjDir, companionIde);
 
 		const agentsSnapshotBind = await setupAgentsSnapshot();
 		if (agentsSnapshotBind && protectionConfig) {

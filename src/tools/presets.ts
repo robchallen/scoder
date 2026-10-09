@@ -1,5 +1,8 @@
-import { readdir, realpath } from "node:fs/promises";
+import { lstat, readdir, realpath } from "node:fs/promises";
 import { dirname } from "node:path";
+import scoderSkill from "../../skills/working-in-a-scoder-sandbox/SKILL.md" with {
+	type: "text",
+};
 import { getProjDir } from "../git/worktree.ts";
 import type { LiveOverlay } from "../sandbox/overlays.ts";
 import { stageXpraDir } from "../sandbox/xpra.ts";
@@ -1099,6 +1102,50 @@ export const TOOL_PRESETS: Record<string, ToolPreset> = {
 			// ~/.local/bin/claude at it. Without this bind that symlink dangles
 			// inside the sandbox. Read-only, so the sandbox cannot self-update
 			// the host's installation.
+			// EM: scoder's own skill, for Claude Code, which reads
+			// EM: ~/.claude/skills rather than ~/.agents/skills (where the
+			// EM: snapshot already carries it). A staged copy bound read-only
+			// EM: over the read-write ~/.claude, so nothing is written into the
+			// EM: user's real skills — except, accepted knowingly, the empty
+			// EM: directory bwrap creates there as the mountpoint, the first
+			// EM: time. Skipped when the user's own copy is there: a SKILL.md,
+			// EM: not merely the path, since our own leftover mountpoint is an
+			// EM: empty directory and must not count as "installed".
+			// EM: Not through a symlink. Reported: launch failed with `Can't
+			// EM: mkdir ~/.claude/skills/working-in-a-scoder-sandbox: No such
+			// EM: file or directory` — ~/.claude/skills is commonly a symlink
+			// EM: (often to ~/.agents/skills), and at the moment this bind is
+			// EM: applied its target is not mounted yet, so bwrap cannot make
+			// EM: the mountpoint through it. A symlinked skills dir pointing at
+			// EM: ~/.agents/skills already shows Claude the skill via the
+			// EM: snapshot; one pointing elsewhere is the user's arrangement to
+			// EM: keep. Either way: leave it alone.
+			const skillRel = ".claude/skills/working-in-a-scoder-sandbox";
+			if (
+				(await dirExists(claudeDir)) &&
+				!(await isSymlink(`${realHome}/.claude/skills`)) &&
+				!(await isSymlink(`${realHome}/${skillRel}`)) &&
+				!(await fileExists(`${realHome}/${skillRel}/SKILL.md`))
+			) {
+				// EM: Make the parent ourselves. Reported once without a symlink
+				// EM: in play: the same "Can't mkdir .../working-in-a-scoder-
+				// EM: sandbox: No such file or directory", then fine on the next
+				// EM: launch. Unconfirmed theory: the host had no ~/.claude/skills
+				// EM: and its (older, Ubuntu 24.04) bwrap creates only the leaf
+				// EM: mountpoint, not missing parents — this container's newer
+				// EM: bwrap does create them, so it cannot reproduce it. Creating
+				// EM: the empty skills dir is the same side effect already
+				// EM: accepted for the mountpoint itself.
+				await ensureDir(`${realHome}/.claude/skills`);
+				const staged = await stageFile(`${sandboxHome}/${skillRel}/SKILL.md`);
+				await Bun.write(staged, scoderSkill);
+				binds.push({
+					type: "ro-bind",
+					source: dirname(staged),
+					dest: `${sandboxHome}/${skillRel}`,
+				});
+			}
+
 			const claudeDataDir = `${realHome}/.local/share/claude`;
 			if (await dirExists(claudeDataDir)) {
 				dirs.push(`${sandboxHome}/.local/share/claude`);
@@ -1782,6 +1829,14 @@ function vscodeFamilyPreset(flavor: VscodeFlavor): ToolPreset {
 			return [...scoderArgs, sandboxProjectDir];
 		},
 	};
+}
+
+async function isSymlink(path: string): Promise<boolean> {
+	try {
+		return (await lstat(path)).isSymbolicLink();
+	} catch {
+		return false;
+	}
 }
 
 // ### piConfigBinds

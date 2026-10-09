@@ -27,7 +27,7 @@ tags: [test-script, validation]
 
 `tests/scoder.test.ts` is a self-contained integration test suite that creates
 temporary git repositories under `/tmp`, runs `scoder` against them using
-`/bin/bash` as the sandboxed command, and asserts expected behaviour. 160
+`/bin/bash` as the sandboxed command, and asserts expected behaviour. 163
 tests cover all sandbox mechanics — this catalog is currently behind the
 actual implemented count (see the note under case 113) due to other,
 unrelated in-progress work; not fixed here.
@@ -1525,6 +1525,28 @@ user-data-dir and `~/.positron/extensions`, seeded from
 `positron` and `rstudio` both overlay the project's `.Rprofile` with the
 shared btw hook (`if (interactive() ...) btw::btw_mcp_session()`); `vscode`
 does not touch it.
+
+### 151. scoder-skill-injected-into-agents-snapshot
+[TESTED_BY](/tests/scoder.test.ts#testScoderSkillInjectedIntoAgentsSnapshot)
+
+With no `~/.agents` on the host, the snapshot is still bound and holds the
+bundled skill, byte-identical to the repository's, and nothing is created
+on the host; a user-installed `SKILL.md` in the same place wins.
+
+### 152. agents-md-overlay-names-companion-ide
+[TESTED_BY](/tests/scoder.test.ts#testAgentsMdOverlayNamesCompanionIde)
+
+With `--ide rstudio`, the `AGENTS.md` overlay names RStudio and asks the
+agent to offer an MCP connection once; without `--ide` there is no such
+line. The old `npx skills add` instruction is gone.
+
+### 153. scoder-skill-bound-for-claude-code
+[TESTED_BY](/tests/scoder.test.ts#testScoderSkillBoundForClaudeCode)
+
+A `claude` session binds the staged skill read-only at
+`~/.claude/skills/working-in-a-scoder-sandbox`, after the read-write
+`~/.claude` bind, even when an empty leftover mountpoint is there; with the
+user's own `SKILL.md` in place, no such bind; nor when `~/.claude/skills` is a symlink (bwrap cannot make the mountpoint through it, which failed the launch).
 
 ## Current Network Coverage
 

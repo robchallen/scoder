@@ -1580,6 +1580,14 @@ With a throwaway `HOME` laid out as `uv tool install` leaves it, a dry-run
 binds `~/.local/share/uv/tools` and `~/.local/share/uv/python` read-only,
 and the `~/.local/bin/hf` symlink into the tool's venv survives into the
 session's `~/.local/bin` snapshot as a link, not a copied script.
+### 158. terminal-restored-after-exit
+[TESTED_BY](/tests/scoder.test.ts#testTerminalRestoredAfterExit)
+
+`restoreTerminal` writes the restore sequence (alternate screen off, cursor
+on, mouse and bracketed paste off, attributes reset, `ESC[H ESC[2J`, never
+`ESC[3J`) to a tty only; a pipe and `SCODER_KEEP_SCREEN` get nothing.
+Checked by hand under a real pty: the exact bytes, and `stty sane` running
+cleanly.
 
 ## Current Network Coverage
 

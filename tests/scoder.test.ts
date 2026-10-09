@@ -32,6 +32,10 @@ import {
 	DEFAULT_IDE_SHUTDOWN,
 } from "../src/sandbox/builder.ts";
 import { getSandboxUsername } from "../src/sandbox/identity.ts";
+import {
+	restoreTerminal,
+	TERMINAL_RESTORE_SEQUENCE,
+} from "../src/sandbox/launch.ts";
 import { renderOverlay, startOverlayWatcher } from "../src/sandbox/overlays.ts";
 import { isIpv6RoutabilityFailure } from "../src/sandbox/pasta.ts";
 import {
@@ -3190,6 +3194,33 @@ test("env-wildcards-in-session: a PI_* line passes the host's PI_ variables and 
 	} finally {
 		await cleanupRepo(repoDir);
 	}
+});
+
+// ### Test: terminal-restored-after-exit
+// EM: After the sandbox exits, a real terminal is put back: alternate screen
+// EM: left, cursor shown, mouse and bracketed paste off, attributes reset,
+// EM: screen cleared without touching scrollback (ESC[2J, not ESC[3J) — and
+// EM: nothing at all is written to a pipe, or with SCODER_KEEP_SCREEN set.
+test("terminal-restored-after-exit: a tty gets the restore sequence and a scrollback-preserving clear; pipes and SCODER_KEEP_SCREEN get nothing", () => {
+	const written: string[] = [];
+	const tty = { isTTY: true, write: (c: string) => written.push(c) };
+	const pipe = { isTTY: false, write: (c: string) => written.push(c) };
+
+	expect(restoreTerminal(pipe, {})).toBe(false);
+	expect(restoreTerminal(tty, { SCODER_KEEP_SCREEN: "1" })).toBe(false);
+	expect(written).toEqual([]);
+
+	expect(restoreTerminal(tty, {})).toBe(true);
+	expect(written).toEqual([TERMINAL_RESTORE_SEQUENCE]);
+	for (const seq of [
+		"\x1b[?1049l",
+		"\x1b[?25h",
+		"\x1b[?2004l",
+		"\x1b[H\x1b[2J",
+	]) {
+		expect(TERMINAL_RESTORE_SEQUENCE).toContain(seq);
+	}
+	expect(TERMINAL_RESTORE_SEQUENCE).not.toContain("\x1b[3J");
 });
 
 // ### Test: dry-run-uses-pasta

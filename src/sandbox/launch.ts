@@ -79,6 +79,48 @@ const AGENT_PORTS_POLL_MS =
 const RESOLVCONF_POLL_MS =
 	Number.parseInt(process.env.SCODER_RESOLVCONF_POLL_MS || "", 10) || 2000;
 
+// EM: Put the terminal back after the sandboxed tool exits. Reported: a
+// EM: plain `scoder pi` exit left the terminal "in a bit of a mess". A TUI
+// EM: that exits uncleanly (killed, crashed, or simply not restoring) can
+// EM: leave the alternate screen up, the cursor hidden, mouse reporting and
+// EM: bracketed paste on, and the tty in raw mode — a `clear` alone fixes
+// EM: none of those. The screen clear itself matches entrypoint.sh's: ESC[H
+// EM: ESC[2J, *not* ESC[3J, so scrollback survives. Written before the
+// EM: worktree session summary, so the summary is what stays on screen.
+export const TERMINAL_RESTORE_SEQUENCE = [
+	"\x1b[?1049l", // leave the alternate screen
+	"\x1b[?25h", // show the cursor
+	"\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l", // mouse reporting off
+	"\x1b[?2004l", // bracketed paste off
+	"\x1b[0m", // reset colours and attributes
+	"\x1b[H\x1b[2J", // clear the screen, keep scrollback
+].join("");
+
+// ### restoreTerminal
+// Only on a real terminal (escape sequences in a pipe or log would be
+// garbage), and not when SCODER_KEEP_SCREEN is set.
+export function restoreTerminal(
+	stream: { isTTY?: boolean; write(chunk: string): unknown },
+	env: Record<string, string | undefined> = process.env,
+): boolean {
+	if (!stream.isTTY || env.SCODER_KEEP_SCREEN) {
+		return false;
+	}
+	stream.write(TERMINAL_RESTORE_SEQUENCE);
+	// EM: Line discipline (raw/no-echo) lives in the tty, not the stream, so
+	// EM: it takes stty against the terminal itself. Best effort.
+	try {
+		Bun.spawnSync(["stty", "sane"], {
+			stdin: "inherit",
+			stdout: "ignore",
+			stderr: "ignore",
+		});
+	} catch {
+		// EM: No stty: the escape sequences above still did most of it.
+	}
+	return true;
+}
+
 /** A sandbox's mount namespace, pinned by an open fd — see captureSandboxNamespace. */
 interface SandboxNamespace {
 	id: string;
@@ -218,6 +260,7 @@ export async function launchSandbox(
 		}
 
 		const exitCode = await proc.exited;
+		restoreTerminal(process.stderr);
 		return { exitCode };
 	} finally {
 		// Removing the listeners first, not last: once the tool has exited

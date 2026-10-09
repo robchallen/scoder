@@ -143,6 +143,19 @@ reasoning as `~/.claude`'s hooks. Design:
 - kernelspecs: `~/.local/share/jupyter/kernels` read-only, so host-
   registered kernels (a project venv's ipykernel, IRkernel) appear.
 
+Confirmed on the user's machine (2026-10-09): the only Jupyter state
+outside the tool environment is `~/.jupyter` and `~/.local/share/jupyter`.
+The latter is Jupyter's data dir and is not bound whole — piece by piece:
+
+- `kernels/` read-only (above);
+- `runtime/` (connection files, server info): writable, per session — on
+  the sandbox's tmpfs, or `JUPYTER_RUNTIME_DIR` under `$XDG_RUNTIME_DIR`;
+- `nbsignatures.db` (notebook trust): writable — in the managed
+  per-project dir, via `NotebookNotary.db_file` or `JUPYTER_DATA_DIR`;
+- jupyter-ai's own state, if it keeps it here (model choice, possibly API
+  keys): persisted per project, seeded once like the lab settings. To check
+  on the spike: `ls ~/.local/share/jupyter` after configuring jupyter-ai.
+
 ### 4. Lifecycle
 
 As `--ide`, Jupyter (and the browser it started) is the background

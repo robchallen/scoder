@@ -587,14 +587,25 @@ needed. Nothing is ever overwritten at either level, so:
 - edit a project's `.sandbox/` to change **that** project.
 
 `.sandbox/env` lists, one per line, the host environment variables passed
-into the sandbox (when set); nothing else is passed:
+into the sandbox (when set); nothing else is passed. A `*` makes a line a
+pattern, so `PI_*` passes every `PI_` variable you have set:
 
 ```
 # .sandbox/env
 EDITOR
 GH_TOKEN
 ANTHROPIC_API_KEY
+PI_*
+*_API_KEY
 ```
+
+Patterns only add names. They never match the variables that would break
+the sandbox or reach host resources it deliberately cannot (`PATH`,
+`HOME`, `USER`, `SHELL`, `LD_*`, `SCODER_*`, `DISPLAY`, `XAUTHORITY`,
+`WAYLAND_DISPLAY`, `DBUS_SESSION_BUS_ADDRESS`, `XDG_RUNTIME_DIR`,
+`SSH_AUTH_SOCK`), nor anything scoder sets itself; name one of those
+exactly if you really mean it. A line that is only `*` is refused. At
+start-up scoder lists what each pattern matched — names only, never values.
 
 The built-in default passes your shell/editor variables and `GH_TOKEN` /
 `GITHUB_TOKEN` only, with the common provider API keys listed but

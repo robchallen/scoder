@@ -70,6 +70,19 @@ The shipped default lists the shell/editor variables and `GH_TOKEN` /
 list passed unconditionally — a behaviour change: a key is now passed only
 when a project's `env` (or the user's default, for new projects) lists it.
 
+### Wildcards in `.sandbox/env`
+
+A `*` in a line makes it a pattern (`PI_*`, `*_API_KEY`), expanded against
+the host environment when the sandbox command is built
+(`expandEnvNames`). A pattern only adds names, and never matches the
+excluded set — `PATH`, `HOME`, `USER`, `LOGNAME`, `SHELL`, `PWD`, `OLDPWD`,
+`DISPLAY`, `XAUTHORITY`, `WAYLAND_DISPLAY`, `DBUS_SESSION_BUS_ADDRESS`,
+`XDG_RUNTIME_DIR`, `SSH_AUTH_SOCK`, and anything starting `LD_` or
+`SCODER_` — nor a variable scoder has already set in the command; naming
+one exactly still passes it. A line of only `*` is refused with a warning:
+it would pass the whole environment and undo the file's purpose. Start-up
+reports each pattern's matches by name.
+
 ### `--env NAME=VALUE`
 
 A one-off value for one session, nothing written. Parsed before the tool

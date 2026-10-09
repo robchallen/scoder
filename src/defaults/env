@@ -1,4 +1,5 @@
-# Environment variables passed through to scode sandbox
+# Environment variables passed through to the scoder sandbox, one per line.
+# A * makes a line a pattern: PI_* passes every PI_ variable that is set.
 SHELL
 EDITOR
 VISUAL

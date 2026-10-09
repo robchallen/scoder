@@ -27,7 +27,7 @@ tags: [test-script, validation]
 
 `tests/scoder.test.ts` is a self-contained integration test suite that creates
 temporary git repositories under `/tmp`, runs `scoder` against them using
-`/bin/bash` as the sandboxed command, and asserts expected behaviour. 164
+`/bin/bash` as the sandboxed command, and asserts expected behaviour. 166
 tests cover all sandbox mechanics — this catalog is currently behind the
 actual implemented count (see the note under case 113) due to other,
 unrelated in-progress work; not fixed here.
@@ -1556,6 +1556,22 @@ The extra auto-detect probe (port 11435) accepts a server only when
 `data`, a 401, a closed port, and a listener that never answers are all
 rejected — the last within about a second, so a stuck server cannot stall
 start-up.
+
+### 155. env-wildcards-expand-and-exclude
+[TESTED_BY](/tests/scoder.test.ts#testEnvWildcardsExpandAndExclude)
+
+`expandEnvNames`: `PI_*`, `*_API_KEY` and `XDG_*` expand against a given
+environment, sorted; the excluded names (`XDG_RUNTIME_DIR`,
+`DBUS_SESSION_BUS_ADDRESS`, `SHELL`, `LD_*`, `SCODER_*`) and a name scoder
+already set are never matched, while an exact `HOME` line still passes.
+The parser keeps `PI_*` and `*_TOKEN`, refuses `*`, `**` and `PI-*`.
+
+### 156. env-wildcards-in-session
+[TESTED_BY](/tests/scoder.test.ts#testEnvWildcardsInSession)
+
+A dry-run with `PI_*` in `.sandbox/env` passes the host's `PI_ALPHA` and
+`PI_BETA`, and start-up reports what each pattern matched, including a
+pattern that matched nothing.
 
 ## Current Network Coverage
 

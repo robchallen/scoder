@@ -13,7 +13,12 @@ import {
 	removeGitExclude,
 	setupResolvConf,
 } from "../src/git/protection.ts";
-import { prepareConfigDir, userConfigDir } from "../src/git/sandbox-config.ts";
+import {
+	expandEnvNames,
+	parseEnvNames,
+	prepareConfigDir,
+	userConfigDir,
+} from "../src/git/sandbox-config.ts";
 import {
 	getWorktreesParentDir,
 	relocateWorktree,
@@ -3118,6 +3123,72 @@ test("llm-probe-requires-openai-models-list: /v1/models must return 200 with a d
 		expect(Date.now() - started).toBeLessThan(3000);
 	} finally {
 		for (const server of servers) server.stop(true);
+	}
+});
+
+// ### Test: env-wildcards-expand-and-exclude
+// EM: `*` in .sandbox/env expands against the host environment. A pattern
+// EM: adds names, never the excluded ones (display, bus, ssh agent, PATH,
+// EM: HOME, LD_*, SCODER_*) nor ones scoder already set — naming one of those
+// EM: exactly still works. A bare `*` is refused: it would pass everything.
+test("env-wildcards-expand-and-exclude: PI_* and *_API_KEY expand; excluded and scoder-set names are never matched; bare * refused", () => {
+	const env = {
+		PI_FOO: "1",
+		PI_BAR: "2",
+		PI_SET_BY_SCODER: "3",
+		MY_API_KEY: "k",
+		XDG_DATA_DIRS: "/usr/share",
+		XDG_RUNTIME_DIR: "/run/user/1",
+		DBUS_SESSION_BUS_ADDRESS: "unix:path=/x",
+		SCODER_LLM_PORT: "1",
+		LD_PRELOAD: "evil.so",
+		SHELL: "/bin/bash",
+		HOME: "/home/u",
+	};
+	const { names, matches } = expandEnvNames(
+		["EDITOR", "PI_*", "*_API_KEY", "XDG_*", "*_ADDRESS", "S*", "LD_*", "HOME"],
+		env,
+		new Set(["PI_SET_BY_SCODER"]),
+	);
+	expect(names).toEqual([
+		"EDITOR",
+		"PI_BAR",
+		"PI_FOO",
+		"MY_API_KEY",
+		"XDG_DATA_DIRS",
+		"HOME",
+	]);
+	expect(matches.get("PI_*")).toEqual(["PI_BAR", "PI_FOO"]);
+	expect(matches.get("*_ADDRESS")).toEqual([]);
+	expect(matches.get("S*")).toEqual([]);
+	expect(matches.get("LD_*")).toEqual([]);
+
+	const parsed = parseEnvNames("PI_*\n*\n**\nPI-*\n*_TOKEN\n", "test env");
+	expect(parsed).toEqual(["PI_*", "*_TOKEN"]);
+});
+
+// ### Test: env-wildcards-in-session
+// EM: The user-facing shape: PI_* in .sandbox/env passes every PI_ variable
+// EM: on the host, and start-up names what each pattern matched.
+test("env-wildcards-in-session: a PI_* line passes the host's PI_ variables and reports them", async () => {
+	const repoDir = await createTempRepo();
+	tempRepos.push(repoDir);
+
+	try {
+		await Bun.write(`${repoDir}/.sandbox/env`, "PI_*\nNOTHING_MATCHES_*\n");
+		const run = await runScoderRaw(repoDir, ["--dry-run", "/bin/bash"], {
+			PI_ALPHA: "a1",
+			PI_BETA: "b2",
+		});
+		expect(run.code).toBe(0);
+		expect(run.stdout).toContain("--setenv PI_ALPHA a1");
+		expect(run.stdout).toContain("--setenv PI_BETA b2");
+		expect(run.stderr).toContain(".sandbox/env PI_* passes PI_ALPHA, PI_BETA");
+		expect(run.stderr).toContain(
+			".sandbox/env NOTHING_MATCHES_* matches nothing set on this host",
+		);
+	} finally {
+		await cleanupRepo(repoDir);
 	}
 });
 

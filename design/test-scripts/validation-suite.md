@@ -27,7 +27,7 @@ tags: [test-script, validation]
 
 `tests/scoder.test.ts` is a self-contained integration test suite that creates
 temporary git repositories under `/tmp`, runs `scoder` against them using
-`/bin/bash` as the sandboxed command, and asserts expected behaviour. 163
+`/bin/bash` as the sandboxed command, and asserts expected behaviour. 164
 tests cover all sandbox mechanics — this catalog is currently behind the
 actual implemented count (see the note under case 113) due to other,
 unrelated in-progress work; not fixed here.
@@ -1547,6 +1547,15 @@ A `claude` session binds the staged skill read-only at
 `~/.claude/skills/working-in-a-scoder-sandbox`, after the read-write
 `~/.claude` bind, even when an empty leftover mountpoint is there; with the
 user's own `SKILL.md` in place, no such bind; nor when `~/.claude/skills` is a symlink (bwrap cannot make the mountpoint through it, which failed the launch).
+
+### 154. llm-probe-requires-openai-models-list
+[TESTED_BY](/tests/scoder.test.ts#testLlmProbeRequiresOpenaiModelsList)
+
+The extra auto-detect probe (port 11435) accepts a server only when
+`GET /v1/models` returns 200 with a `data` array; an HTML page, JSON without
+`data`, a 401, a closed port, and a listener that never answers are all
+rejected — the last within about a second, so a stuck server cannot stall
+start-up.
 
 ## Current Network Coverage
 

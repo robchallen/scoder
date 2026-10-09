@@ -35,6 +35,7 @@ import {
 } from "../src/tools/new-workspace.ts";
 import { isSnapInstall, TOOL_PRESETS } from "../src/tools/presets.ts";
 import type { IdeShutdown } from "../src/types.ts";
+import { servesOpenAiModels } from "../src/utils/checks.ts";
 import { getRealHome } from "../src/utils/paths.ts";
 import { sessionPath } from "../src/utils/session.ts";
 
@@ -3083,6 +3084,40 @@ test("agents-md-overlay-names-companion-ide: --ide adds the MCP offer line namin
 		for (const path of kept) await removeSessionRoot(path);
 		await Bun.spawn(["rm", "-rf", piDir, rstudioDir]).exited;
 		await cleanupRepo(repoDir);
+	}
+});
+
+// ### Test: llm-probe-requires-openai-models-list
+// EM: The extra probe ports (11435) are forwarded only when they answer
+// EM: GET /v1/models like an OpenAI-compatible server — an open port alone
+// EM: is too weak a sign off Ollama's own 11434. Anything else, including a
+// EM: listener that never answers, is a no.
+test("llm-probe-requires-openai-models-list: /v1/models must return 200 with a data array; anything else, or no answer, is rejected", async () => {
+	const serve = (handler: (req: Request) => Response | Promise<Response>) =>
+		Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: handler });
+	const ok = serve(() =>
+		Response.json({ object: "list", data: [{ id: "m" }] }),
+	);
+	const html = serve(() => new Response("<html>hi</html>"));
+	const noData = serve(() => Response.json({ models: [] }));
+	const unauthorized = serve(() => new Response("no", { status: 401 }));
+	const hang = serve(() => new Promise<Response>(() => {}));
+	const servers = [ok, html, noData, unauthorized, hang];
+
+	try {
+		expect(await servesOpenAiModels(ok.port)).toBe(true);
+		expect(await servesOpenAiModels(html.port)).toBe(false);
+		expect(await servesOpenAiModels(noData.port)).toBe(false);
+		expect(await servesOpenAiModels(unauthorized.port)).toBe(false);
+		const closed = serve(() => new Response(""));
+		const closedPort = closed.port;
+		closed.stop(true);
+		expect(await servesOpenAiModels(closedPort)).toBe(false);
+		const started = Date.now();
+		expect(await servesOpenAiModels(hang.port)).toBe(false);
+		expect(Date.now() - started).toBeLessThan(3000);
+	} finally {
+		for (const server of servers) server.stop(true);
 	}
 });
 

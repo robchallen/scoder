@@ -57,7 +57,7 @@ import type { BindMount, GitWorktreeInfo } from "./types.ts";
 import {
 	checkBwrapUserns,
 	commandExists,
-	detectDefaultLlmPort,
+	detectLocalLlmPorts,
 } from "./utils/checks.ts";
 import {
 	getRealHome,
@@ -673,10 +673,11 @@ async function main(): Promise<void> {
 		}
 
 		if (!options.dryRun) {
-			const detectedPort = await detectDefaultLlmPort();
-			if (detectedPort && !options.openPorts.includes(detectedPort)) {
-				await appendAgentPort(projectRoot, detectedPort);
-				options.openPorts.push(detectedPort);
+			for (const detectedPort of await detectLocalLlmPorts()) {
+				if (!options.openPorts.includes(detectedPort)) {
+					await appendAgentPort(projectRoot, detectedPort);
+					options.openPorts.push(detectedPort);
+				}
 			}
 		}
 

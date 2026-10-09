@@ -56,6 +56,9 @@ export const XPRA_LOG_PATH = "/tmp/scoder-xpra.log";
 // EM: stdout), and into $IDE_LOG otherwise — the branches are
 // EM: mutually exclusive, so binding anything else would stage a file
 // EM: guaranteed to stay empty.
+// EM: A GUI primary tool's output goes to this same file (HARNESS_LOG), so
+// EM: the choice covers it too: under xpra the server's own output is
+// EM: already there, and natively there is only one program to log.
 export function entrypointLogDest(xpra?: XpraWrap): string {
 	return xpra ? XPRA_LOG_PATH : IDE_LOG_PATH;
 }
@@ -555,7 +558,15 @@ export async function buildBwrapCommand(
 	// EM: Native mode with no companion is deliberately NOT a third case:
 	// EM: its whole bus mechanism is the exec-vector prepend above, so the
 	// EM: direct-exec path still applies (plan native-display.md, Decision 5).
-	if (ideBin || xpra) {
+	// EM: A GUI preset as the primary tool is a third case, for its output
+	// EM: rather than its process tree: the entry point runs it with stdout
+	// EM: and stderr in the session log, as a companion IDE's always were.
+	// EM: Reported: `scoder rstudio` printed RStudio's and xpra's logs into
+	// EM: the terminal, harmless there but inconsistent — and a JupyterLab
+	// EM: server's log is noisier and never stops. Natively this routes a
+	// EM: GUI primary through the entry point too, which it otherwise skips.
+	const guiHarness = xpra?.target === "harness" || nativeDBus === "harness";
+	if (ideBin || xpra || guiHarness) {
 		const entry = buildEntrypointInvocation(
 			harnessBin,
 			harnessArgs,
@@ -564,6 +575,7 @@ export async function buildBwrapCommand(
 			ideShutdown ?? DEFAULT_IDE_SHUTDOWN,
 			xpra,
 			nativeDBus === "ide" ? "ide" : undefined,
+			guiHarness ? entrypointLogDest(xpra) : undefined,
 		);
 		for (const [name, value] of Object.entries(entry.env)) {
 			cmd.push("--setenv", name, value);
@@ -822,6 +834,7 @@ export function buildEntrypointInvocation(
 	ideShutdown: IdeShutdown = DEFAULT_IDE_SHUTDOWN,
 	xpra?: XpraWrap,
 	dbusBus?: "ide",
+	harnessLog?: string,
 ): { env: Record<string, string>; argv: string[] } {
 	const ideArgv = ideBin ? [ideBin, ...ideArgs] : [];
 
@@ -853,6 +866,13 @@ export function buildEntrypointInvocation(
 	// EM: empty string: the script tests -n, so an empty value would read as
 	// EM: "no xpra" anyway, but leaving the variables out entirely keeps
 	// EM: --dry-run output honest about which path a session will take.
+	// EM: Set only for a GUI primary tool: the entry point then sends the
+	// EM: harness's output here instead of the terminal. Unset for an agent,
+	// EM: whose terminal is the whole point.
+	if (harnessLog) {
+		env.HARNESS_LOG = harnessLog;
+	}
+
 	if (xpra) {
 		env.XPRA_SOCKET = xpra.socket;
 		env.XPRA_MMAP = xpra.mmap;

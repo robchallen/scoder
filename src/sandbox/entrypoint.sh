@@ -41,6 +41,9 @@
 #   XPRA_TARGET=ide|harness   which of the two the server wraps. Only read
 #                      when XPRA_SOCKET is set; defaults to ide.
 #   XPRA_LOG=<path>    where the xpra server's own log goes.
+#   HARNESS_LOG=<path> when set, the primary tool's stdout and stderr go here
+#                      instead of the terminal, and stdin is /dev/null. Set
+#                      only when the primary tool is itself a GUI program.
 #   DBUS_BUS=ide       when set, the companion IDE gets a private session bus
 #                      started beside it (see the dbus layer below). Unset for
 #                      xpra sessions and non-GUI sessions — the two mechanisms
@@ -372,8 +375,18 @@ if [ ${#IDE_ARGV[@]} -gt 0 ]; then
 fi
 
 # --- run the primary tool in the foreground --------------------------------
+# A GUI primary tool (HARNESS_LOG set) logs to the session log like a
+# companion IDE, not to the terminal; scoder has already printed where it
+# is. stdin is /dev/null for the same reason a companion's is, and it also
+# means Ctrl-C stops a server that would otherwise ask "Shutdown? (y/n)"
+# on a terminal it does not own.
 
-"${HARNESS_ARGV[@]}"
+if [ -n "${HARNESS_LOG:-}" ]; then
+	say "The GUI's output is going to its log, not this terminal. Ctrl-C, or closing the program, ends the session."
+	"${HARNESS_ARGV[@]}" </dev/null >"$HARNESS_LOG" 2>&1
+else
+	"${HARNESS_ARGV[@]}"
+fi
 STATUS=$?
 
 # --- shutdown handshake ----------------------------------------------------

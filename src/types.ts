@@ -86,6 +86,10 @@ export interface ToolPreset {
 	// design/features/live-file-overlays.md. Separate from configBinds
 	// because the project directory is not known when that runs, and these
 	// are almost always project files.
+	// Extra lines for the sandbox's AGENTS.md note when this preset runs as
+	// an --ide companion beside an agent — e.g. where its server is and how
+	// to authenticate, so the agent can configure an MCP connection itself.
+	agentsNote?: () => string;
 	fileOverlays?: (
 		hostProjectDir: string,
 		sandboxProjectDir: string,

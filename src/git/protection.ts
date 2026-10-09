@@ -655,6 +655,8 @@ export interface CompanionIde {
 	key: string;
 	/** Its display name, e.g. "WebStorm". */
 	name: string;
+	/** The preset's own extra line(s) for the note, e.g. a server URL. */
+	note?: string;
 }
 
 async function _setupAgentsMdOverlay(
@@ -696,6 +698,10 @@ This section is injected by scoder inside the sandbox and is not part of the rep
 	if (companionIde) {
 		sandboxSection = `${sandboxSection}- The user has launched ${companionIde.name} alongside you in this sandbox (\`--ide ${companionIde.key}\`). Check whether you have an MCP server configured for it; if not, offer once to set one up, using the \`working-in-a-scoder-sandbox\` skill.
 `;
+		if (companionIde.note) {
+			sandboxSection = `${sandboxSection}- ${companionIde.note}
+`;
+		}
 	}
 
 	if (isWorktreeMountPath(sourceDir, realHome)) {

@@ -375,6 +375,28 @@ Use the port shown in WebStorm's MCP Server settings. `<project-path>` is
 the project's real absolute path — paths inside the sandbox mirror the
 host's, so it is the same path on both sides.
 
+#### JupyterLab: jupyter-ai
+
+With `scoder <agent> --ide jupyterlab`, the server runs in this sandbox and
+the sandbox's `AGENTS.md` note gives its URL, token and jupyter-ai's MCP
+endpoint (`http://localhost:3001/mcp`, when jupyter-ai is installed —
+`uv tool install jupyterlab --with jupyter-ai --force`, on the host).
+Kernels run here too, so code executed through it stays sandboxed. Do not
+point an agent at a Jupyter running **on the host** (a `.sandbox/ports`
+forward): its kernels would execute on the host, outside the sandbox.
+
+```json
+{
+  "mcpServers": {
+    "jupyter": {
+      "command": "npx",
+      "args": ["-y", "mcp-remote@next", "http://localhost:3001/mcp"],
+      "directTools": true
+    }
+  }
+}
+```
+
 ## Troubleshooting
 
 **Write failed with a read-only error** — check first whether the path is

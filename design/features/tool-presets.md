@@ -406,6 +406,26 @@ sandbox cannot change them. Another JetBrains
 product is one more `JetBrainsProduct` entry (name, binary, directory
 prefix, properties variable).
 
+### jupyterlab
+
+A server, not a window. `jupyter-lab` is the program xpra wraps (`gui:
+true`); Jupyter opens the UI itself through `--ServerApp.browser` and the
+`SCODER_BROWSER` wrapper (required; refused with a named error if unset),
+inside the sandbox — never the host's browser, which would share
+`localhost` cookies across ports and could reach host loopback services.
+`--ServerApp.use_redirect_file=False` hands the browser the real URL
+(measured on 4.6.4: otherwise a `file:` redirect page). Fixed port 8888 in
+the sandbox's own netns, a per-session token. `~/.jupyter` read-only
+(host-executed config); only `~/.local/share/jupyter/kernels` bound,
+read-only, via `JUPYTER_PATH` — never `runtime/` (host servers' tokens) or
+the notebook-trust secret, which the one-time seed of
+`~/.local/share/scoder-jupyterlab/<project>/` (settings, workspaces, data)
+also leaves out. `JUPYTER_RUNTIME_DIR` is in the sandbox's tmpfs. As a
+companion, `agentsNote` adds the URL, token and MCP endpoint to the
+`AGENTS.md` note. Checked against a real JupyterLab 4.6.4 run headless with
+these arguments and environment: token enforced (200/403), browser hook
+called with the http URL, runtime dir honoured, clean exit on SIGTERM.
+
 `~/.continue` (the Continue extension's config, models and API keys,
 chat sessions and codebase index — kept outside the user-data-dir) binds
 **read-write** when it exists and is never created when it does not:

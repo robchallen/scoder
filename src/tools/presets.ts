@@ -1,9 +1,11 @@
+import { randomBytes } from "node:crypto";
 import { lstat, readdir, realpath } from "node:fs/promises";
 import { dirname } from "node:path";
 import scoderSkill from "../../skills/working-in-a-scoder-sandbox/SKILL.md" with {
 	type: "text",
 };
 import { getProjDir } from "../git/worktree.ts";
+import { BROWSER_DEST } from "../sandbox/browser.ts";
 import type { LiveOverlay } from "../sandbox/overlays.ts";
 import { stageXpraDir } from "../sandbox/xpra.ts";
 import type { BindMount, ToolBindSpec, ToolPreset } from "../types.ts";
@@ -1002,6 +1004,191 @@ function jetbrainsPreset(product: JetBrainsProduct): ToolPreset {
 	};
 }
 
+// ### jupyterlab
+// EM: JupyterLab is a server, not a window: the preset's program is
+// EM: `jupyter-lab`, which xpra wraps (gui: true), and Jupyter itself opens
+// EM: the UI in a browser *inside* the sandbox once it is ready, through
+// EM: --ServerApp.browser and the SCODER_BROWSER wrapper. Never the host's
+// EM: browser: a sandbox page in the user's everyday browser shares
+// EM: localhost cookies across ports (a host Jupyter's login cookie is host
+// EM: code execution) and can fire requests at host loopback services
+// EM: scoder otherwise keeps out of reach. Nothing is forwarded in or out.
+// EM: See design/implementation/plans/jupyterlab-preset.md.
+
+/** Fixed: the sandbox has its own network namespace, so nothing collides. */
+export const JUPYTER_PORT = 8888;
+/** jupyter-ai's MCP server, when installed (observed on the user's host). */
+export const JUPYTER_AI_MCP_URL = "http://localhost:3001/mcp";
+// EM: Random per scoder process, i.e. per session. Inside the sandbox it
+// EM: guards little — the agent beside it may read it, and is meant to use
+// EM: it for MCP — but it keeps Jupyter's normal authentication on.
+export const JUPYTER_TOKEN = randomBytes(24).toString("hex");
+const SCODER_JUPYTERLAB_DIRNAME = "scoder-jupyterlab";
+
+// EM: Left out of the one-time copy of ~/.local/share/jupyter: runtime/
+// EM: holds the connection files and tokens of servers running on the
+// EM: host; kernels/ is bound read-only instead of copied, so host
+// EM: registrations stay current; notebook_secret and nbsignatures.db are
+// EM: notebook trust — sharing the host's secret would let the sandbox mark
+// EM: notebooks as trusted for the user's host Jupyter.
+const JUPYTER_DATA_SEED_EXCLUDE = new Set([
+	"runtime",
+	"kernels",
+	"notebook_secret",
+	"nbsignatures.db",
+]);
+
+interface JupyterLayout {
+	managedHostDir: string;
+	settingsHostDir: string;
+	workspacesHostDir: string;
+	dataHostDir: string;
+}
+
+// ### resolveJupyterLayout
+// The managed per-project dir, created and seeded once — lab settings and
+// workspaces from ~/.jupyter/lab, Jupyter's data dir from
+// ~/.local/share/jupyter minus JUPYTER_DATA_SEED_EXCLUDE — and never again.
+async function resolveJupyterLayout(
+	hostProjectDir: string,
+): Promise<JupyterLayout> {
+	const realHome = getRealHome();
+	const managedHostDir = await managedProjectDir(
+		SCODER_JUPYTERLAB_DIRNAME,
+		hostProjectDir,
+	);
+	const layout = {
+		managedHostDir,
+		settingsHostDir: `${managedHostDir}/settings`,
+		workspacesHostDir: `${managedHostDir}/workspaces`,
+		dataHostDir: `${managedHostDir}/data`,
+	};
+	if (await dirExists(managedHostDir)) {
+		return layout;
+	}
+
+	for (const [source, dest] of [
+		[`${realHome}/.jupyter/lab/user-settings`, layout.settingsHostDir],
+		[`${realHome}/.jupyter/lab/workspaces`, layout.workspacesHostDir],
+	]) {
+		await ensureDir(dest);
+		if (await dirExists(source)) {
+			await Bun.spawn(["cp", "-a", `${source}/.`, dest]).exited;
+		}
+	}
+	await ensureDir(layout.dataHostDir);
+	const hostData = `${realHome}/.local/share/jupyter`;
+	if (await dirExists(hostData)) {
+		for (const name of await readdir(hostData)) {
+			if (!JUPYTER_DATA_SEED_EXCLUDE.has(name)) {
+				await Bun.spawn(["cp", "-a", `${hostData}/${name}`, layout.dataHostDir])
+					.exited;
+			}
+		}
+	}
+	info(`Seeded JupyterLab settings for this project in ${managedHostDir}`);
+	return layout;
+}
+
+const jupyterlabPreset: ToolPreset = {
+	description: "JupyterLab",
+	command: "jupyter-lab",
+	gui: true,
+	managedWorkspaceDir: (hostProjectDir) =>
+		managedProjectDir(SCODER_JUPYTERLAB_DIRNAME, hostProjectDir),
+	agentsNote: () =>
+		`JupyterLab's server is at http://127.0.0.1:${JUPYTER_PORT}/lab?token=${JUPYTER_TOKEN} (token \`${JUPYTER_TOKEN}\`), inside this sandbox. If jupyter-ai is installed, its MCP server is at ${JUPYTER_AI_MCP_URL}.`,
+	configBinds: async (realHome, sandboxHome) => {
+		const binds: BindMount[] = [];
+		const dirs: string[] = [];
+		const gui = await guiDisplayBinds(realHome, sandboxHome);
+		binds.push(...(gui.binds ?? []));
+		dirs.push(...(gui.dirs ?? []));
+		const homePrefixes = await resolveHomePrefixes();
+		const inSandbox = (p: string) => toSandboxPath(p, homePrefixes);
+
+		const layout = await resolveJupyterLayout(process.cwd());
+		const managed = inSandbox(layout.managedHostDir);
+		pushIntermediateDirs(
+			dirs,
+			sandboxHome,
+			managed.slice(sandboxHome.length + 1),
+		);
+		binds.push({ type: "bind", source: layout.managedHostDir, dest: managed });
+
+		// EM: ~/.jupyter is host-executed config (jupyter_server_config.py
+		// EM: runs as Python whenever the user starts Jupyter on the host),
+		// EM: so read-only — the same reasoning as ~/.claude's hooks. Lab's
+		// EM: own writes are redirected to the managed dir by the env below.
+		const jupyterConfig = `${realHome}/.jupyter`;
+		if (await dirExists(jupyterConfig)) {
+			dirs.push(`${sandboxHome}/.jupyter`);
+			binds.push({
+				type: "ro-bind",
+				source: jupyterConfig,
+				dest: `${sandboxHome}/.jupyter`,
+			});
+		}
+		// EM: Only kernels/ from the host data dir, read-only, found through
+		// EM: JUPYTER_PATH — never runtime/ (host servers' tokens) or the
+		// EM: notebook-trust secret.
+		const kernels = `${realHome}/.local/share/jupyter/kernels`;
+		if (await dirExists(kernels)) {
+			pushIntermediateDirs(dirs, sandboxHome, ".local/share/jupyter/kernels");
+			binds.push({
+				type: "ro-bind",
+				source: kernels,
+				dest: `${sandboxHome}/.local/share/jupyter/kernels`,
+			});
+		}
+
+		const piSpec = await piConfigBinds(realHome, sandboxHome);
+		return {
+			binds: [...binds, ...(piSpec.binds ?? [])],
+			dirs: [...dirs, ...(piSpec.dirs ?? [])],
+			env: {
+				...gui.env,
+				JUPYTERLAB_SETTINGS_DIR: inSandbox(layout.settingsHostDir),
+				JUPYTERLAB_WORKSPACES_DIR: inSandbox(layout.workspacesHostDir),
+				JUPYTER_DATA_DIR: inSandbox(layout.dataHostDir),
+				JUPYTER_PATH: `${sandboxHome}/.local/share/jupyter`,
+				JUPYTER_RUNTIME_DIR: "/tmp/jupyter-runtime",
+			},
+		};
+	},
+	validate: async () => {
+		if (!(await resolveCommandPath("jupyter-lab"))) {
+			error("jupyter-lab not found in PATH");
+			error("Install it with: uv tool install jupyterlab");
+			return false;
+		}
+		// EM: Refused rather than guessed: the browser is the whole UI, and
+		// EM: SCODER_BROWSER is where the user chose it and its flags.
+		if (!process.env.SCODER_BROWSER) {
+			error(
+				"the jupyterlab preset needs SCODER_BROWSER, the browser that shows it",
+			);
+			error(
+				'  e.g. export SCODER_BROWSER="google-chrome --incognito --no-first-run --no-default-browser-check --disable-component-update"',
+			);
+			error("  it runs inside the sandbox; the host's browser is never used");
+			return false;
+		}
+		return await requireGuiDisplay();
+	},
+	resolveArgs: async (_host, _sandboxProjectDir, existingArgs) => [
+		"--ip=127.0.0.1",
+		`--port=${JUPYTER_PORT}`,
+		`--IdentityProvider.token=${JUPYTER_TOKEN}`,
+		`--ServerApp.browser=${BROWSER_DEST} %s`,
+		// EM: Hand the browser the real http URL, not a file: redirect page
+		// EM: in the runtime dir — measured (JupyterLab 4.6.4): without this
+		// EM: the browser is given file:.../jpserver-<pid>-open.html.
+		"--ServerApp.use_redirect_file=False",
+		...existingArgs,
+	],
+};
+
 // ### TOOL_PRESETS
 // [IMPLEMENTS](/design/features/tool-presets.md)
 // EM: Mapping of tool names to preset configurations for sandboxing
@@ -1641,6 +1828,7 @@ export const TOOL_PRESETS: Record<string, ToolPreset> = {
 	vscodium: vscodeFamilyPreset(VSCODIUM),
 	positron: vscodeFamilyPreset(POSITRON),
 	webstorm: jetbrainsPreset(WEBSTORM),
+	jupyterlab: jupyterlabPreset,
 };
 
 // ### vscodeFamilyPreset

@@ -66,9 +66,18 @@ export function parseEnvNames(content: string, label: string): string[] {
 		if (name === "") {
 			continue;
 		}
-		if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) {
+		// EM: `*` is a wildcard (PI_*, *_API_KEY), expanded against the host
+		// EM: environment by expandEnvNames. A line of nothing but `*` would
+		// EM: pass the whole host environment, undoing the point of the file.
+		if (/^\**$/.test(name)) {
 			warning(
-				`${label}: ignoring "${rawLine.trim()}" — not an environment variable name`,
+				`${label}: ignoring "${rawLine.trim()}" — a pattern must name something; list variables or prefixes (e.g. PI_*)`,
+			);
+			continue;
+		}
+		if (!/^[A-Za-z_*][A-Za-z0-9_*]*$/.test(name)) {
+			warning(
+				`${label}: ignoring "${rawLine.trim()}" — not an environment variable name or pattern`,
 			);
 			continue;
 		}
@@ -77,6 +86,75 @@ export function parseEnvNames(content: string, label: string): string[] {
 		}
 	}
 	return names;
+}
+
+// EM: Never matched by a pattern, only by naming them exactly: variables that
+// EM: would break the sandbox (PATH, HOME, LD_*), are scoder's own (SCODER_*),
+// EM: or point at host resources the sandbox deliberately cannot reach — the
+// EM: display, the session bus, the ssh agent. A broad pattern like XDG_* or
+// EM: *_ADDRESS would otherwise carry them in by accident.
+const PATTERN_EXCLUDED_NAMES = new Set([
+	"PATH",
+	"HOME",
+	"USER",
+	"LOGNAME",
+	"SHELL",
+	"PWD",
+	"OLDPWD",
+	"DISPLAY",
+	"XAUTHORITY",
+	"WAYLAND_DISPLAY",
+	"DBUS_SESSION_BUS_ADDRESS",
+	"XDG_RUNTIME_DIR",
+	"SSH_AUTH_SOCK",
+]);
+const PATTERN_EXCLUDED_PREFIXES = ["LD_", "SCODER_"];
+
+// ### expandEnvNames
+// Resolve an env file's entries against an environment: exact names as they
+// are, each pattern replaced by the matching names present in `env` — less
+// the excluded names and any in `alreadySet` (variables scoder sets itself).
+// Returns the names, and for each pattern what it matched, for the startup
+// report.
+export function expandEnvNames(
+	entries: string[],
+	env: Record<string, string | undefined>,
+	alreadySet: Set<string> = new Set(),
+): { names: string[]; matches: Map<string, string[]> } {
+	const names: string[] = [];
+	const matches = new Map<string, string[]>();
+	const add = (name: string) => {
+		if (!names.includes(name)) {
+			names.push(name);
+		}
+	};
+
+	for (const entry of entries) {
+		if (!entry.includes("*")) {
+			add(entry);
+			continue;
+		}
+		const re = new RegExp(`^${entry.split("*").map(escapeRegExp).join(".*")}$`);
+		const matched = Object.keys(env)
+			.filter(
+				(name) =>
+					env[name] !== undefined &&
+					re.test(name) &&
+					!PATTERN_EXCLUDED_NAMES.has(name) &&
+					!PATTERN_EXCLUDED_PREFIXES.some((p) => name.startsWith(p)) &&
+					!alreadySet.has(name),
+			)
+			.sort();
+		matches.set(entry, matched);
+		for (const name of matched) {
+			add(name);
+		}
+	}
+	return { names, matches };
+}
+
+function escapeRegExp(text: string): string {
+	return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 // ### readConfigText

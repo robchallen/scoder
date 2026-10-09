@@ -1,7 +1,11 @@
 import { mkdir, realpath } from "node:fs/promises";
 import { dirname } from "node:path";
 import type { ProtectionConfig } from "../git/protection.ts";
-import { defaultConfigText, parseEnvNames } from "../git/sandbox-config.ts";
+import {
+	defaultConfigText,
+	expandEnvNames,
+	parseEnvNames,
+} from "../git/sandbox-config.ts";
 import {
 	getGitCommonDir,
 	getProjDir,
@@ -14,7 +18,7 @@ import type {
 	IdeShutdown,
 	ScoderOptions,
 } from "../types.ts";
-import { warning } from "../utils/logger.ts";
+import { info, warning } from "../utils/logger.ts";
 import { getRealHome } from "../utils/paths.ts";
 import { stageFile } from "../utils/session.ts";
 import { browserSetup } from "./browser.ts";
@@ -470,9 +474,31 @@ export async function buildBwrapCommand(
 	// EM: longer needs a scoder release. Read-only inside the sandbox like the
 	// EM: rest of .sandbox/, so an agent cannot widen its own environment.
 	// EM: With no protectionConfig the shipped default applies.
-	const passThrough =
+	const passThroughEntries =
 		protectionConfig?.envPassThrough ??
 		parseEnvNames(defaultConfigText("env"), "default env");
+
+	// EM: Patterns (PI_*) expand against the host environment here, and never
+	// EM: to a variable scoder has already set above: a pattern adds names,
+	// EM: it does not override the sandbox's own HOME, PATH and the like.
+	const alreadySet = new Set<string>();
+	for (let i = 0; i < cmd.length - 1; i++) {
+		if (cmd[i] === "--setenv") {
+			alreadySet.add(cmd[i + 1]);
+		}
+	}
+	const { names: passThrough, matches } = expandEnvNames(
+		passThroughEntries,
+		process.env,
+		alreadySet,
+	);
+	for (const [pattern, matched] of matches) {
+		info(
+			matched.length > 0
+				? `.sandbox/env ${pattern} passes ${matched.join(", ")}`
+				: `.sandbox/env ${pattern} matches nothing set on this host`,
+		);
+	}
 
 	for (const envVar of passThrough) {
 		if (process.env[envVar]) {

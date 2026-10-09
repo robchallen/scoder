@@ -3876,6 +3876,252 @@ test("webstorm-preset-managed-per-project-layout: seeds from the newest WebStorm
 	}
 });
 
+// ### Test: positron-preset-uses-its-own-paths
+// EM: Positron is the vscode preset with Positron's paths: `positron`, a
+// EM: seed from ~/.config/Positron/User, extensions from ~/.positron, and a
+// EM: managed user-data-dir root of its own — nothing of VS Code's is read
+// EM: or bound. Throwaway HOME holding both editors' state to tell apart.
+test("positron-preset-uses-its-own-paths: positron, ~/.config/Positron seed, ~/.positron extensions, its own managed dir, none of VS Code's", async () => {
+	const repoDir = await createTempRepo();
+	tempRepos.push(repoDir);
+	const fakeBinDir = await createFakeToolDir("positron");
+	const fakeHome = `/tmp/scoder-positron-home-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
+	const managedDir = `${fakeHome}/.local/share/scoder-positron-userdata/${repoDir.slice(1)}`;
+	const extensionsDir = `${fakeHome}/.positron/extensions`;
+
+	try {
+		await Bun.write(
+			`${fakeHome}/.config/Positron/User/settings.json`,
+			'{"from":"positron"}',
+		);
+		await Bun.write(
+			`${fakeHome}/.config/Code/User/settings.json`,
+			'{"from":"code"}',
+		);
+		await Bun.write(`${extensionsDir}/.placeholder`, "");
+		await Bun.write(`${fakeHome}/.vscode/extensions/.placeholder`, "");
+
+		const output = await runScoder(
+			repoDir,
+			["--dry-run", "--no-worktree", "positron"],
+			{
+				PATH: `${fakeBinDir}:${process.env.PATH}`,
+				HOME: fakeHome,
+			},
+		);
+		const flat = flattenDryRun(output);
+
+		expect(flat).toContain(`--bind ${managedDir} ${managedDir}`);
+		expect(flat).toContain(`--ro-bind ${extensionsDir} ${extensionsDir}`);
+		// Joined without the wrap padding, as vscode-user-args does.
+		expect(output.replace(/\\\n\s+/g, "")).toContain(
+			`-- bash /tmp/scoder-entrypoint.sh ${fakeBinDir}/positron` +
+				` --user-data-dir ${managedDir}` +
+				` --extensions-dir ${extensionsDir}`,
+		);
+		expect(await Bun.file(`${managedDir}/User/settings.json`).text()).toBe(
+			'{"from":"positron"}',
+		);
+		expect(flat).not.toContain(`${fakeHome}/.vscode/`);
+		expect(flat).not.toContain("scoder-vscode-userdata");
+		expect(
+			await dirExists(`${fakeHome}/.local/share/scoder-vscode-userdata`),
+		).toBe(false);
+	} finally {
+		await Bun.spawn(["rm", "-rf", fakeHome, fakeBinDir]).exited;
+		await cleanupRepo(repoDir);
+	}
+});
+
+// ### Test: webstorm-preset-managed-per-project-layout
+// EM: The JetBrains pattern: config seeded once from the host's newest
+// EM: product dir (lock/port files left behind), system dir persisted beside
+// EM: it, plugins from the matching host dir read-only, all named by a staged
+// EM: idea.properties the launcher finds through WEBSTORM_PROPERTIES, with
+// EM: project trust pre-answered. Throwaway HOME with two versions present.
+test("webstorm-preset-managed-per-project-layout: seeds from the newest WebStorm dir once, binds plugins ro, and points WEBSTORM_PROPERTIES at the staged layout", async () => {
+	const repoDir = await createTempRepo();
+	tempRepos.push(repoDir);
+	const fakeBinDir = await createFakeToolDir("webstorm");
+	const fakeHome = `/tmp/scoder-ws-home-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
+	const managed = `${fakeHome}/.local/share/scoder-webstorm/${repoDir.slice(1)}`;
+	const plugins = `${fakeHome}/.local/share/JetBrains/WebStorm2025.2`;
+	const env = {
+		PATH: `${fakeBinDir}:${process.env.PATH}`,
+		HOME: fakeHome,
+		SCODER_KEEP_SESSION_TMP: "1",
+	};
+	const kept: string[] = [];
+
+	try {
+		await Bun.write(
+			`${fakeHome}/.config/JetBrains/WebStorm2024.3/options/ui.xml`,
+			"old",
+		);
+		await Bun.write(
+			`${fakeHome}/.config/JetBrains/WebStorm2025.2/options/ui.xml`,
+			"new",
+		);
+		await Bun.write(`${fakeHome}/.config/JetBrains/WebStorm2025.2/.lock`, "");
+		await Bun.write(
+			`${fakeHome}/.config/JetBrains/WebStorm2025.2/port`,
+			"6942",
+		);
+		await Bun.write(`${plugins}/some-plugin/lib.jar`, "");
+		// Cross-product answers to the EULA and usage-stats dialogs.
+		await Bun.write(
+			`${fakeHome}/.java/.userPrefs/jetbrains/privacy_policy/prefs.xml`,
+			"<map/>",
+		);
+		await Bun.write(
+			`${fakeHome}/.local/share/JetBrains/consentOptions/accepted`,
+			"rsch.send.usage.stat:1.1:0:1",
+		);
+		// The install's own properties, which the native launcher reads.
+		await Bun.write(
+			`${fakeBinDir}/idea.properties`,
+			"idea.max.intellisense.filesize=2500\n",
+		);
+
+		const run = await runScoderRaw(
+			repoDir,
+			["--dry-run", "--no-worktree", "webstorm"],
+			env,
+		);
+		expect(run.code).toBe(0);
+		const flat = flattenDryRun(run.stdout);
+
+		expect(flat).toContain(`--bind ${managed} ${managed}`);
+		expect(flat).toContain(`--ro-bind ${plugins} ${plugins}`);
+		const prefs = `${fakeHome}/.java/.userPrefs/jetbrains`;
+		const consent = `${fakeHome}/.local/share/JetBrains/consentOptions`;
+		expect(flat).toContain(`--ro-bind ${prefs} ${prefs}`);
+		expect(flat).toContain(`--ro-bind ${consent} ${consent}`);
+		expect(flat).toContain(
+			"--setenv WEBSTORM_PROPERTIES /tmp/scoder-idea.properties",
+		);
+		expect(flat).toContain(
+			`-- bash /tmp/scoder-entrypoint.sh ${fakeBinDir}/webstorm ${repoDir}\n`,
+		);
+
+		expect(await Bun.file(`${managed}/config/options/ui.xml`).text()).toBe(
+			"new",
+		);
+		expect(await fileExists(`${managed}/config/.lock`)).toBe(false);
+		expect(await fileExists(`${managed}/config/port`)).toBe(false);
+		expect(await dirExists(`${managed}/system`)).toBe(true);
+
+		const props = flat.match(
+			/--ro-bind (\/tmp\/scoder-[0-9a-f]{8}\/tmp\/scoder-idea\.properties) \/tmp\/scoder-idea\.properties/,
+		);
+		expect(props).not.toBeNull();
+		kept.push(props![1]);
+		const text = await Bun.file(props![1]).text();
+		expect(text).toContain(`idea.config.path=${managed}/config`);
+		expect(text).toContain(`idea.system.path=${managed}/system`);
+		expect(text).toContain(`idea.plugins.path=${plugins}`);
+		expect(text).toContain("idea.trust.all.projects=true");
+
+		// Shadowed install file: original first, overrides after, bound over
+		// the install's own path (the native launcher ignores the env var).
+		const installProps = `${fakeBinDir}/idea.properties`;
+		const shadow = flat.match(
+			new RegExp(
+				`--ro-bind (/tmp/scoder-[0-9a-f]{8}${installProps}) ${installProps}`,
+			),
+		);
+		expect(shadow).not.toBeNull();
+		const shadowText = await Bun.file(shadow![1]).text();
+		expect(shadowText.startsWith("idea.max.intellisense.filesize=2500\n")).toBe(
+			true,
+		);
+		expect(shadowText.indexOf("idea.config.path=")).toBeGreaterThan(
+			shadowText.indexOf("idea.max.intellisense.filesize"),
+		);
+		expect(await Bun.file(installProps).text()).toBe(
+			"idea.max.intellisense.filesize=2500\n",
+		);
+
+		// Seed once: a session's own settings edit survives a host change.
+		await Bun.write(`${managed}/config/options/ui.xml`, "session-edit");
+		await Bun.write(
+			`${fakeHome}/.config/JetBrains/WebStorm2025.2/options/ui.xml`,
+			"host-later",
+		);
+		const again = await runScoderRaw(
+			repoDir,
+			["--dry-run", "--no-worktree", "webstorm"],
+			env,
+		);
+		const props2 = flattenDryRun(again.stdout).match(
+			/--ro-bind (\/tmp\/scoder-[0-9a-f]{8}\/tmp\/scoder-idea\.properties)/,
+		);
+		if (props2) kept.push(props2[1]);
+		expect(await Bun.file(`${managed}/config/options/ui.xml`).text()).toBe(
+			"session-edit",
+		);
+	} finally {
+		for (const path of kept) {
+			await removeSessionRoot(path);
+		}
+		await Bun.spawn(["rm", "-rf", fakeHome, fakeBinDir]).exited;
+		await cleanupRepo(repoDir);
+	}
+});
+
+// ### Test: rprofile-overlay-for-r-ides-only
+// EM: The btw .Rprofile hook is shared by the R-capable IDEs, rstudio and
+// EM: positron, as one function, and only they get it: a plain vscode
+// EM: session must not have its project's .Rprofile rewritten.
+test("rprofile-overlay-for-r-ides-only: positron and rstudio overlay .Rprofile with the btw session hook; vscode does not", async () => {
+	const repoDir = await createTempRepo();
+	tempRepos.push(repoDir);
+	const binDirs: string[] = [];
+	const kept: string[] = [];
+
+	try {
+		for (const [preset, bin] of [
+			["positron", "positron"],
+			["rstudio", "rstudio"],
+			["vscode", "code"],
+		]) {
+			const binDir = await createFakeToolDir(bin);
+			binDirs.push(binDir);
+			const run = await runScoderRaw(
+				repoDir,
+				["--dry-run", "--no-worktree", preset],
+				{
+					PATH: `${binDir}:${process.env.PATH}`,
+					SCODER_KEEP_SESSION_TMP: "1",
+				},
+			);
+			expect(run.code).toBe(0);
+			const flat = flattenDryRun(run.stdout);
+			const bind = flat.match(
+				new RegExp(
+					`--ro-bind (/tmp/scoder-[0-9a-f]{8}${repoDir}/\\.Rprofile) ${repoDir}/\\.Rprofile`,
+				),
+			);
+			const root = flat.match(/\/tmp\/scoder-[0-9a-f]{8}/);
+			if (root) kept.push(root[0]);
+			if (preset === "vscode") {
+				expect(bind).toBeNull();
+				continue;
+			}
+			expect(bind).not.toBeNull();
+			const text = await Bun.file(bind![1]).text();
+			expect(text).toContain("  btw::btw_mcp_session()\n");
+			expect(text).toContain("if (interactive()");
+		}
+	} finally {
+		for (const path of kept) {
+			await removeSessionRoot(path);
+		}
+		await Bun.spawn(["rm", "-rf", ...binDirs]).exited;
+		await cleanupRepo(repoDir);
+	}
+});
+
 // ### Test: vscode-user-args-pass-through-untouched
 // EM: scoder's flags go in front, but they never displace or reorder the
 // EM: user's own, and any user arg at all suppresses the project-dir fill

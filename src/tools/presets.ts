@@ -1,6 +1,7 @@
 import { readdir, realpath } from "node:fs/promises";
 import { dirname } from "node:path";
 import { getProjDir } from "../git/worktree.ts";
+import type { LiveOverlay } from "../sandbox/overlays.ts";
 import { stageXpraDir } from "../sandbox/xpra.ts";
 import type { BindMount, ToolBindSpec, ToolPreset } from "../types.ts";
 import { error, info, warning } from "../utils/logger.ts";
@@ -500,6 +501,8 @@ interface VscodeFlavor {
 	/** scoder's managed per-project user-data-dir root in ~/.local/share. */
 	userDataDirname: string;
 	installHint: string;
+	/** Live overlays the flavour wants, e.g. Positron's R session hook. */
+	fileOverlays?: ToolPreset["fileOverlays"];
 }
 
 const VSCODE: VscodeFlavor = {
@@ -518,6 +521,23 @@ const VSCODIUM: VscodeFlavor = {
 	extensionsDir: ".vscode-oss/extensions",
 	userDataDirname: "scoder-vscodium-userdata",
 	installHint: "Install VSCodium: https://vscodium.com/#install",
+};
+
+// EM: Posit's IDE, a VS Code fork: same CLI and flags. Paths confirmed on
+// EM: the user's install (2026-10): /usr/bin/positron, ~/.config/Positron/User,
+// EM: ~/.positron/extensions. ~/.positron-shared (sharedStorage, state
+// EM: shared between running instances) is left unbound, as VS Code's
+// EM: equivalent is.
+const POSITRON: VscodeFlavor = {
+	name: "Positron",
+	command: "positron",
+	hostConfigDir: ".config/Positron",
+	extensionsDir: ".positron/extensions",
+	userDataDirname: "scoder-positron-userdata",
+	installHint: "Install Positron: https://positron.posit.co/download",
+	// EM: Positron runs R consoles, so it gets rstudio's .Rprofile hook and
+	// EM: pi can drive the live R session the same way.
+	fileOverlays: btwRprofileOverlay,
 };
 
 interface VscodeLayout {
@@ -672,6 +692,42 @@ async function requireHostX11(): Promise<boolean> {
 		);
 	}
 	return true;
+}
+
+// ### btwRprofileOverlay
+// An R session in the sandbox registers itself with MCP, so that a `pi`
+// running alongside it can drive the live R session rather than a separate
+// one. Shared by the R-capable IDE presets: rstudio and positron.
+//
+// EM: btw::btw_mcp_session() has to run from .Rprofile, which R evaluates
+// EM: top to bottom — hence prepend. As an overlay rather than a committed
+// EM: file: the alternative is adding these lines to the .Rprofile of every
+// EM: project that might ever be opened in a sandbox, where they are noise
+// EM: for everyone not using scoder, and keeping them in step by hand when
+// EM: the project's own .Rprofile changes. The overlay re-renders from the
+// EM: host file whenever it changes, so neither problem arises.
+// EM:
+// EM: Guarded on interactive(): .Rprofile is also read by Rscript and by
+// EM: R CMD check, where starting an MCP session would be wrong and possibly
+// EM: fatal to a build.
+async function btwRprofileOverlay(
+	hostProjectDir: string,
+	sandboxProjectDir: string,
+): Promise<LiveOverlay[]> {
+	return [
+		{
+			label: ".Rprofile",
+			source: `${hostProjectDir}/.Rprofile`,
+			dest: `${sandboxProjectDir}/.Rprofile`,
+			injection: [
+				"# Injected by scoder inside the sandbox; not part of the project.",
+				'if (interactive() && requireNamespace("btw", quietly = TRUE)) {',
+				"  btw::btw_mcp_session()",
+				"}",
+			].join("\n"),
+			position: "prepend",
+		},
+	];
 }
 
 // ### jetbrains
@@ -1192,20 +1248,7 @@ export const TOOL_PRESETS: Record<string, ToolPreset> = {
 		// EM: Guarded on interactive(): .Rprofile is also read by Rscript and
 		// EM: by R CMD check, where starting an MCP session would be wrong and
 		// EM: possibly fatal to a build.
-		fileOverlays: async (hostProjectDir, sandboxProjectDir) => [
-			{
-				label: ".Rprofile",
-				source: `${hostProjectDir}/.Rprofile`,
-				dest: `${sandboxProjectDir}/.Rprofile`,
-				injection: [
-					"# Injected by scoder inside the sandbox; not part of the project.",
-					'if (interactive() && requireNamespace("btw", quietly = TRUE)) {',
-					"  btw::btw_mcp_session()",
-					"}",
-				].join("\n"),
-				position: "prepend" as const,
-			},
-		],
+		fileOverlays: btwRprofileOverlay,
 
 		configBinds: async (realHome, sandboxHome) => {
 			// EM: RStudio Desktop is a GUI app and needs a display. It gets a
@@ -1553,6 +1596,7 @@ export const TOOL_PRESETS: Record<string, ToolPreset> = {
 	// EM: on the vscode helper block above.
 	vscode: vscodeFamilyPreset(VSCODE),
 	vscodium: vscodeFamilyPreset(VSCODIUM),
+	positron: vscodeFamilyPreset(POSITRON),
 	webstorm: jetbrainsPreset(WEBSTORM),
 };
 
@@ -1561,8 +1605,10 @@ export const TOOL_PRESETS: Record<string, ToolPreset> = {
 function vscodeFamilyPreset(flavor: VscodeFlavor): ToolPreset {
 	return {
 		description: flavor.name,
-		// EM: The binary is `code`; the preset key is what users type.
+		// EM: The binary (`code`, `codium`, `positron`); the preset key is
+		// EM: what users type.
 		command: flavor.command,
+		fileOverlays: flavor.fileOverlays,
 		// EM: The whole managed user-data-dir: settings, UI state, the
 		// EM: remembered prompts, workspace storage. Extensions live in the
 		// EM: host's extensions tree and ~/.continue is the host's own,

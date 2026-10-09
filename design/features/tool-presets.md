@@ -365,6 +365,11 @@ binary, a seed from `~/.config/VSCodium/User`, extensions from
 `~/.vscode-oss/extensions`, and managed user-data-dirs under
 `~/.local/share/scoder-vscodium-userdata/`. Every decision above applies to
 both; only the paths differ, and neither flavour reads or binds the other's.
+**positron** is a third flavour (`POSITRON`): `positron`,
+`~/.config/Positron/User`, `~/.positron/extensions`,
+`scoder-positron-userdata`; `~/.positron-shared` is not bound. It is the
+one VS Code flavour with a `fileOverlays` hook: rstudio's `.Rprofile` btw
+overlay, now the shared `btwRprofileOverlay` both presets use.
 
 ### webstorm (and JetBrains IDEs generally)
 

@@ -314,7 +314,7 @@ This is installed as normal through its update site and configured through
 AssistAI keeps its settings in an Eclipse preferences file:
 
 ```
-~/.eclipse/.metadata/.plugins/org.eclipse.core.runtime/.settings/com.github.gradusnikov.eclipse.plugin.assistai.main.prefs
+cat ~/.eclipse/.metadata/.plugins/org.eclipse.core.runtime/.settings/com.github.gradusnikov.eclipse.plugin.assistai.main.prefs | grep AssistAIMcpHttpToken=
 ```
 
 If it is not there, look for the same relative path
@@ -326,8 +326,8 @@ token. If HTTP MCP is off or there is no token yet, ask the user to enable it
 and generate one under `Window > Preferences... > AssistAI`.
 
 For working in the IDE, the Eclipse-specific endpoints are the useful ones:
-`eclipse-ide`, `eclipse-coder`, `eclipse-runner`, `eclipse-context`,
-`eclipse-git` and `eclipse-pde` (the others — search, time, webpage reader,
+`eclipse-ide`, `eclipse-coder`, `eclipse-runner`, `eclipse-context` and
+`eclipse-pde` (the others — search, time, webpage reader, git,
 memory — duplicate tools you likely have already). After writing the config,
 check each endpoint answers an MCP `initialize` call before telling the user
 it is set up.

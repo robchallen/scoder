@@ -34,4 +34,5 @@ $HOME/.npm
 ## MCP servers
 
 With `--ide vscode` / `vscodium`: vscode-mcp-server — see the
-`working-in-a-scoder-sandbox` skill.
+"VS Code, VSCodium" setup under MCP servers in the
+`configure-scoder-sandbox` skill.

@@ -38,7 +38,8 @@ $HOME/.gradle
 ## MCP servers
 
 With `--ide eclipse`, AssistAI's endpoints — see the
-`working-in-a-scoder-sandbox` skill's Eclipse section.
+"Eclipse: AssistAI" setup under MCP servers in the
+`configure-scoder-sandbox` skill.
 
 Eclipse imports dependency projects listed in `.sandbox/readonly` only if
 they contain a `.project` file.

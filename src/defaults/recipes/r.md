@@ -31,5 +31,6 @@ None — install packages on the host.
 ## MCP servers
 
 With `--ide rstudio` or `--ide positron`: btw (`btw::btw_mcp_server()`) —
-see the `working-in-a-scoder-sandbox` skill. Positron also gets
+see "RStudio: btw" and "Positron" under MCP servers in the
+`configure-scoder-sandbox` skill. Positron also gets
 vscode-mcp-server.

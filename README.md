@@ -216,6 +216,12 @@ jupyter-ai's MCP endpoint.
   for GPU rendering when it exists on the host — needed, not optional,
   for RStudio Desktop specifically (Chromium's GPU process crashes
   outright without it, rather than falling back to software rendering).
+- **Clipboard: copy out from the terminal** — programs that copy with OSC 52
+  (pi, Claude Code, vim, tmux) reach your terminal's clipboard: scoder binds
+  your terminal at `/dev/tty` in the sandbox, which `--new-session` would
+  otherwise leave unusable, without re-enabling keystroke injection. Your
+  terminal must support OSC 52 (GNOME Terminal does not). `xclip`/`wl-copy`
+  do not work yet; see `design/features/clipboard-sharing.md`.
 - **Host localhost blocked** — tools run behind `pasta` with host localhost
   forwarding disabled, so host-local TCP services are not reachable
   from the sandbox while outbound networking stays available.

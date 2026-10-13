@@ -27,7 +27,7 @@ tags: [test-script, validation]
 
 `tests/scoder.test.ts` is a self-contained integration test suite that creates
 temporary git repositories under `/tmp`, runs `scoder` against them using
-`/bin/bash` as the sandboxed command, and asserts expected behaviour. 171
+`/bin/bash` as the sandboxed command, and asserts expected behaviour. 172
 tests cover all sandbox mechanics — this catalog is currently behind the
 actual implemented count (see the note under case 113) due to other,
 unrelated in-progress work; not fixed here.
@@ -1613,6 +1613,15 @@ same token Jupyter is launched with, and the MCP endpoint; no
 entrypoint.sh with `HARNESS_LOG`: the primary tool's stdout and stderr go
 to the file and its stdin is `/dev/null`; without it, output stays on the
 terminal.
+
+### 162. dev-tty-is-the-users-terminal
+[TESTED_BY](/tests/scoder.test.ts#testDevTtyIsTheUsersTerminal)
+
+The outer bwrap layer binds the host pty at `/dev/tty`, after `--dev /dev`,
+only when given one; `detectHostTty` prefers stdout, then stderr, then
+stdin, and ignores non-tty paths. A dry-run under `script` (a real pty)
+shows the bind; a piped run does not. The OSC 52 and `TIOCSTI` behaviour
+was measured by hand under bwrap (see `clipboard-sharing.md`).
 
 ## Current Network Coverage
 

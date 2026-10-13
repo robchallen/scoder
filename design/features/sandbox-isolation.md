@@ -57,6 +57,10 @@ The sandbox shape:
   choices, priorities, auto/manual mode) under `/var/lib`, which nothing
   else mounts. See
   [design/implementation/issues/update-alternatives-state-not-mounted.md](/design/implementation/issues/update-alternatives-state-not-mounted.md).
+- `/dev/tty` — the user's own pty, bound in the outer layer when scoder is on
+  a terminal, so OSC 52 copies written to `/dev/tty` reach the terminal
+  despite `--new-session`; `TIOCSTI` still refused (see
+  [clipboard-sharing](./clipboard-sharing.md)).
 - `/dev/console` — bound to `/dev/null`. bwrap's `--dev` otherwise binds the
   user's terminal there whenever its stdout is a tty, and `syslog()` with
   `LOG_CONS` falls back to `/dev/console` when there is no `/dev/log` —

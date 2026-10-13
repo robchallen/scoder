@@ -190,34 +190,36 @@ Structured, short, and grounded in what the project shows:
 3. **After acceptance, relaunch automatically** into a normal session.
 4. **`.mcp.json` changes go through the same diff-and-confirm** as
    `.sandbox/`.
-5. **Initial prompt:** `claude` and `pi` both take it as an argument;
-   opencode and copilot still to check (the `AGENTS.md` note is the
-   fallback).
-6. **Project only.** `--configure` never edits `~/.config/scoder/`. That
-   directory becomes less important: the per-nature defaults (today's
-   `src/defaults/`) move into the skill, which is where they are managed.
-   What remains of `~/.config/scoder/` and the seeding in
-   `config-defaults.md` is to be revisited with this work.
+5. **Initial prompt**, per agent (confirmed by the user):
+   `claude "<prompt>"`, `pi "<prompt>"`, `opencode --prompt "<prompt>"`,
+   `copilot -i "<prompt>"`. Presets gain `initialPromptArgs(prompt)`
+   returning these; the `AGENTS.md` note stays the fallback for an agent
+   without one.
+6. **Project only.** `--configure` never edits `~/.config/scoder/`. The
+   per-nature defaults (today's `src/defaults/`) move into the skill.
+   **`~/.config/scoder/` becomes a local extension to the skill:** a
+   markdown file the user edits to supplement it — additional defaults
+   they want and the circumstances they want them in (e.g. local rules
+   about which MCP servers to activate for which kind of project). The
+   configure session consults it (or scoder appends it to the injected
+   skill in the sandbox). It replaces the current file-by-file seeding of
+   `.sandbox/` from `~/.config/scoder/` (`config-defaults.md`), which this
+   work retires.
 7. **The skill is the arbiter of the defaults table.** No generated or
    code-side table to keep in step; the skill owns it.
 
 ## Automatic configure
 
 `--configure` is also triggered **automatically when `.sandbox/` is missing
-a key file** (e.g. no `readonly`/`readwrite`/`env`, or an old-format
-marker): instead of starting a session with nothing granted, scoder starts
-the configure session first, then relaunches the requested session once the
-user accepts. Which files count as "key" is part of the implementation
-(open question below).
+any of its key files — `env`, `readonly`, `readwrite`, `ports`**
+(decided): instead of starting a session with nothing granted, scoder
+starts the configure session first, then relaunches the requested session
+once the user accepts.
 
 ## Open questions
 
-1. Which files missing (or which format marker) trigger the automatic
-   configure session.
-2. How opencode and copilot take an initial prompt.
-3. What remains of `~/.config/scoder/` (user-level defaults at all? only
-   `env`?) once the skill owns the defaults.
-4. The items marked **review** in the appendix.
+1. Exact shape of the `~/.config/scoder/` extension: one markdown file or
+   several, and appended to the skill vs consulted on demand.
 
 ## Appendix: everything scoder binds or sets today, for review
 
@@ -255,9 +257,9 @@ configure skill writes), **review** (user to decide).
 | `~/.pypirc` | ro | grant (Python publishing) |
 | `~/.local/bin` (resolved snapshot) | ro | grant, per entry (decision 2) |
 | `~/.agents` (snapshot, + injected scoder skill) | ro | grant, per skill; the scoder skill itself always injected |
-| `~/.gitconfig` | ro | **review** — nearly every project uses git |
-| `~/.config/gh` | ro | **review** — `gh` auth; widely useful, but a credential |
-| `~/.config/worktrunk/config.toml` | ro | **review** — only for worktrunk users |
+| `~/.gitconfig` | ro | **always** (decided) — nearly every project uses git |
+| `~/.config/gh` | ro | **always** (decided) — a credential, but a user is very unlikely to choose to drop it |
+| `~/.config/worktrunk/config.toml` | ro | **always** (decided) |
 
 ### Added by presets and flags — always, follows the tool
 

@@ -212,12 +212,15 @@ or situation and what its sandbox needs.
   `readonly`, `readwrite`, `ports` there) — decided 2026-10-14:
   - a **base** recipe (the protected-path list, the always-useful env
     names — today's `src/defaults/readonly` and `env`);
-  - **project kinds:** standard Java (Maven, and Gradle), TypeScript, R,
-    Python, and **polyglot** as a combination of those;
+  - **project kinds:** standard Java (Maven, with Gradle as a subsection of
+    the same recipe), TypeScript, R, Python, and **polyglot** as a
+    combination of those;
   - **research** projects with web search (the search providers' env
     names, kept commented as today);
-  - **decision model support** (as named by the user — contents to be
-    written with them);
+  - **decision model support**: mainly env — `TYPESCRIPT_API_KEYS`,
+    `TYPESCRIPT_BASE_URL` and `PI_JEV_*` (as given by the user; earlier the
+    passthrough gained `TYPESAFE_API_KEY` — confirm which spelling is
+    meant before writing the recipe);
   - **model hosting:** models on Azure, AWS and Google Cloud (their env
     names and credential files), and models hosted locally on port 11434
     (still auto-detected; the recipe documents it and the 11435 probe).
@@ -254,8 +257,8 @@ once the user accepts.
 
 ## Open questions
 
-1. Contents of the **decision model support** recipe.
-2. Whether Gradle is its own recipe or a section of the Java one.
+1. `TYPESCRIPT_API_KEYS`/`TYPESCRIPT_BASE_URL` vs the earlier
+   `TYPESAFE_API_KEY` for the decision model support recipe.
 
 ## Appendix: everything scoder binds or sets today, for review
 

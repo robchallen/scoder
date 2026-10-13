@@ -217,10 +217,9 @@ or situation and what its sandbox needs.
     combination of those;
   - **research** projects with web search (the search providers' env
     names, kept commented as today);
-  - **decision model support**: mainly env — `TYPESCRIPT_API_KEYS`,
-    `TYPESCRIPT_BASE_URL` and `PI_JEV_*` (as given by the user; earlier the
-    passthrough gained `TYPESAFE_API_KEY` — confirm which spelling is
-    meant before writing the recipe);
+  - **decision model support**: mainly env — `TYPESAFE_API_KEY` (as in the
+    env passthrough; confirmed), `TYPESAFE_BASE_URL` (by analogy — check the
+    exact name when writing the recipe) and `PI_JEV_*`;
   - **model hosting:** models on Azure, AWS and Google Cloud (their env
     names and credential files), and models hosted locally on port 11434
     (still auto-detected; the recipe documents it and the 11435 probe).
@@ -257,8 +256,9 @@ once the user accepts.
 
 ## Open questions
 
-1. `TYPESCRIPT_API_KEYS`/`TYPESCRIPT_BASE_URL` vs the earlier
-   `TYPESAFE_API_KEY` for the decision model support recipe.
+None outstanding as of 2026-10-14; the plan is ready to implement in the
+order part 1 (the `--configure` session, skill, recipes, review) then part
+2 (moving the implicit binds to grants).
 
 ## Appendix: everything scoder binds or sets today, for review
 

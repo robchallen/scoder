@@ -1,3 +1,4 @@
+import { stat } from "node:fs/promises";
 import { error, info, warning } from "../utils/logger.ts";
 
 // EM: AppArmor profile installation for bwrap (Ubuntu 24.04+ compatibility)
@@ -15,7 +16,11 @@ export async function configureAppArmor(): Promise<void> {
 		process.exit(1);
 	}
 
-	const apparmorDirExists = await fileExists("/etc/apparmor.d");
+	// EM: A directory test, not fileExists: Bun.file(path).exists() is false
+	// EM: for a directory, so this reported "not installed" on every machine
+	// EM: — reported on Ubuntu 26.04 with AppArmor installed and
+	// EM: /etc/apparmor.d present, which left --configure-apparmor unusable.
+	const apparmorDirExists = await dirExists("/etc/apparmor.d");
 	if (!apparmorDirExists) {
 		error(
 			"AppArmor does not appear to be installed (/etc/apparmor.d not found)",
@@ -167,5 +172,13 @@ async function realpath(path: string): Promise<string> {
 		return path;
 	} catch {
 		return path;
+	}
+}
+
+async function dirExists(path: string): Promise<boolean> {
+	try {
+		return (await stat(path)).isDirectory();
+	} catch {
+		return false;
 	}
 }

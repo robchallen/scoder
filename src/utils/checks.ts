@@ -28,7 +28,13 @@ export async function checkBwrapUserns(): Promise<void> {
 	// EM: Verify bwrap can create user namespaces (AppArmor compatibility check)
 	// EM: Implements apparmor-compatibility feature for Ubuntu 24.04+
 	try {
-		const proc = await Bun.spawn(["bwrap", "--bind", "/", "/", "/bin/true"], {
+		// EM: Nested, the way scoder actually runs bwrap: an outer layer (with
+		// EM: its own /dev) running an inner bwrap. Reported on Ubuntu 26.04: a
+		// EM: single `bwrap ... true` succeeded while every session failed,
+		// EM: because the inner bwrap was refused its user namespace — so a
+		// EM: one-layer self-test passed and the launch failed with nothing
+		// EM: but "bwrap did not report its child pid".
+		const proc = await Bun.spawn(BWRAP_SELF_TEST, {
 			stdout: "pipe",
 			stderr: "pipe",
 		});
@@ -42,7 +48,9 @@ export async function checkBwrapUserns(): Promise<void> {
 		const stderrBytes = await new Response(proc.stderr).arrayBuffer();
 		const stderr = new TextDecoder().decode(stderrBytes);
 
-		if (stderr.includes("setting up uid map")) {
+		// EM: Both spellings of "user namespace refused": older bwrap reports
+		// EM: the uid-map write failing; 0.11 (Ubuntu 26.04) says it outright.
+		if (isUsernsRefusal(stderr)) {
 			const restrict = await readSysctl(
 				"kernel.apparmor_restrict_unprivileged_userns",
 			);
@@ -74,6 +82,28 @@ export async function checkBwrapUserns(): Promise<void> {
 		error(`bwrap self-test failed: ${err}`);
 		process.exit(1);
 	}
+}
+
+export const BWRAP_SELF_TEST = [
+	"bwrap",
+	"--bind",
+	"/",
+	"/",
+	"--dev",
+	"/dev",
+	"--",
+	"bwrap",
+	"--bind",
+	"/",
+	"/",
+	"/bin/true",
+];
+
+export function isUsernsRefusal(stderr: string): boolean {
+	return (
+		stderr.includes("setting up uid map") ||
+		stderr.includes("No permissions to create a new namespace")
+	);
 }
 
 async function readSysctl(key: string): Promise<string> {

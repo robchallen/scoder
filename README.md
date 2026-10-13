@@ -171,12 +171,13 @@ jupyter-ai's MCP endpoint.
 - **Protected infrastructure** — `.github/`, `.claude/`, `opencode.json`,
    `.gitignore`, `package-lock.json`, `poetry.lock`, `Cargo.lock`, `pnpm-lock.yaml`, `yarn.lock`, `mise.toml`
    are read-only by default. The list lives in the project's `.sandbox/readonly`
-   (seeded from `~/.config/scoder/readonly`, see
-   [defaults](#defaults-configscoder-and-environment-passthrough-sandboxenv));
-   the whole `.sandbox/` directory is always read-only inside the sandbox.
+   (written by a [configure session](#setting-up-a-project---configure),
+   or the built-in default when absent);
+   the whole `.sandbox/` directory is read-only inside the sandbox (outside
+   a configure session, which edits a reviewed working copy).
 - **Cleared environment** — the sandbox starts with no host environment
    variables except the names listed in `.sandbox/env` (see
-   [defaults](#defaults-configscoder-and-environment-passthrough-sandboxenv))
+   [environment passthrough](#environment-passthrough-sandboxenv))
    and the few scoder sets itself (see
    [environment variables](#environment-variables)).
 - **No host session bus, no host `/run`** — `/run` is a fresh tmpfs, with
@@ -288,6 +289,8 @@ scoder --dry-run opencode         # show bwrap command without running
                          private virtual display (see below)
     --env NAME=VALUE    Set NAME inside the sandbox for this session only;
                          repeatable (see below)
+    --configure         Set up this project's .sandbox/ with the agent
+                         first (see below)
     --dry-run           Print bwrap command without executing
 
 Setup (run once, with sudo):
@@ -545,8 +548,8 @@ file's presence and content is the entire mechanism, same as
 ```
 
 - **Always read-only inside the sandbox**, like the rest of `.sandbox/` —
-  only the host side can change it. A project without one gets a copy of
-  `~/.config/scoder/ports` (all comments by default).
+  only the host side can change it. A project without one forwards no
+  ports (beyond an auto-detected local model).
 - **A malformed line fails the session outright**, naming the bad line —
   this is network exposure, not a workspace-protection list, so a config
   file that could silently mean less than it looks like is the wrong
@@ -604,16 +607,32 @@ automatically. Gitignored works too, but only in direct mode: a new
 worktree checkout contains only tracked files, so an untracked
 `.sandbox/readwrite` from your main checkout won't appear there on its own.
 
-## Defaults (`~/.config/scoder`) and environment passthrough (`.sandbox/env`)
+## Setting up a project (`--configure`)
 
-The first time scoder runs in a project it creates `.sandbox/` by copying
-in each file from `~/.config/scoder/` (or `$XDG_CONFIG_HOME/scoder/`) that
-the project does not already have. `~/.config/scoder/` is itself created
-from scoder's built-in defaults, file by file, the first time it is
-needed. Nothing is ever overwritten at either level, so:
+```bash
+scoder --configure claude     # or pi, opencode, copilot
+```
 
-- edit `~/.config/scoder/` to change what **new** projects start with;
-- edit a project's `.sandbox/` to change **that** project.
+starts the agent with the `configure-scoder-sandbox` skill to work out,
+with you, what this project needs inside the sandbox — environment
+variables, host ports, read-only and read-write paths, MCP servers — and
+write `.sandbox/` (and `.mcp.json`). The agent edits a working copy; when
+you exit, scoder shows you every change, checks it, and applies it only if
+you say yes, then starts a normal session.
+
+An interactive start in a project whose `.sandbox/` lacks any of `env`,
+`readonly`, `readwrite` or `ports` does this automatically. Scripts and
+piped runs never do; they use the built-in defaults.
+
+The agent works from your **recipes**: markdown files in
+`~/.config/scoder/` (or `$XDG_CONFIG_HOME/scoder/`), any number, any
+names, each with *When to use*, *Env*, *Ports*, *Read-only binds*,
+*Read-write binds* and *MCP servers* sections. scoder writes a starter set
+there (base, Java/Gradle, TypeScript, R, Python, polyglot, web search,
+model hosting) and never overwrites a file you have edited — edit them to
+describe your machine.
+
+## Environment passthrough (`.sandbox/env`)
 
 `.sandbox/env` lists, one per line, the host environment variables passed
 into the sandbox (when set); nothing else is passed. A `*` makes a line a
@@ -638,10 +657,10 @@ start-up scoder lists what each pattern matched — names only, never values.
 
 The built-in default passes your shell/editor variables and `GH_TOKEN` /
 `GITHUB_TOKEN` only, with the common provider API keys listed but
-commented out — uncomment the ones you use in `~/.config/scoder/env` (for
-new projects) or `.sandbox/env` (for an existing one). This replaces the
+commented out — a configure session, or you, lists the ones a project
+uses in its `.sandbox/env`. This replaces the
 fixed list earlier versions passed unconditionally. `--dry-run` writes no
-configuration files, but previews the values a real run would use.
+configuration files.
 
 For a one-off value, `--env` sets a variable in this session's sandbox
 only — nothing is written to `.sandbox/env`:
@@ -675,7 +694,7 @@ you start scoder in — none of them is passed into the sandbox (that is
 | `SCODER_LLM_PORT` | The host port probed for a local OpenAI-compatible API at startup (default `11434`, Ollama's). When something answers, the port is forwarded and appended to `.sandbox/ports`. Port `11435` is also probed, and taken only if it serves an OpenAI-style `/v1/models`. |
 | `SCODER_KEEP_SCREEN` | Any non-empty value leaves the terminal as the tool left it on exit. By default scoder resets terminal modes (alternate screen, hidden cursor, mouse reporting, bracketed paste, raw input) and clears the screen, keeping scrollback. |
 | `SCODER_KEEP_SESSION_TMP` | Any non-empty value keeps the session's temp root (`/tmp/scoder-<id>`) after exit instead of deleting it — the staged files scoder put in front of the sandbox, and the IDE/xpra log. Useful with `--dry-run` to inspect what it built. |
-| `XDG_CONFIG_HOME` | Where the user defaults live: `$XDG_CONFIG_HOME/scoder/`, else `~/.config/scoder/`. |
+| `XDG_CONFIG_HOME` | Where the recipes live: `$XDG_CONFIG_HOME/scoder/`, else `~/.config/scoder/`. |
 
 **GUI presets (xpra)**
 

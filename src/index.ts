@@ -8,6 +8,15 @@ import { configureAppArmor } from "./cli/apparmor.ts";
 import { installDependencies } from "./cli/dependencies.ts";
 import { parseArgs, printUsage, printVersion } from "./cli/parse-args.ts";
 import {
+	CONFIGURE_NOTE,
+	CONFIGURE_PROMPT,
+	missingKeyFiles,
+	readMcpJson,
+	relaunchArgs,
+	reviewConfigure,
+	stageWorkingCopy,
+} from "./configure/configure.ts";
+import {
 	addGitExclude,
 	appendAgentPort,
 	getAgentsMdOverlayBind,
@@ -21,7 +30,7 @@ import {
 	setupReadWriteAccess,
 	setupResolvConf,
 } from "./git/protection.ts";
-import { prepareConfigDir } from "./git/sandbox-config.ts";
+import { prepareConfigDir, userConfigDir } from "./git/sandbox-config.ts";
 import {
 	commitAllChanges,
 	getCommitCount,
@@ -171,6 +180,39 @@ async function main(): Promise<void> {
 	// EM: realHome is needed for both preset binds and tool path translation
 	const realHome = getRealHome();
 	const preset = TOOL_PRESETS[toolName];
+
+	// EM: Configure mode: --configure, or an interactive start in a project
+	// EM: whose .sandbox/ lacks a key file. Decided before configBinds, and it
+	// EM: forces direct mode — the session edits this checkout's .sandbox/
+	// EM: (a working copy of it), not a worktree's. Non-interactive starts
+	// EM: never auto-configure; they fall back to the base defaults.
+	// EM: See design/features/configure-mode.md.
+	let configureMode = options.configure;
+	if (
+		!configureMode &&
+		!options.dryRun &&
+		process.stdin.isTTY &&
+		process.stdout.isTTY &&
+		process.env.SCODER_SANDBOX !== "1" &&
+		preset?.initialPromptArgs
+	) {
+		const missing = await missingKeyFiles(process.cwd());
+		if (missing.length > 0) {
+			info(
+				`.sandbox/ has no ${missing.join(", ")} — starting a configure session first`,
+			);
+			configureMode = true;
+		}
+	}
+	if (configureMode) {
+		if (!preset?.initialPromptArgs) {
+			error(`--configure needs an agent preset that takes an initial prompt`);
+			process.exit(1);
+		}
+		options.worktree = false;
+		toolArgs = [...toolArgs, ...preset.initialPromptArgs(CONFIGURE_PROMPT)];
+	}
+	const mcpBefore = configureMode ? await readMcpJson(process.cwd()) : null;
 
 	// EM: Effective display mode, decided once, before any preset's
 	// EM: validate()/configBinds() runs: a typed flag or its env spelling,
@@ -415,6 +457,7 @@ async function main(): Promise<void> {
 
 	let worktreeInfo: GitWorktreeInfo | null = null;
 	let protectionConfig: ProtectionConfig | undefined;
+	let configureWorkingCopy: string | undefined;
 	let sandboxProjDir = "";
 	let identity: SandboxIdentity | undefined;
 	let sshTunnel: SshTunnel | null = null;
@@ -520,7 +563,12 @@ async function main(): Promise<void> {
 		// EM: that has no relation to where it actually lives.
 		sandboxProjDir = toSandboxPath(cwd, homePrefixes);
 		await prepareConfigDir(cwd, options.dryRun);
-		protectionConfig = await setupProtection(cwd, sandboxProjDir, companionIde);
+		protectionConfig = await setupProtection(
+			cwd,
+			sandboxProjDir,
+			companionIde,
+			configureMode ? CONFIGURE_NOTE : undefined,
+		);
 
 		const agentsSnapshotBind = await setupAgentsSnapshot();
 		if (agentsSnapshotBind && protectionConfig) {
@@ -685,13 +733,25 @@ async function main(): Promise<void> {
 			}
 		}
 
+		configureWorkingCopy = configureMode
+			? await stageWorkingCopy(projectRoot)
+			: undefined;
 		const agentPortsBind = await getConfigDirBind(
 			projectRoot,
 			sandboxProjDir,
 			options.dryRun,
+			configureWorkingCopy,
 		);
 		if (agentPortsBind) {
 			protectionConfig.safeBinds.push(agentPortsBind);
+		}
+		// EM: The user's recipes, read-only, for the configure skill to read.
+		if (configureMode && (await isDir(userConfigDir()))) {
+			protectionConfig.safeBinds.push({
+				type: "ro-bind",
+				source: userConfigDir(),
+				dest: userConfigDir(),
+			});
 		}
 
 		await setupReadWriteAccess(
@@ -934,6 +994,24 @@ async function main(): Promise<void> {
 		// EM: this finally at all.
 	}
 
+	// EM: After a configure session: review on the host, and on acceptance
+	// EM: start the normal session the user asked for.
+	if (configureMode && configureWorkingCopy && !options.dryRun) {
+		const review = await reviewConfigure(
+			process.cwd(),
+			configureWorkingCopy,
+			mcpBefore,
+		);
+		if (review.applied) {
+			info("Starting the session with the new configuration");
+			const proc = Bun.spawn(relaunchArgs(), {
+				stdio: ["inherit", "inherit", "inherit"],
+				env: process.env,
+			});
+			exitCode = await proc.exited;
+		}
+	}
+
 	process.exit(exitCode);
 }
 
@@ -1123,3 +1201,11 @@ main().catch((err) => {
 	error(`Fatal error: ${err}`);
 	process.exit(1);
 });
+
+async function isDir(path: string): Promise<boolean> {
+	try {
+		return (await Bun.file(path).stat()).isDirectory();
+	} catch {
+		return false;
+	}
+}

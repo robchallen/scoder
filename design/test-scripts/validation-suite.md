@@ -602,9 +602,9 @@ host afterward — the real end-to-end proof the bind works, replacing the
 [TESTED_BY](/tests/scoder.test.ts#testSandboxReadwriteCreatedIfMissing)
 
 Same bug class already fixed twice, for `.sandbox/readonly` and
-`.sandbox/ports`: a missing `.sandbox/readwrite` is created and protected
-read-only in the very same session that finds it missing, not just from
-the next run onward.
+`.sandbox/ports`: a missing `.sandbox/readwrite` cannot be created or
+written from inside the session that finds it missing. (A session no
+longer creates the file itself; the directory bind is what protects it.)
 
 ### 67. sandbox-readwrite-self-protected-readonly
 [TESTED_BY](/tests/scoder.test.ts#testSandboxReadwriteSelfProtectedReadonly)
@@ -738,13 +738,10 @@ constrains.
 never runs anything inside the sandbox, so there is nothing for a missing
 bind to expose, and dry-run must stay side-effect free regardless.
 
-### 84. sandbox-ports-created-if-missing
-[TESTED_BY](/tests/scoder.test.ts#testSandboxPortsCreatedIfMissing)
+### 84. (retired) sandbox-ports-created-if-missing
 
-A real session with no pre-existing `.sandbox/ports` creates one on the host,
-containing a header comment, before the sandbox is ever built — closing the
-bind-mount gap described below regardless of whether the rest of the
-session goes on to succeed or fail.
+Retired with `--configure`: a session no longer seeds `.sandbox/`. See
+`sandbox-config-not-seeded-by-a-session` (case 86).
 
 ### 85. sandbox-ports-missing-file-not-writable-from-sandbox
 [TESTED_BY](/tests/scoder.test.ts#testSandboxPortsMissingFileNotWritableFromSandbox)
@@ -760,12 +757,13 @@ pasta-attach failure (this suite's own dev environment lacks
 cannot pass trivially just because the sandbox failed to launch for a
 different reason.
 
-### 86. sandbox-readonly-created-if-missing
-[TESTED_BY](/tests/scoder.test.ts#testSandboxReadonlyCreatedIfMissing)
+### 86. sandbox-config-not-seeded-by-a-session
+[TESTED_BY](/tests/scoder.test.ts#testSandboxConfigNotSeededByASession)
 
-A real session with no pre-existing `.sandbox/readonly` creates one on the
-host, containing the default protected-path list, before the sandbox is
-ever built.
+A non-interactive session in a project with no `.sandbox/` writes only
+`.sandbox/README.md`; `env`, `readonly`, `readwrite` and `ports` are not
+created — the session runs on the shipped base defaults. (Replaces
+`sandbox-readonly-created-if-missing`.)
 
 ### 87. sandbox-readonly-missing-file-not-writable-from-sandbox
 [TESTED_BY](/tests/scoder.test.ts#testSandboxReadonlyMissingFileNotWritableFromSandbox)
@@ -1421,14 +1419,13 @@ reset goes ahead.
 passed (a trailing `#` comment allowed); a commented-out or unlisted one is
 not; a line that is not a variable name is warned about and skipped.
 
-### 138. user-config-seeds-project-sandbox-dir
-[TESTED_BY](/tests/scoder.test.ts#testUserConfigSeedsProjectSandboxDir)
+### 138. user-config-seeds-starter-recipes
+[TESTED_BY](/tests/scoder.test.ts#testUserConfigSeedsStarterRecipes)
 
-In-process with a fresh `XDG_CONFIG_HOME`: missing user defaults are
-written byte-identical to `src/defaults/`, an edited one is kept; every
-user file the project lacks is copied into `.sandbox/` (an extra user file
-too), a project's existing file is untouched, and a later user-level edit
-does not reach a project that already has the file.
+In-process with a fresh `XDG_CONFIG_HOME`: every starter recipe missing
+from `~/.config/scoder/` is written byte-identical to
+`src/defaults/recipes/`, an edited one is kept, and the project's
+`.sandbox/` gets only its README.
 
 ### 139. user-config-dry-run-writes-nothing-but-previews-it
 [TESTED_BY](/tests/scoder.test.ts#testUserConfigDryRunWritesNothingButPreviewsIt)
@@ -1638,13 +1635,60 @@ refuse an older xpra by name.
 (recognised by its header), leaves a pin file someone else wrote in place,
 and is a no-op when there is none.
 
+### 165. configure-flag-parsed
+[TESTED_BY](/tests/scoder.test.ts#testConfigureFlagParsed)
+
+`--configure` before the tool name sets configure mode; after it, it is
+passed to the tool.
+
+### 166. configure-session-dry-run
+[TESTED_BY](/tests/scoder.test.ts#testConfigureSessionDryRun)
+
+For claude, pi, opencode and copilot, `--dry-run --configure` passes the
+configure prompt in each agent's own form (`claude "<p>"`, `pi "<p>"`,
+`opencode --prompt "<p>"`, `copilot -i "<p>"`), binds `.sandbox/`
+read-write from a staged working copy (never the real directory), and
+binds the recipes directory read-only.
+
+### 167. configure-not-automatic-without-a-terminal
+[TESTED_BY](/tests/scoder.test.ts#testConfigureNotAutomaticWithoutATerminal)
+
+With no `.sandbox/` and no terminal, a session starts normally: configure
+starts automatically only for an interactive start.
+
+### 168. configure-review-applies-only-on-confirm
+[TESTED_BY](/tests/scoder.test.ts#testConfigureReviewAppliesOnlyOnConfirm)
+
+The host-side review applies the working copy only on "yes", writing stubs
+for missing key files; "no" leaves `.sandbox/` alone and restores
+`.mcp.json`; a change that fails validation is never offered.
+
+### 169. configure-validate-and-apply
+[TESTED_BY](/tests/scoder.test.ts#testConfigureValidateAndApply)
+
+Validation rejects a `readwrite` line outside `$HOME` and a missing
+`readonly` `$HOME` path; applying removes files deleted in the working
+copy.
+
+### 170. configure-relaunch-args
+[TESTED_BY](/tests/scoder.test.ts#testConfigureRelaunchArgs)
+
+The relaunch command line drops `--configure`, and the compiled binary's
+embedded entry point.
+
+### 171. configure-skill-injected
+[TESTED_BY](/tests/scoder.test.ts#testConfigureSkillInjected)
+
+Both bundled skills, `working-in-a-scoder-sandbox` and
+`configure-scoder-sandbox`, are in the `~/.agents` snapshot.
+
 ## Current Network Coverage
 
 - Host loopback access is blocked (`host-loopback-blocked`)
 - A port listed in `.sandbox/ports` can be reached (`sandbox-ports-forwards-listed-port`)
 - Auto-detection of an open LLM port appends it to `.sandbox/ports` (`sandbox-ports-auto-detect-appends`)
 - Editing `.sandbox/ports` mid-session live-reloads pasta (`sandbox-ports-live-reload-adds-port`, `sandbox-ports-live-reload-bad-edit-keeps-old-config`)
-- A missing `.sandbox/ports` is created and stays protected in the same session (`sandbox-ports-created-if-missing`, `sandbox-ports-missing-file-not-writable-from-sandbox`)
+- A missing `.sandbox/ports` cannot be created from inside the sandbox (`sandbox-ports-missing-file-not-writable-from-sandbox`)
 - Outbound DNS resolution works (`outbound-dns-works`)
 - Terminal signals (resize, Ctrl-C) reach the sandboxed process despite `--new-session` (`terminal-signals-forwarded-to-sandbox`)
 

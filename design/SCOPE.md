@@ -57,7 +57,8 @@ localhost services by default.
 
 [HAS_FEATURE](./features/xpra-gui-isolation.md) - GUI presets run under an xpra server inside the sandbox, which forwards their windows to the host over a unix socket; the host's X11 socket, XAUTHORITY and DISPLAY are no longer exposed.
 
-[HAS_FEATURE](./features/config-defaults.md) - `.sandbox/` files are seeded from the user's `~/.config/scoder/`, itself seeded from defaults shipped in the binary; `.sandbox/env` lists the host environment variables passed into the sandbox.
+[HAS_FEATURE](./features/config-defaults.md) - shipped defaults for a project without `.sandbox/` files; starter recipes seeded into `~/.config/scoder/`; `.sandbox/env` lists the host environment variables passed into the sandbox.
+[HAS_FEATURE](./features/configure-mode.md) - `--configure`: an agent-guided session that writes `.sandbox/` (and `.mcp.json`) from the user's recipes, applied only after a host-side review; runs automatically on an interactive start when a key file is missing.
 
 [HAS_FEATURE](./features/clipboard-sharing.md) - Copying out of the sandbox: OSC 52 from the terminal works (the user's pty is bound at `/dev/tty`), xpra syncs GUI clipboards; `xclip`-style commands are planned via a one-way copy channel.
 

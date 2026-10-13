@@ -8,10 +8,12 @@ tags: [feature, config, sandbox, environment]
 
 ## Summary
 
-scoder's per-project configuration in `.sandbox/` is seeded from the user's
-own defaults in `~/.config/scoder/` (or `$XDG_CONFIG_HOME/scoder/`), which
-are in turn seeded from the defaults shipped in the binary
-(`src/defaults/`). A fourth file, `.sandbox/env`, lists the host environment
+scoder's per-project configuration lives in `.sandbox/`. Since
+[configure mode](./configure-mode.md) it is written by a configure session
+(or by hand), not copied from defaults; a project without a file runs on
+the shipped default for it (`src/defaults/`). `~/.config/scoder/` (or
+`$XDG_CONFIG_HOME/scoder/`) now holds markdown recipes for the configure
+skill. A fourth file, `.sandbox/env`, lists the host environment
 variables passed into the sandbox, replacing the list that used to be
 hardcoded in `src/sandbox/builder.ts`.
 
@@ -30,29 +32,22 @@ scoder does out of the box.
 
 [IMPLEMENTED_BY](/src/git/sandbox-config.ts)
 
-Three levels, each filled only where the next one down is missing a file —
-nothing is ever overwritten:
+Seeding `.sandbox/` from `~/.config/scoder/` (and that from the shipped
+files) was retired with `--configure`. What remains:
 
 1. **Shipped defaults** — `src/defaults/` (`README.md`, `env`, `readonly`,
    `readwrite`, `ports`), embedded in the binary with Bun's
-   `with { type: "text" }` imports (the same mechanism as `entrypoint.sh`;
-   verified to survive `bun build --compile`).
-2. **User defaults** — `~/.config/scoder/`. On every run, any shipped
-   default missing there is written. A user's edit is kept; a deleted file
-   comes back as the shipped default (an empty or all-comment file is how
-   to opt out of one).
-3. **Project** — `<project>/.sandbox/`. `prepareConfigDir` copies every
-   regular file in `~/.config/scoder/` that the project lacks, after the
-   legacy-dotfile migration, so a migrated `.agentreadonly` is not shadowed
-   by a fresh default. From then on the project's copy is the one in
-   force: editing `~/.config/scoder/` changes what *new* projects start
-   with, not existing ones.
+   `with { type: "text" }` imports. `prepareConfigDir` writes only
+   `.sandbox/README.md`.
+2. **Recipes** — `src/defaults/recipes/*.md` are written into
+   `~/.config/scoder/` by file name when missing (`seedRecipes`); a user's
+   edit is kept.
 
 `readonly`, `readwrite` and `ports` are read from `.sandbox/` exactly as
 before. Every reader goes through `readConfigText`, whose fallbacks —
-`~/.config/scoder/`, then the shipped default — exist for `--dry-run`,
-which writes nothing at either level yet previews what a real run would
-apply. The old in-code defaults (`DEFAULT_PROTECTED`, the readwrite and
+`~/.config/scoder/<file>` (kept for users who had per-file defaults
+there), then the shipped default — are what a project without the file
+runs on. The old in-code defaults (`DEFAULT_PROTECTED`, the readwrite and
 ports header strings, the README literal) are gone.
 
 ### `.sandbox/env`
@@ -101,7 +96,7 @@ variables its sessions see, the same trust a committed
 
 ## Tests
 
-`env-file-controls-passthrough`, `user-config-seeds-project-sandbox-dir`,
+`env-file-controls-passthrough`, `user-config-seeds-starter-recipes`,
 `user-config-dry-run-writes-nothing-but-previews-it` — see
 [validation-suite](../test-scripts/validation-suite.md) cases 137-139. The
 test file points `XDG_CONFIG_HOME` at a directory under its own temp root

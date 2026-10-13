@@ -1,13 +1,11 @@
 import { randomBytes } from "node:crypto";
 import { lstat, readdir, realpath } from "node:fs/promises";
 import { dirname } from "node:path";
-import scoderSkill from "../../skills/working-in-a-scoder-sandbox/SKILL.md" with {
-	type: "text",
-};
 import { getProjDir } from "../git/worktree.ts";
 import { BROWSER_DEST } from "../sandbox/browser.ts";
 import type { LiveOverlay } from "../sandbox/overlays.ts";
 import { stageXpraDir } from "../sandbox/xpra.ts";
+import { SCODER_SKILLS } from "../skills.ts";
 import type { BindMount, ToolBindSpec, ToolPreset } from "../types.ts";
 import { error, info, warning } from "../utils/logger.ts";
 import {
@@ -1214,6 +1212,8 @@ const jupyterlabPreset: ToolPreset = {
 export const TOOL_PRESETS: Record<string, ToolPreset> = {
 	opencode: {
 		description: "OpenCode",
+		// EM: First-prompt spelling, confirmed by the user (2026-10-14).
+		initialPromptArgs: (prompt) => ["--prompt", prompt],
 
 		configBinds: async (realHome, sandboxHome) => {
 			const binds: BindMount[] = [];
@@ -1263,6 +1263,8 @@ export const TOOL_PRESETS: Record<string, ToolPreset> = {
 
 	claude: {
 		description: "Claude Code",
+		// EM: First-prompt spelling, confirmed by the user (2026-10-14).
+		initialPromptArgs: (prompt) => [prompt],
 
 		configBinds: async (realHome, sandboxHome) => {
 			const binds: BindMount[] = [];
@@ -1326,26 +1328,28 @@ export const TOOL_PRESETS: Record<string, ToolPreset> = {
 			// EM: ~/.agents/skills already shows Claude the skill via the
 			// EM: snapshot; one pointing elsewhere is the user's arrangement to
 			// EM: keep. Either way: leave it alone.
-			const skillRel = ".claude/skills/working-in-a-scoder-sandbox";
-			if (
-				(await dirExists(claudeDir)) &&
-				!(await isSymlink(`${realHome}/.claude/skills`)) &&
-				!(await isSymlink(`${realHome}/${skillRel}`)) &&
-				!(await fileExists(`${realHome}/${skillRel}/SKILL.md`))
-			) {
-				// EM: Make the parent ourselves, as cheap insurance: a bind's
-				// EM: mountpoint needs its parent, and on some bwrap versions a
-				// EM: missing one is an error rather than created. The empty
-				// EM: skills dir is the same side effect already accepted for
-				// EM: the mountpoint itself.
-				await ensureDir(`${realHome}/.claude/skills`);
-				const staged = await stageFile(`${sandboxHome}/${skillRel}/SKILL.md`);
-				await Bun.write(staged, scoderSkill);
-				binds.push({
-					type: "ro-bind",
-					source: dirname(staged),
-					dest: `${sandboxHome}/${skillRel}`,
-				});
+			for (const skill of SCODER_SKILLS) {
+				const skillRel = `.claude/skills/${skill.name}`;
+				if (
+					(await dirExists(claudeDir)) &&
+					!(await isSymlink(`${realHome}/.claude/skills`)) &&
+					!(await isSymlink(`${realHome}/${skillRel}`)) &&
+					!(await fileExists(`${realHome}/${skillRel}/SKILL.md`))
+				) {
+					// EM: Make the parent ourselves, as cheap insurance: a bind's
+					// EM: mountpoint needs its parent, and on some bwrap versions a
+					// EM: missing one is an error rather than created. The empty
+					// EM: skills dir is the same side effect already accepted for
+					// EM: the mountpoint itself.
+					await ensureDir(`${realHome}/.claude/skills`);
+					const staged = await stageFile(`${sandboxHome}/${skillRel}/SKILL.md`);
+					await Bun.write(staged, skill.text);
+					binds.push({
+						type: "ro-bind",
+						source: dirname(staged),
+						dest: `${sandboxHome}/${skillRel}`,
+					});
+				}
 			}
 
 			const claudeDataDir = `${realHome}/.local/share/claude`;
@@ -1381,6 +1385,8 @@ export const TOOL_PRESETS: Record<string, ToolPreset> = {
 
 	copilot: {
 		description: "GitHub Copilot CLI",
+		// EM: First-prompt spelling, confirmed by the user (2026-10-14).
+		initialPromptArgs: (prompt) => ["-i", prompt],
 
 		configBinds: async (realHome, sandboxHome) => {
 			const binds: BindMount[] = [];
@@ -1449,6 +1455,8 @@ export const TOOL_PRESETS: Record<string, ToolPreset> = {
 
 	pi: {
 		description: "Pi Coding Agent",
+		// EM: First-prompt spelling, confirmed by the user (2026-10-14).
+		initialPromptArgs: (prompt) => [prompt],
 
 		configBinds: piConfigBinds,
 

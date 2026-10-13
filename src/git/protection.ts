@@ -6,12 +6,10 @@ import {
 	readlink,
 	stat,
 } from "node:fs/promises";
-import scoderSkill from "../../skills/working-in-a-scoder-sandbox/SKILL.md" with {
-	type: "text",
-};
 import { resolvConfDest } from "../sandbox/builder.ts";
 import type { LiveOverlay } from "../sandbox/overlays.ts";
 import { renderOverlay } from "../sandbox/overlays.ts";
+import { SCODER_SKILLS } from "../skills.ts";
 import type { BindMount } from "../types.ts";
 import { error, info } from "../utils/logger.ts";
 import {
@@ -165,6 +163,7 @@ export async function setupProtection(
 	sourceDir: string,
 	sandboxProjDir: string,
 	companionIde?: CompanionIde,
+	sessionNote?: string,
 ): Promise<ProtectionConfig> {
 	const protectedPaths: string[] = [];
 	const safeBinds: BindMount[] = [];
@@ -229,6 +228,7 @@ export async function setupProtection(
 		sourceDir,
 		sandboxProjDir,
 		companionIde,
+		sessionNote,
 	);
 	await renderOverlay(agentsOverlay);
 	const overlays: LiveOverlay[] = [agentsOverlay];
@@ -567,16 +567,26 @@ export async function getConfigDirBind(
 	projectRoot: string,
 	sandboxProjDir: string,
 	dryRun: boolean,
+	workingCopy?: string,
 ): Promise<BindMount | null> {
 	// EM: Writing the ports default and binding the directory are now separate
 	// EM: concerns, which they were not when this function *was* the ports
 	// EM: bind. Gating the bind on that one file's existence meant a project
 	// EM: with a readwrite file but no ports file got no bind at all — caught
 	// EM: by agentreadwrite-self-protected-readonly rather than reasoned out.
-	// EM: The ports file itself now comes from prepareConfigDir, like the
-	// EM: rest of .sandbox/; the directory bind covers it either way.
+	// EM: The files themselves come from a configure session (or the user);
+	// EM: the directory bind covers them either way.
 	void dryRun;
 
+	// EM: In a configure session, the working copy, read-write — never the
+	// EM: real directory, which is only changed on the host after review.
+	if (workingCopy) {
+		return {
+			type: "bind",
+			source: workingCopy,
+			dest: `${sandboxProjDir}/${CONFIG_DIR}`,
+		};
+	}
 	// EM: dirExists, not fileExists: Bun.file(path).exists() answers "is there
 	// EM: a regular file here" and is false for a directory — the same trap
 	// EM: that made waitForXpraSocket never fire on a unix socket.
@@ -663,6 +673,7 @@ async function _setupAgentsMdOverlay(
 	sourceDir: string,
 	sandboxProjDir: string,
 	companionIde?: CompanionIde,
+	sessionNote?: string,
 ): Promise<LiveOverlay> {
 	const agentsSrc = `${sourceDir}/AGENTS.md`;
 	const realHome = getRealHome();
@@ -695,6 +706,11 @@ This section is injected by scoder inside the sandbox and is not part of the rep
 	// EM: is most useful and least likely to be set up yet. Asking the agent
 	// EM: to check and offer once puts the skill's setup guidance in play
 	// EM: without scoder generating any MCP config itself.
+	if (sessionNote) {
+		sandboxSection = `${sandboxSection}- ${sessionNote}
+`;
+	}
+
 	if (companionIde) {
 		sandboxSection = `${sandboxSection}- The user has launched ${companionIde.name} alongside you in this sandbox (\`--ide ${companionIde.key}\`). Check whether you have an MCP server configured for it; if not, offer once to set one up, using the \`working-in-a-scoder-sandbox\` skill.
 `;
@@ -1010,9 +1026,11 @@ export async function setupAgentsSnapshot(): Promise<BindMount | null> {
 	// EM: add`, which cannot work from inside: ~/.agents is this read-only
 	// EM: snapshot. A user with no ~/.agents at all still gets one holding
 	// EM: just the skill. Only the snapshot changes — never the host's.
-	const skillFile = `${snapshotDir}/skills/working-in-a-scoder-sandbox/SKILL.md`;
-	if (!(await fileOrDirExists(skillFile))) {
-		await Bun.write(skillFile, scoderSkill);
+	for (const skill of SCODER_SKILLS) {
+		const skillFile = `${snapshotDir}/skills/${skill.name}/SKILL.md`;
+		if (!(await fileOrDirExists(skillFile))) {
+			await Bun.write(skillFile, skill.text);
+		}
 	}
 
 	return {

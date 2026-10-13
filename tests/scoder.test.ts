@@ -8,6 +8,13 @@
 import { afterAll, expect, test } from "bun:test";
 import { readdirSync, readlinkSync, statSync } from "node:fs";
 import { removeStaleXpraPin } from "../src/cli/dependencies.ts";
+import { parseArgs } from "../src/cli/parse-args.ts";
+import {
+	applyWorkingCopy,
+	relaunchArgs,
+	reviewConfigure,
+	validateConfig,
+} from "../src/configure/configure.ts";
 import {
 	addGitExclude,
 	refreshResolvConfSnapshot,
@@ -1029,8 +1036,11 @@ test("sandbox-readonly-protected: .sandbox/readonly is always mounted read-only"
 // EM: Same bug class as .sandbox/ports; see
 // EM: design/implementation/plans/agentports.md.
 
-// ### Test: sandbox-readonly-created-if-missing
-test("sandbox-readonly-created-if-missing: a real session creates .sandbox/readonly with the default protected list", async () => {
+// ### Test: sandbox-config-not-seeded-by-a-session
+// EM: Since --configure, a session no longer copies defaults into .sandbox/:
+// EM: a non-interactive session with no config runs on the shipped base
+// EM: defaults (readConfigText's fallback) and writes only the README.
+test("sandbox-config-not-seeded-by-a-session: a non-interactive session writes .sandbox/README.md but no config files", async () => {
 	const repoDir = await createTempRepo();
 	tempRepos.push(repoDir);
 
@@ -1044,9 +1054,11 @@ test("sandbox-readonly-created-if-missing: a real session creates .sandbox/reado
 		await proc.exited;
 
 		// The session itself may still fail later (pasta attaching), but the
-		// file is created before that point is ever reached.
-		const content = await Bun.file(`${repoDir}/.sandbox/readonly`).text();
-		expect(content).toContain(".github/");
+		// README is written before that point is ever reached.
+		expect(await fileExists(`${repoDir}/.sandbox/README.md`)).toBe(true);
+		for (const name of ["env", "readonly", "readwrite", "ports"]) {
+			expect(await fileExists(`${repoDir}/.sandbox/${name}`)).toBe(false);
+		}
 	} finally {
 		await cleanupRepo(repoDir);
 	}
@@ -2472,29 +2484,6 @@ test("sandbox-ports-not-created-under-dry-run: --dry-run with no .sandbox/ports 
 // EM: the sandboxed agent create .sandbox/ports itself, with whatever ports it
 // EM: likes, unprotected, from that point on.
 
-// ### Test: sandbox-ports-created-if-missing
-test("sandbox-ports-created-if-missing: a real session creates .sandbox/ports with a header comment", async () => {
-	const repoDir = await createTempRepo();
-	tempRepos.push(repoDir);
-
-	try {
-		const proc = Bun.spawn([SCODER_PATH, "-q", "/bin/bash", "-c", "true"], {
-			env: process.env,
-			cwd: repoDir,
-			stdout: "pipe",
-			stderr: "pipe",
-		});
-		await proc.exited;
-
-		// The session itself may still fail later (pasta attaching), but the
-		// file is created before that point is ever reached.
-		const content = await Bun.file(`${repoDir}/.sandbox/ports`).text();
-		expect(content).toContain("# .sandbox/ports");
-	} finally {
-		await cleanupRepo(repoDir);
-	}
-});
-
 // ### Test: sandbox-ports-missing-file-not-writable-from-sandbox
 test("sandbox-ports-missing-file-not-writable-from-sandbox: a session with no pre-existing .sandbox/ports still protects it read-only", async () => {
 	const repoDir = await createTempRepo();
@@ -2659,12 +2648,13 @@ test("env-file-controls-passthrough: only names listed in .sandbox/env reach the
 	}
 });
 
-// ### Test: user-config-seeds-project-sandbox-dir
-// EM: The two-level copy: shipped defaults -> ~/.config/scoder (only the
-// EM: files missing there) -> .sandbox/ (only the files missing there).
-// EM: Nothing is ever overwritten at either level. In-process, with
+// ### Test: user-config-seeds-starter-recipes
+// EM: ~/.config/scoder is a directory of markdown recipes for the configure
+// EM: skill. The shipped starter set is written by file name, missing files
+// EM: only — an edited recipe is never overwritten — and nothing is copied
+// EM: into the project's .sandbox/ any more. In-process, with
 // EM: XDG_CONFIG_HOME pointed at a fresh directory for this test alone.
-test("user-config-seeds-project-sandbox-dir: defaults fill ~/.config/scoder, which fills .sandbox/, and neither level overwrites an existing file", async () => {
+test("user-config-seeds-starter-recipes: missing starter recipes are added to ~/.config/scoder, edited ones kept, .sandbox/ gets only a README", async () => {
 	const repoDir = await createTempRepo();
 	tempRepos.push(repoDir);
 	const savedXdg = process.env.XDG_CONFIG_HOME;
@@ -2674,42 +2664,22 @@ test("user-config-seeds-project-sandbox-dir: defaults fill ~/.config/scoder, whi
 		process.env.XDG_CONFIG_HOME = xdg;
 		const userDir = userConfigDir();
 		expect(userDir).toBe(`${xdg}/scoder`);
-		await Bun.write(`${userDir}/env`, "MY_OWN_VAR\n");
-		await Bun.write(`${userDir}/extra-note`, "copied too\n");
-		await Bun.write(`${repoDir}/.sandbox/ports`, "# project's own\n8080\n");
+		await Bun.write(`${userDir}/java.md`, "my java\n");
 
-		await prepareConfigDir(repoDir);
+		await prepareConfigDir(repoDir, false);
 
-		// User level: the edited file kept, the missing ones written from
-		// the shipped defaults (byte-identical to src/defaults/).
-		expect(await Bun.file(`${userDir}/env`).text()).toBe("MY_OWN_VAR\n");
-		for (const name of ["README.md", "readonly", "readwrite", "ports"]) {
-			expect(await Bun.file(`${userDir}/${name}`).text()).toBe(
-				await Bun.file(`${import.meta.dir}/../src/defaults/${name}`).text(),
-			);
+		const shipped = readdirSync(`${import.meta.dir}/../src/defaults/recipes`);
+		expect(shipped.length).toBeGreaterThan(0);
+		for (const name of shipped) {
+			const expected =
+				name === "java.md"
+					? "my java\n"
+					: await Bun.file(
+							`${import.meta.dir}/../src/defaults/recipes/${name}`,
+						).text();
+			expect(await Bun.file(`${userDir}/${name}`).text()).toBe(expected);
 		}
-		// Project level: every user file the project lacked, the user's own
-		// edits included; the project's existing file untouched.
-		expect(await Bun.file(`${repoDir}/.sandbox/env`).text()).toBe(
-			"MY_OWN_VAR\n",
-		);
-		expect(await Bun.file(`${repoDir}/.sandbox/extra-note`).text()).toBe(
-			"copied too\n",
-		);
-		expect(await Bun.file(`${repoDir}/.sandbox/ports`).text()).toBe(
-			"# project's own\n8080\n",
-		);
-		expect(await Bun.file(`${repoDir}/.sandbox/readonly`).text()).toBe(
-			await Bun.file(`${userDir}/readonly`).text(),
-		);
-
-		// A later user-level edit does not reach a project that already has
-		// the file: the project's copy is the one in force.
-		await Bun.write(`${userDir}/env`, "CHANGED_LATER\n");
-		await prepareConfigDir(repoDir);
-		expect(await Bun.file(`${repoDir}/.sandbox/env`).text()).toBe(
-			"MY_OWN_VAR\n",
-		);
+		expect(readdirSync(`${repoDir}/.sandbox`)).toEqual(["README.md"]);
 	} finally {
 		process.env.XDG_CONFIG_HOME = savedXdg;
 		await Bun.spawn(["rm", "-rf", xdg]).exited;
@@ -8061,8 +8031,12 @@ test("sandbox-readwrite-created-if-missing: a missing .sandbox/readwrite is crea
 		expect(stderr).not.toContain("pasta failed to attach");
 		expect(proc.exitCode).not.toBe(0);
 
-		const content = await Bun.file(`${repoDir}/.sandbox/readwrite`).text();
-		expect(content).not.toContain("modified");
+		// No file is created any more (a session no longer seeds .sandbox/),
+		// but the directory bind still keeps the sandbox from creating one.
+		const file = Bun.file(`${repoDir}/.sandbox/readwrite`);
+		expect((await file.exists()) ? await file.text() : "").not.toContain(
+			"modified",
+		);
 	} finally {
 		await cleanupRepo(repoDir);
 	}
@@ -8327,3 +8301,209 @@ test("sandbox-readwrite-survives-fresh-worktree: a tracked .sandbox/readwrite st
 		await cleanupRepo(repoDir);
 	}
 });
+
+// ### Test: configure-flag-parsed
+test("configure-flag-parsed: --configure before the tool sets configure; after it, it is the tool's", () => {
+	const before = parseArgs(["--configure", "claude"]);
+	expect(before.options.configure).toBe(true);
+	expect(before.toolArgs).toEqual([]);
+	const after = parseArgs(["claude", "--configure"]);
+	expect(after.options.configure).toBe(false);
+	expect(after.toolArgs).toEqual(["--configure"]);
+});
+
+// ### Test: configure-session-dry-run
+// EM: A configure session, for each agent preset: the configure prompt in the
+// EM: agent's own initial-prompt form, .sandbox/ bound read-write from a
+// EM: staged working copy (never the real directory), the recipes directory
+// EM: bound read-only, and the configure note in the AGENTS.md overlay.
+test("configure-session-dry-run: each agent gets the prompt its own way, a writable .sandbox working copy, and read-only recipes", async () => {
+	const repoDir = await createTempRepo();
+	tempRepos.push(repoDir);
+	const xdg = `${TEST_BASE}/xdg-cfg-${Date.now()}`;
+	const forms: Record<string, RegExp> = {
+		claude: /claude\s+'?This is a scoder configure session/,
+		pi: /pi\s+'?This is a scoder configure session/,
+		opencode: /opencode\s+--prompt\s+'?This is a scoder configure session/,
+		copilot: /copilot\s+-i\s+'?This is a scoder configure session/,
+	};
+
+	try {
+		await Bun.write(`${xdg}/scoder/base.md`, "# base\n");
+		for (const [tool, form] of Object.entries(forms)) {
+			const bin = await createFakeToolDir(tool);
+			try {
+				const run = await runScoderRaw(
+					repoDir,
+					["--dry-run", "--configure", tool],
+					{
+						PATH: `${bin}:${process.env.PATH}`,
+						XDG_CONFIG_HOME: xdg,
+						SCODER_KEEP_SESSION_TMP: "1",
+					},
+				);
+				expect(run.code).toBe(0);
+				const flat = flattenDryRun(run.stdout);
+				expect(flat).toMatch(form);
+				expect(flat).toMatch(
+					new RegExp(
+						`--bind (/tmp/scoder-[0-9a-f]{8}${repoDir}/\\.sandbox) ${repoDir}/\\.sandbox`,
+					),
+				);
+				expect(flat).not.toContain(`--ro-bind ${repoDir}/.sandbox`);
+				expect(flat).toMatch(
+					new RegExp(`--ro-bind\\s+${xdg}/scoder\\s+${xdg}/scoder`),
+				);
+				const staged = flat.match(
+					/--bind (\/tmp\/scoder-[0-9a-f]{8})\S*\/\.sandbox /,
+				);
+				if (staged) await removeSessionRoot(staged[1]);
+			} finally {
+				await Bun.spawn(["rm", "-rf", bin]).exited;
+			}
+		}
+	} finally {
+		await Bun.spawn(["rm", "-rf", xdg]).exited;
+		await cleanupRepo(repoDir);
+	}
+});
+
+// ### Test: configure-not-automatic-without-a-terminal
+// EM: A missing .sandbox file only starts configure interactively; piped
+// EM: runs (tests, scripts) proceed on the base defaults.
+test("configure-not-automatic-without-a-terminal: no TTY, no .sandbox/ — a normal session, no configure prompt", async () => {
+	const repoDir = await createTempRepo();
+	tempRepos.push(repoDir);
+	const bin = await createFakeToolDir("claude");
+	try {
+		const out = flattenDryRun(
+			await runScoder(repoDir, ["--dry-run", "--no-worktree", "claude"], {
+				PATH: `${bin}:${process.env.PATH}`,
+			}),
+		);
+		expect(out).not.toContain("configure session");
+	} finally {
+		await Bun.spawn(["rm", "-rf", bin]).exited;
+		await cleanupRepo(repoDir);
+	}
+});
+
+// ### Test: configure-review-applies-only-on-confirm
+// EM: The host-side review: changes are shown and applied only on "yes"; a
+// EM: "no" leaves .sandbox/ alone and restores .mcp.json; an invalid change
+// EM: is never offered; applying writes stubs for missing key files so the
+// EM: relaunch does not configure again.
+test("configure-review-applies-only-on-confirm: yes applies (with key-file stubs), no discards and restores .mcp.json, invalid is refused", async () => {
+	const root = `${TEST_BASE}/cfg-review-${Date.now()}`;
+	const staged = `${TEST_BASE}/cfg-staged-${Date.now()}/.sandbox`;
+	try {
+		await Bun.write(`${root}/.sandbox/ports`, "8080\n");
+		await Bun.write(`${root}/.mcp.json`, "{}\n");
+		await Bun.write(`${staged}/ports`, "8080\n9090\n");
+		await Bun.write(`${staged}/env`, "FOO\n");
+
+		// No: nothing applied, .mcp.json restored.
+		await Bun.write(`${root}/.mcp.json`, '{"changed":1}\n');
+		const no = await reviewConfigure(root, staged, "{}\n", async () => false);
+		expect(no).toEqual({ changed: true, applied: false });
+		expect(await Bun.file(`${root}/.sandbox/ports`).text()).toBe("8080\n");
+		expect(await Bun.file(`${root}/.mcp.json`).text()).toBe("{}\n");
+
+		// Yes: applied, missing key files stubbed.
+		const yes = await reviewConfigure(root, staged, "{}\n", async () => true);
+		expect(yes).toEqual({ changed: true, applied: true });
+		expect(await Bun.file(`${root}/.sandbox/ports`).text()).toBe(
+			"8080\n9090\n",
+		);
+		expect(await Bun.file(`${root}/.sandbox/env`).text()).toBe("FOO\n");
+		for (const name of ["readonly", "readwrite"]) {
+			expect(await fileExists(`${root}/.sandbox/${name}`)).toBe(true);
+		}
+
+		// Invalid: never asked.
+		await Bun.write(`${staged}/ports`, "not-a-port\n");
+		let asked = false;
+		const bad = await reviewConfigure(root, staged, "{}\n", async () => {
+			asked = true;
+			return true;
+		});
+		expect(bad.applied).toBe(false);
+		expect(asked).toBe(false);
+		expect(await Bun.file(`${root}/.sandbox/ports`).text()).toBe(
+			"8080\n9090\n",
+		);
+	} finally {
+		await Bun.spawn(["rm", "-rf", root, dirnameOf(staged)]).exited;
+	}
+});
+
+// ### Test: configure-validate-and-apply
+test("configure-validate-and-apply: readwrite outside $HOME and missing readonly paths are problems; apply removes deleted files", async () => {
+	const dir = `${TEST_BASE}/cfg-validate-${Date.now()}`;
+	try {
+		await Bun.write(`${dir}/.sandbox/readwrite`, "/etc\n");
+		await Bun.write(
+			`${dir}/.sandbox/readonly`,
+			"$HOME/definitely-not-here-scoder\n",
+		);
+		const problems = await validateConfig(dir);
+		expect(problems.join("\n")).toContain("must start with $HOME/");
+		expect(problems.join("\n")).toContain("does not exist");
+
+		await Bun.write(`${dir}/real/old`, "x");
+		await Bun.write(`${dir}/work/env`, "A\n");
+		await applyWorkingCopy(`${dir}/work`, `${dir}/real`);
+		expect(readdirSync(`${dir}/real`).sort()).toEqual([
+			"env",
+			"ports",
+			"readonly",
+			"readwrite",
+		]);
+	} finally {
+		await Bun.spawn(["rm", "-rf", dir]).exited;
+	}
+});
+
+// ### Test: configure-relaunch-args
+test("configure-relaunch-args: --configure is dropped; the compiled binary's embedded entry is dropped", () => {
+	expect(
+		relaunchArgs(["bun", "src/index.ts", "--configure", "claude"], "/bun"),
+	).toEqual(["/bun", "src/index.ts", "claude"]);
+	expect(
+		relaunchArgs(["scoder", "/$bunfs/root/scoder", "--configure", "pi"], "/x"),
+	).toEqual(["/x", "pi"]);
+});
+
+// ### Test: configure-skill-injected
+test("configure-skill-injected: both bundled skills are in the ~/.agents snapshot", async () => {
+	const repoDir = await createTempRepo();
+	tempRepos.push(repoDir);
+	const home = `/tmp/scoder-cfgskill-${Date.now()}`;
+	try {
+		await Bun.write(`${home}/.placeholder`, "");
+		const run = await runScoderRaw(repoDir, ["--dry-run", "/bin/bash"], {
+			HOME: home,
+			SCODER_KEEP_SESSION_TMP: "1",
+		});
+		const m = flattenDryRun(run.stdout).match(
+			new RegExp(
+				`--ro-bind (/tmp/scoder-[0-9a-f]{8}${home}/\\.agents) ${home}/\\.agents`,
+			),
+		);
+		expect(m).not.toBeNull();
+		for (const name of [
+			"working-in-a-scoder-sandbox",
+			"configure-scoder-sandbox",
+		]) {
+			expect(await fileExists(`${m![1]}/skills/${name}/SKILL.md`)).toBe(true);
+		}
+		await removeSessionRoot(m![1]);
+	} finally {
+		await Bun.spawn(["rm", "-rf", home]).exited;
+		await cleanupRepo(repoDir);
+	}
+});
+
+function dirnameOf(path: string): string {
+	return path.slice(0, path.lastIndexOf("/"));
+}

@@ -209,10 +209,22 @@ recipes**: any number of markdown files, each describing a kind of project
 or situation and what its sandbox needs.
 
 - **Shipped starter set** in `src/defaults/` (replacing today's `env`,
-  `readonly`, `readwrite`, `ports` there): e.g. a base recipe (the
-  protected-path list, the always-useful env names), Java/Maven, R,
-  Python/uv, Node, Rust, LaTeX, and MCP recipes (an IDE's server, a local
-  LLM port).
+  `readonly`, `readwrite`, `ports` there) — decided 2026-10-14:
+  - a **base** recipe (the protected-path list, the always-useful env
+    names — today's `src/defaults/readonly` and `env`);
+  - **project kinds:** standard Java (Maven, and Gradle), TypeScript, R,
+    Python, and **polyglot** as a combination of those;
+  - **research** projects with web search (the search providers' env
+    names, kept commented as today);
+  - **decision model support** (as named by the user — contents to be
+    written with them);
+  - **model hosting:** models on Azure, AWS and Google Cloud (their env
+    names and credential files), and models hosted locally on port 11434
+    (still auto-detected; the recipe documents it and the 11435 probe).
+
+  User-specific recipes — the Nelson LibreOffice MCP server, for example —
+  are the user's own files in `~/.config/scoder/`, out of scope for the
+  shipped set.
 - **Seeding:** any shipped recipe missing from `~/.config/scoder/` (by file
   name) is copied there; existing files are never overwritten, so the user's
   edits stand. The user adds their own recipes alongside — local rules,
@@ -223,8 +235,10 @@ or situation and what its sandbox needs.
   fixed naming or format is required — the agent reads prose.
 - **Suggested format** for the shipped recipes (aligned with skill files):
   a title, then sections **When to use**, **Env**, **Ports**, **Read-only
-  binds**, **Read-write binds** — the last four mapping directly onto
-  `.sandbox/env`, `ports`, `readonly`, `readwrite`.
+  binds**, **Read-write binds**, **MCP servers** — the middle four mapping
+  directly onto `.sandbox/env`, `ports`, `readonly`, `readwrite`, and the
+  last onto `.mcp.json` entries (taken from the skill's known working
+  setups where an IDE or host service has one).
 - The skill itself keeps the procedure (look, ask, map, explain, review);
   the recipes carry the per-nature knowledge. That is also how decision 7
   holds — the skill is the arbiter of the defaults, through the recipes it
@@ -240,9 +254,8 @@ once the user accepts.
 
 ## Open questions
 
-1. The starter recipe set: which recipes ship first, and the base recipe's
-   exact contents (today's `src/defaults/readonly` and `env` are its
-   natural starting point).
+1. Contents of the **decision model support** recipe.
+2. Whether Gradle is its own recipe or a section of the Java one.
 
 ## Appendix: everything scoder binds or sets today, for review
 

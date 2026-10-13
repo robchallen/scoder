@@ -179,22 +179,103 @@ Structured, short, and grounded in what the project shows:
    `~/.config/scoder/` for new projects — a host-side step, done by scoder
    after confirmation, like the `.sandbox/` diff.
 
+## Decisions (2026-10-14)
+
+1. **Migration: drop the implicit binds at once.** No grace period; an
+   unconverted project gets the start-up message (or the automatic
+   configure session, below).
+2. **`~/.local/bin` is per project.** The skill grants the specific entries
+   a project needs (resolving symlinks to their targets), not the whole
+   directory.
+3. **After acceptance, relaunch automatically** into a normal session.
+4. **`.mcp.json` changes go through the same diff-and-confirm** as
+   `.sandbox/`.
+5. **Initial prompt:** `claude` and `pi` both take it as an argument;
+   opencode and copilot still to check (the `AGENTS.md` note is the
+   fallback).
+6. **Project only.** `--configure` never edits `~/.config/scoder/`. That
+   directory becomes less important: the per-nature defaults (today's
+   `src/defaults/`) move into the skill, which is where they are managed.
+   What remains of `~/.config/scoder/` and the seeding in
+   `config-defaults.md` is to be revisited with this work.
+7. **The skill is the arbiter of the defaults table.** No generated or
+   code-side table to keep in step; the skill owns it.
+
+## Automatic configure
+
+`--configure` is also triggered **automatically when `.sandbox/` is missing
+a key file** (e.g. no `readonly`/`readwrite`/`env`, or an old-format
+marker): instead of starting a session with nothing granted, scoder starts
+the configure session first, then relaunches the requested session once the
+user accepts. Which files count as "key" is part of the implementation
+(open question below).
+
 ## Open questions
 
-0. Migration: honour the old implicit binds for unconverted projects for a
-   while, or drop them at once with the start-up message?
-0. `~/.local/bin`: default grant (it is how most host tools are reached) or
-   per-project?
-1. After acceptance: re-launch a normal session automatically, ask, or exit?
-2. Should `.mcp.json` edits go through the same diff-and-confirm (it is a
-   project file the agent could write anyway in a normal session)?
-3. How each agent takes an initial prompt (`claude` positional; pi, opencode,
-   copilot to check), and the fallback via the `AGENTS.md` note.
-4. Whether `--configure` also covers `~/.config/scoder/` directly ("set my
-   defaults") or only ever the project.
-5. Where the per-nature defaults table lives so it cannot drift from the
-   code — generated from `buildExtraBinds` at build time, or tested against
-   it.
+1. Which files missing (or which format marker) trigger the automatic
+   configure session.
+2. How opencode and copilot take an initial prompt.
+3. What remains of `~/.config/scoder/` (user-level defaults at all? only
+   `env`?) once the skill owns the defaults.
+4. The items marked **review** in the appendix.
+
+## Appendix: everything scoder binds or sets today, for review
+
+Collected from the code (`buildBwrapCommand`, `buildExtraBinds`,
+`setupProtection`, presets) on 2026-10-14. Proposed classification:
+**always** (stays in code), **grant** (moves to a per-project grant the
+configure skill writes), **review** (user to decide).
+
+### System and sandbox mechanics — always
+
+| What | How |
+|---|---|
+| `/usr`, `/bin`, `/lib`, `/lib64`, `/sbin`, `/etc`, `/sys`, `/opt`, `/var/lib/dpkg/alternatives`, `/var/lib/alternatives` | read-only |
+| `/dev` (two layers), `/dev/shm` tmpfs, `/dev/console` → `/dev/null`, `/dev/tty` → user's pty | device binds |
+| `/proc`, `/tmp` tmpfs, `/home` tmpfs + `$HOME` skeleton (`.local`, `.local/share`, `.config`, `.cache`) | fresh |
+| `/run` tmpfs, `/run/user/<uid>` mode 0700 | fresh |
+| resolv.conf snapshot, passwd/group | staged, read-only |
+| project dir (read-write), its `.git`, the worktrees parent | per session |
+| `.sandbox/` read-only, `.sandbox/readonly` protected paths, `AGENTS.md` overlay | per project |
+
+### Home paths bound for every session (`buildExtraBinds`)
+
+| Path | Mode | Proposed |
+|---|---|---|
+| `~/.local/share/fonts`, `~/.fonts` | ro | **always** |
+| `~/.themes`, `~/.icons`, `~/.local/share/themes`, `~/.local/share/icons` | ro | **always** |
+| `~/.config/gtk-3.0`, `~/.config/gtk-4.0`, `~/.gtkrc-2.0` | ro | **always** |
+| `~/.config/mimeapps.list` | ro | **always** |
+| `~/.m2` | **rw** | grant (Java/Maven) |
+| `~/R`, `~/.Rprofile` | ro | grant (R) |
+| `~/.rustup`, `~/.cargo/bin` | ro | grant (Rust) |
+| `~/.local/share/mise`, `~/.local/share/mise/shims`, `~/.config/mise` | ro | grant (mise) |
+| `~/.local/share/uv/tools`, `~/.local/share/uv/python` | ro | grant (uv tools used) |
+| `~/.npmrc` | ro | grant (Node publishing) |
+| `~/.pypirc` | ro | grant (Python publishing) |
+| `~/.local/bin` (resolved snapshot) | ro | grant, per entry (decision 2) |
+| `~/.agents` (snapshot, + injected scoder skill) | ro | grant, per skill; the scoder skill itself always injected |
+| `~/.gitconfig` | ro | **review** — nearly every project uses git |
+| `~/.config/gh` | ro | **review** — `gh` auth; widely useful, but a credential |
+| `~/.config/worktrunk/config.toml` | ro | **review** — only for worktrunk users |
+
+### Added by presets and flags — always, follows the tool
+
+Agent preset config (`~/.pi/agent`, `~/.local/share/pi`, `~/.cache/pi`;
+`~/.claude`, `~/.claude.json`, `~/.config/claude`, `~/.local/share/claude`;
+copilot's; opencode's), IDE preset paths (managed workspaces /
+user-data-dirs, extensions trees, `~/.continue`, JetBrains plugins and
+consent state, `~/.jupyter`, kernels), GUI display binds (xpra dir, or X11
+socket + cookie under `--native-display`; `/dev/dri`), `SCODER_BROWSER`'s
+wrapper and mimeapps overlay, and `--bind NAME`.
+
+### Environment set for every session — always
+
+`PATH`, `HOME`, `USER`, `LOGNAME`, `TERM`, `LANG`, `SCODER_SANDBOX`,
+`WORKTRUNK_WORKTREE_PATH`; plus per preset (`XDG_RUNTIME_DIR` and
+`GTK_OVERLAY_SCROLLING` for GUI presets, `MCPTOOLS_SOCKET_DIR` for rstudio,
+Jupyter's variables). Everything else is `.sandbox/env` (already a
+per-project list).
 
 [HAS_FEATURE](/design/features/config-defaults.md)
 [HAS_FEATURE](/design/features/agents-skills-snapshot.md)

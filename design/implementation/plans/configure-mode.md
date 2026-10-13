@@ -30,6 +30,77 @@ which IDE, which local LLM or MCP service, which credentials. It is the
 same reasoning that moved MCP setup into a skill — conversational, varies
 per user — applied to the whole sandbox config.
 
+## Direction: `.sandbox/` as the single arbiter
+
+Decided in discussion (2026-10-13): `--configure` is not only a helper for
+writing config — it is what makes it reasonable for **`.sandbox/` to be the
+one place that says what a session can see**, minimally, per project.
+Today scoder hard-codes a set of host paths into every session regardless
+of project; under this direction they move out of the code and become
+explicit grants in `.sandbox/readonly` / `.sandbox/readwrite`, added by the
+configure session only where the project needs them. A non-Java project no
+longer gets read-write `~/.m2`; a project without R no longer sees `~/R`.
+
+### What moves, and what stays in code
+
+Bound for every session today (`buildExtraBinds`), and **moving to explicit
+grants**:
+
+| Path | Today | Becomes, when the project needs it |
+|---|---|---|
+| `~/.m2` | read-write | `readwrite` (Java/Maven) |
+| `~/R`, `~/.Rprofile` | read-only | `readonly` (R) |
+| `~/.rustup`, `~/.cargo/bin` | read-only | `readonly` (Rust) |
+| `~/.local/share/mise`, `~/.config/mise` | read-only | `readonly` (mise users) |
+| `~/.local/share/uv/tools`, `~/.local/share/uv/python` | read-only | `readonly` (uv tools used in the session) |
+| `~/.npmrc`, `~/.pypirc` | read-only | `readonly` (Node / Python publishing) |
+| `~/.agents` (snapshot) | read-only | `readonly` — and **individual skills** can be granted selectively rather than the whole directory |
+| `~/.local/bin` (resolved snapshot) | read-only | open question — likely a default grant, narrowed by the configure skill |
+
+Borderline — general developer plumbing most sessions want; candidates for
+the **shipped defaults** (`src/defaults/readonly`, so still visible and
+removable per project) rather than code: `~/.gitconfig`, `~/.config/gh`,
+fonts, `mimeapps.list`, GTK themes/icons (the last three only matter to
+GUI presets, so arguably belong with them).
+
+**Stays in code**: sandbox mechanics (system dirs, `/dev`, `/run`, `/tmp`,
+resolv.conf, passwd/group, the project and git dir, the worktrees parent),
+**agent preset config paths** (`~/.pi`, `~/.claude`, ...) and **IDE preset
+paths** (managed workspaces, extensions trees) — these follow from which
+tool is launched, not from the project — plus anything `--bind NAME` adds.
+
+### Consequences in the file formats
+
+- **`readonly`'s `$HOME/...` lines are currently "Eclipse dependency
+  projects"** as well as read-only binds: each is collected into
+  `dependencyDirs` and passed to Eclipse as `-importProject`, and the plugin
+  then searches it recursively for `.project` files. Moving `~/R` or
+  `~/.m2` there would make them Eclipse imports (and slow scans). The
+  format needs to tell the two apart — e.g. a marker on dependency-project
+  lines, or a separate `dependencies` file — before anything moves.
+- **Files, not only directories.** `readonly`'s `$HOME/...` lines must
+  point at an existing directory today; `~/.gitconfig`, `~/.Rprofile`,
+  `~/.npmrc` and `mimeapps.list` are files. Single-file binds need
+  supporting.
+- **Overlap checks** that refuse `readonly`/`readwrite` entries colliding
+  with scoder's fixed binds shrink with the fixed list — what remains to
+  protect is the agent/IDE preset paths.
+- **Symlinks at configure time.** The skill resolves symlinks while
+  configuring (a `~/.local/bin` tool pointing into a uv venv, a skills dir
+  linking elsewhere) and grants the resolved targets, keeping the set as
+  small as possible instead of granting whole trees to be safe.
+
+### Migration
+
+This breaks existing sandboxes that rely on the implicit binds (a Java
+project that never listed `~/.m2`). Acceptable while scoder's users are
+few — one `--configure` session per project fixes it. To make the break
+loud rather than mysterious: a format version marker in `.sandbox/` (e.g.
+in `README.md` or a `version` file); a project on the old format gets a
+start-up message — "this project's sandbox config predates explicit
+grants; run `scoder --configure <agent>`" — and, until then, either the old
+implicit binds (a grace period) or none (open question).
+
 ## Design
 
 ### The session
@@ -102,6 +173,12 @@ Structured, short, and grounded in what the project shows:
 
 ## Open questions
 
+0. Migration: honour the old implicit binds for unconverted projects for a
+   while, or drop them at once with the start-up message?
+0. `~/.local/bin`: default grant (it is how most host tools are reached) or
+   per-project?
+0. How `readonly` distinguishes a plain read-only grant from an Eclipse
+   dependency project.
 1. After acceptance: re-launch a normal session automatically, ask, or exit?
 2. Should `.mcp.json` edits go through the same diff-and-confirm (it is a
    project file the agent could write anyway in a normal session)?

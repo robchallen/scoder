@@ -1,4 +1,11 @@
+import { unlink } from "node:fs/promises";
 import { error, info, warning } from "../utils/logger.ts";
+import {
+	installedXpraVersion,
+	meetsXpraMinimum,
+	parseXpraVersion,
+	XPRA_MIN_VERSION,
+} from "../utils/xpra-version.ts";
 
 // EM: --install-dependencies
 // EM: Implements dependency-installation; see design/features/xpra-gui-isolation.md
@@ -36,43 +43,13 @@ const SOURCES_BASE =
 // EM: than a bare non-zero exit.
 const DISTRO_PACKAGES = ["bubblewrap", "passt"];
 
-// EM: Pinned, not merely installed, and to an older release than the one the
-// EM: repository offers. xpra 6.5.4 added a duplicate-scroll-suppression block
-// EM: whose first line calls a method that does not exist on the client, so
-// EM: every discrete scroll event raises an AttributeError and prints a
-// EM: traceback on the client's UI thread. The effect is seconds of
-// EM: unresponsiveness per wheel notch — bad enough to make a GUI preset
-// EM: unusable, and reported as exactly that. Bisected to 6.5.4: 6.5.3 and
-// EM: every earlier version checked do not contain the block at all, and
-// EM: downgrading to 6.5.3 was confirmed to fix it on the reporting machine.
-// EM: See design/implementation/issues/
-// EM: xpra-client-crashes-on-every-discrete-scroll-event.md
-//
-// EM: A pin rather than a one-off version argument because an ordinary
-// EM: `apt upgrade` would otherwise put 6.5.4 straight back, silently, and the
-// EM: symptom gives no hint that xpra is involved. Priority 1001 is the
-// EM: specific thing that makes this work: above 1000 is what permits apt to
-// EM: *downgrade* an already-installed package, which a fresh scoder install
-// EM: on an existing 6.5.4 system needs.
-//
-// EM: The package list is explicit rather than a `xpra*` glob so that
-// EM: xpra-html5 is left alone — it versions independently (21-r1-1 here) and
-// EM: a glob would pin it to a version that does not exist. Pinning a package
-// EM: that is not installed is harmless; it only constrains it if it ever is.
-const XPRA_VERSION = "6.5.3-r0-1";
+// EM: Unpinned now. scoder used to pin xpra to exactly 6.5.3 (priority
+// EM: 1001, to allow downgrading an existing 6.5.4), because 6.5.4 broke
+// EM: wheel scrolling badly enough to make GUI presets unusable. 6.5.5 fixes
+// EM: it, so the current release is installed and checked against
+// EM: XPRA_MIN_VERSION instead, and the old pin file — which would otherwise
+// EM: hold the machine at 6.5.3 forever — is removed if scoder wrote it.
 const XPRA_PIN_PATH = "/etc/apt/preferences.d/scoder-xpra.pref";
-const XPRA_PINNED_PACKAGES = [
-	"xpra",
-	"xpra-client",
-	"xpra-client-gtk3",
-	"xpra-server",
-	"xpra-x11",
-	"xpra-codecs",
-	"xpra-codecs-extras",
-	"xpra-common",
-	"xpra-audio",
-	"xpra-audio-server",
-];
 
 // EM: --no-install-recommends, with xpra-x11 named explicitly to pull it back
 // EM: in. The `xpra` metapackage Depends on client, client-gtk3, server and
@@ -82,7 +59,7 @@ const XPRA_PINNED_PACKAGES = [
 // EM: is required (it is the seamless X11 server itself); the audio stack is
 // EM: not, and during the spike it produced nothing but a steady stream of
 // EM: pactl connection failures in the client log.
-const XPRA_PACKAGES = [`xpra=${XPRA_VERSION}`, `xpra-x11=${XPRA_VERSION}`];
+const XPRA_PACKAGES = ["xpra", "xpra-x11"];
 
 interface OsRelease {
 	id: string;
@@ -128,20 +105,35 @@ export async function installDependencies(): Promise<never> {
 	// EM: One apt-get transaction rather than one per package group, so a
 	// EM: conflict is resolved against the whole set and a failure leaves
 	// EM: nothing half-installed.
-	//
-	// EM: --allow-downgrades because a machine that already has 6.5.4 needs
-	// EM: exactly that, and apt refuses to go backwards without being told.
 	info(`Installing: ${packages.join(" ")}`);
 	const ok = await run([
 		"apt-get",
 		"install",
 		"-y",
 		"--no-install-recommends",
-		"--allow-downgrades",
 		...packages,
 	]);
+	if (!ok) {
+		process.exit(1);
+	}
 
-	process.exit(ok ? 0 : 1);
+	// EM: Checked after installing, not assumed: a repository that has not
+	// EM: published 6.5.5 for this release yet would otherwise leave a broken
+	// EM: xpra in place with a successful exit.
+	if (canAddXpraRepo) {
+		const version = await installedXpraVersion();
+		const parsed = version ? parseXpraVersion(version) : null;
+		if (!parsed || !meetsXpraMinimum(parsed)) {
+			error(
+				`installed xpra is ${version ?? "unreadable"}; scoder needs ${XPRA_MIN_VERSION} or newer`,
+			);
+			error("the xpra repository may not offer it for this release yet");
+			process.exit(1);
+		}
+		info(`${version} installed`);
+	}
+
+	process.exit(0);
 }
 
 // ### addXpraRepository
@@ -178,41 +170,33 @@ async function addXpraRepository(codename: string): Promise<boolean> {
 		return false;
 	}
 
-	return await writeXpraPin();
+	return await removeStaleXpraPin();
 }
 
-// ### writeXpraPin
-// Hold xpra at a version whose scroll handling works. See XPRA_VERSION.
-async function writeXpraPin(): Promise<boolean> {
-	const pin = [
-		"# Written by scoder --install-dependencies. Safe to delete, but read",
-		"# this first.",
-		"#",
-		"# xpra 6.5.4 raises an AttributeError on every discrete mouse-wheel",
-		"# event, because a block added in that release calls a client method",
-		"# that does not exist. Each raise prints a traceback on the client's",
-		"# UI thread, which stalls the GUI for seconds per notch and makes an",
-		"# IDE unusable. 6.5.3 does not contain the block at all.",
-		"#",
-		"# Without this pin an ordinary `apt upgrade` restores 6.5.4 silently,",
-		"# and nothing about the symptom suggests xpra is responsible.",
-		"#",
-		"# Priority above 1000 is what allows apt to downgrade an existing",
-		"# install. Remove this file once upstream has fixed it:",
-		"#   https://github.com/Xpra-org/xpra",
-		"",
-		`Package: ${XPRA_PINNED_PACKAGES.join(" ")}`,
-		`Pin: version ${XPRA_VERSION}`,
-		"Pin-Priority: 1001",
-		"",
-	].join("\n");
-
-	info(`Pinning xpra to ${XPRA_VERSION} in ${XPRA_PIN_PATH}`);
+// ### removeStaleXpraPin
+// Delete the pin earlier scoder versions wrote, so apt can install a fixed
+// xpra. Only a file scoder wrote: someone's own pin is reported, not removed.
+export async function removeStaleXpraPin(
+	path: string = XPRA_PIN_PATH,
+): Promise<boolean> {
+	const file = Bun.file(path);
+	if (!(await file.exists())) {
+		return true;
+	}
+	const text = await file.text();
+	if (!text.includes("Written by scoder --install-dependencies")) {
+		warning(`${path} exists and was not written by scoder`);
+		warning(
+			`it may hold xpra below ${XPRA_MIN_VERSION}; check it if the install fails`,
+		);
+		return true;
+	}
 	try {
-		await Bun.write(XPRA_PIN_PATH, pin);
+		await unlink(path);
+		info(`Removed the old xpra 6.5.3 pin ${path} (6.5.5 fixes the scroll bug)`);
 		return true;
 	} catch (err) {
-		error(`could not write ${XPRA_PIN_PATH}: ${err}`);
+		error(`could not remove ${path}: ${err}`);
 		return false;
 	}
 }

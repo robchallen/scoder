@@ -17,6 +17,12 @@ import {
 	toSandboxPath,
 } from "../utils/paths.ts";
 import { stageFile } from "../utils/session.ts";
+import {
+	installedXpraVersion,
+	meetsXpraMinimum,
+	parseXpraVersion,
+	XPRA_MIN_VERSION,
+} from "../utils/xpra-version.ts";
 
 // EM: Tool preset system for opencode, claude, copilot, and pi
 // EM: Implements tool-presets feature with tool-specific config/data bindings
@@ -651,7 +657,20 @@ async function requireGuiDisplay(): Promise<boolean> {
 		return requireHostX11();
 	}
 	if (await commandExists("xpra")) {
-		return true;
+		// EM: A floor, checked at the preflight because an xpra installed
+		// EM: any other way (or held back by an old pin) would otherwise run
+		// EM: the GUI with broken scrolling and nothing pointing at xpra.
+		const version = await installedXpraVersion();
+		const parsed = version ? parseXpraVersion(version) : null;
+		if (parsed && meetsXpraMinimum(parsed)) {
+			return true;
+		}
+		error(
+			`${version ?? "xpra (version unreadable)"} is too old; GUI presets need xpra ${XPRA_MIN_VERSION} or newer`,
+		);
+		error("6.5.4 breaks mouse-wheel scrolling; 6.5.5 fixes it");
+		error("run sudo scoder --install-dependencies to upgrade");
+		return false;
 	}
 	error("xpra not found in PATH");
 	error("GUI presets forward windows from a virtual display inside the");

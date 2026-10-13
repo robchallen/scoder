@@ -796,9 +796,11 @@ scoder: To discard: git worktree remove <worktree-path> && git branch -D scoder/
 - `git`
 - `ssh` (OpenSSH client) — only needed for `--allow-ssh`
 - `bun` (TypeScript runtime) - install via `curl -fsSL https://bun.sh/install | bash`
-- `xpra` 6.x on the host — only for GUI presets (`rstudio`, `eclipse`,
-  `vscode`, `vscodium`, `positron`, `webstorm`) without `--native-display`; `--install-dependencies` installs
-  it from xpra's own repository, pinned to 6.5.3 (6.5.4 breaks scrolling)
+- `xpra` **6.5.5 or newer** on the host — only for GUI presets (`rstudio`,
+  `eclipse`, `vscode`, `vscodium`, `positron`, `webstorm`, `jupyterlab`)
+  without `--native-display`; `--install-dependencies` installs it from
+  xpra's own repository. GUI sessions refuse an older xpra: 6.5.4 breaks
+  mouse-wheel scrolling, and 6.5.5 fixes it
 - The tool you want to sandbox (e.g. `opencode`, `copilot`, `claude`)
 - Tool-specific prerequisites must already be set up (and installed globally):
   - `claude`: install via `npm install -g @anthropic-ai/claude-code`
@@ -852,8 +854,10 @@ sudo ./scoder --install-dependencies
 ```
 
 Installs `bubblewrap` and `passt` via apt, and adds xpra's own apt
-repository (the distro's xpra is too old or absent) to install `xpra`,
-pinned to 6.5.3.
+repository (the distro's xpra is too old or absent) to install the current
+`xpra`, checking it is at least 6.5.5. It also removes the xpra 6.5.3 pin
+that earlier scoder versions wrote to `/etc/apt/preferences.d`, which would
+otherwise hold xpra back.
 
 ## Development
 

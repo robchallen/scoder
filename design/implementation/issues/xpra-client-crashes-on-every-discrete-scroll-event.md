@@ -1,12 +1,19 @@
 ---
 target-version: 2.6.0
 resolved-in: 2.6.0
-status: worked-around
+status: resolved
 tags: [issue, xpra, upstream, ide, rstudio]
 ---
 
 # xpra's Client Raises on Every Discrete Scroll Event
 
+> **Resolved upstream in xpra 6.5.5 (2026-10).** scoder now requires
+> xpra >= 6.5.5 — checked by `--install-dependencies` and by every GUI
+> session's preflight — instead of pinning 6.5.3, and removes the old pin
+> file it wrote. Verified: the dev container upgraded 6.5.4 → 6.5.5 through
+> `--install-dependencies`, and the GUI tests pass on it. The history below
+> is kept as written.
+>
 > **Not a scoder bug, and a regression.** Introduced in xpra **6.5.4**;
 > 6.5.3 and every earlier version checked are unaffected. Reproduced with
 > `design/prototype/xpra-no-sandbox.sh`, which runs the application under

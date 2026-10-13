@@ -59,6 +59,8 @@ localhost services by default.
 
 [HAS_FEATURE](./features/config-defaults.md) - `.sandbox/` files are seeded from the user's `~/.config/scoder/`, itself seeded from defaults shipped in the binary; `.sandbox/env` lists the host environment variables passed into the sandbox.
 
+[HAS_FEATURE](./features/clipboard-sharing.md) - Copying out of the sandbox: OSC 52 from the terminal works (the user's pty is bound at `/dev/tty`), xpra syncs GUI clipboards; `xclip`-style commands are planned via a one-way copy channel.
+
 ## Proposed Features (design documented, no implementation yet)
 
 [HAS_FEATURE](./features/secret-storage.md) - What sandboxed tools do about a keyring they cannot reach: verified mechanism, an in-memory default, and an opt-in path to persistent secrets. Design proposal only — nothing implements it yet.

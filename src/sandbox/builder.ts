@@ -1,5 +1,7 @@
+import { realpathSync } from "node:fs";
 import { mkdir, realpath } from "node:fs/promises";
 import { dirname } from "node:path";
+import { isatty } from "node:tty";
 import type { ProtectionConfig } from "../git/protection.ts";
 import {
 	defaultConfigText,
@@ -604,7 +606,7 @@ export async function buildBwrapCommand(
 	// EM: layer is the last step, so every bind, tmpfs, namespace and env
 	// EM: decision in this function keeps applying to the sandbox the tool
 	// EM: actually runs in.
-	return [...buildDevLayer(uid, gid, cmd), "--", ...cmd];
+	return [...buildDevLayer(uid, gid, cmd, detectHostTty()), "--", ...cmd];
 }
 
 // ### resolvConfDest
@@ -645,6 +647,28 @@ async function runSymlinkDirs(): Promise<string[]> {
 	return dest.startsWith("/run/") ? ["--dir", dirname(dest)] : [];
 }
 
+// ### detectHostTty
+// The terminal device scoder is attached to, as bwrap itself picks one for
+// /dev/console: stdout's, then stderr's, then stdin's — only a real tty
+// under /dev (a pty slave, or a virtual console), never a pipe or file.
+export function detectHostTty(
+	resolveFd: (fd: number) => string | null = (fd) => {
+		try {
+			return isatty(fd) ? realpathSync(`/proc/self/fd/${fd}`) : null;
+		} catch {
+			return null;
+		}
+	},
+): string | null {
+	for (const fd of [1, 2, 0]) {
+		const path = resolveFd(fd);
+		if (path && /^\/dev\/(pts\/\d+|tty[0-9]*)$/.test(path)) {
+			return path;
+		}
+	}
+	return null;
+}
+
 // ### buildDevLayer
 // [IMPLEMENTS](/design/features/sandbox-isolation.md)
 // [IMPLEMENTS](/design/features/network-isolation.md)
@@ -682,6 +706,7 @@ export function buildDevLayer(
 	uid: string,
 	gid: string,
 	innerCmd: string[],
+	hostTty: string | null = null,
 ): string[] {
 	const layer = [
 		"bwrap",
@@ -709,6 +734,26 @@ export function buildDevLayer(
 		// EM: between the preset's existence check and launch should fail
 		// EM: there, with the inner layer's error, not here.
 		layer.push("--dev-bind-try", src, dest);
+	}
+
+	// EM: The user's terminal at /dev/tty. --new-session (inner layer) leaves
+	// EM: the sandbox with no controlling terminal, so /dev/tty — "my
+	// EM: controlling terminal" — fails with ENXIO. Reported: pi's OSC 52
+	// EM: copy writes to /dev/tty and failed silently, so nothing copied
+	// EM: inside a sandbox reached the clipboard. Binding the actual pty
+	// EM: there makes `> /dev/tty` reach the terminal emulator again.
+	// EM:
+	// EM: Safe, measured under bwrap with both layers: it grants nothing new
+	// EM: — fds 0/1/2 are already open on this same terminal — and it does
+	// EM: not reopen TIOCSTI injection, which the kernel allows only on the
+	// EM: caller's *controlling* tty: with dev.tty.legacy_tiocsti=1, a host
+	// EM: process could inject into its own tty, while TIOCSTI through the
+	// EM: bound /dev/tty inside the sandbox failed EPERM. In this layer, not
+	// EM: the inner one: the inner bwrap sees only this layer's fresh devpts,
+	// EM: where the host's /dev/pts/N does not exist; it inherits the bind
+	// EM: through its --dev-bind /dev /dev.
+	if (hostTty) {
+		layer.push("--dev-bind", hostTty, "/dev/tty");
 	}
 
 	// EM: Without this the inner layer — and the tool inside it — survives

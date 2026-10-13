@@ -30,6 +30,7 @@ import {
 	buildEntrypointInvocation,
 	collectBindDests,
 	DEFAULT_IDE_SHUTDOWN,
+	detectHostTty,
 } from "../src/sandbox/builder.ts";
 import { getSandboxUsername } from "../src/sandbox/identity.ts";
 import {
@@ -718,6 +719,57 @@ test("dev-layer-hoists-only-nodes-under-dev: /dev itself and non-device binds ar
 	expect(layer.join(" ")).toContain("--dev-bind-try /dev/dri /dev/dri");
 	expect(layer.join(" ")).not.toContain("--dev-bind-try /dev /dev");
 	expect(layer.join(" ")).not.toContain("/home/u/devnull");
+});
+
+// ### Test: dev-tty-is-the-users-terminal
+// EM: --new-session leaves the sandbox no controlling terminal, so /dev/tty
+// EM: failed with ENXIO and OSC 52 copies written to it (pi's) vanished. The
+// EM: outer layer binds the user's actual pty at /dev/tty — after --dev,
+// EM: which would otherwise cover it — and only when there is a terminal.
+// EM: TIOCSTI stays refused (the kernel allows it only on the caller's
+// EM: controlling tty); measured by hand under bwrap, see builder.ts.
+test("dev-tty-is-the-users-terminal: the outer layer binds the host pty at /dev/tty when there is one, and detection prefers stdout", async () => {
+	const layer = buildDevLayer("1000", "1000", [], "/dev/pts/7").join(" ");
+	expect(layer).toContain("--dev-bind /dev/pts/7 /dev/tty");
+	expect(layer.indexOf("--dev /dev")).toBeLessThan(
+		layer.indexOf("--dev-bind /dev/pts/7 /dev/tty"),
+	);
+	expect(buildDevLayer("1000", "1000", [], null).join(" ")).not.toContain(
+		"/dev/tty",
+	);
+
+	const fds = (map: Record<number, string | null>) => (fd: number) =>
+		map[fd] ?? null;
+	expect(detectHostTty(fds({ 1: "/dev/pts/3", 0: "/dev/pts/9" }))).toBe(
+		"/dev/pts/3",
+	);
+	expect(detectHostTty(fds({ 1: null, 2: "/dev/pts/4" }))).toBe("/dev/pts/4");
+	expect(detectHostTty(fds({ 0: "/dev/tty2" }))).toBe("/dev/tty2");
+	expect(detectHostTty(fds({ 1: "/tmp/not-a-tty" }))).toBeNull();
+	expect(detectHostTty(fds({}))).toBeNull();
+
+	// A real dry-run, under a pseudo-terminal and without one.
+	const repoDir = await createTempRepo();
+	tempRepos.push(repoDir);
+	try {
+		const underPty = Bun.spawn(
+			["script", "-qec", `${SCODER_PATH} --dry-run -q /bin/bash`, "/dev/null"],
+			{ cwd: repoDir, env: process.env, stdout: "pipe", stderr: "pipe" },
+		);
+		await underPty.exited;
+		const ptyOut = (await new Response(underPty.stdout).text()).replace(
+			/\r/g,
+			"",
+		);
+		expect(flattenDryRun(ptyOut)).toMatch(
+			/--dev-bind \/dev\/pts\/\d+ \/dev\/tty/,
+		);
+
+		const piped = await runScoder(repoDir, ["--dry-run", "-q", "/bin/bash"]);
+		expect(piped).not.toMatch(/--dev-bind \S+ \/dev\/tty/);
+	} finally {
+		await cleanupRepo(repoDir);
+	}
 });
 
 // ### Test: system-read-only

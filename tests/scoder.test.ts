@@ -46,7 +46,11 @@ import {
 } from "../src/tools/new-workspace.ts";
 import { isSnapInstall, TOOL_PRESETS } from "../src/tools/presets.ts";
 import type { IdeShutdown } from "../src/types.ts";
-import { servesOpenAiModels } from "../src/utils/checks.ts";
+import {
+	BWRAP_SELF_TEST,
+	isUsernsRefusal,
+	servesOpenAiModels,
+} from "../src/utils/checks.ts";
 import { getRealHome } from "../src/utils/paths.ts";
 import { sessionPath } from "../src/utils/session.ts";
 import {
@@ -3496,6 +3500,25 @@ test("stale-xpra-pin-removed: scoder's old pin file is deleted, a foreign one is
 	} finally {
 		await Bun.spawn(["rm", "-rf", dir]).exited;
 	}
+});
+
+// ### Test: bwrap-self-test-is-nested
+// EM: The start-up self-test runs bwrap inside bwrap, as a session does —
+// EM: on Ubuntu 26.04 a single bwrap succeeded while the nested one every
+// EM: session needs was refused — and recognises both ways bwrap reports a
+// EM: refused user namespace.
+test("bwrap-self-test-is-nested: the self-test nests bwrap, and both refusal messages are recognised", () => {
+	expect(BWRAP_SELF_TEST.filter((a) => a === "bwrap").length).toBe(2);
+	expect(BWRAP_SELF_TEST).toContain("--dev");
+	expect(isUsernsRefusal("bwrap: setting up uid map: Permission denied")).toBe(
+		true,
+	);
+	expect(
+		isUsernsRefusal(
+			"bwrap: No permissions to create a new namespace, likely because the kernel does not allow non-privileged user namespaces.",
+		),
+	).toBe(true);
+	expect(isUsernsRefusal("bwrap: Can't find source path /nope")).toBe(false);
 });
 
 // ### Test: dry-run-uses-pasta

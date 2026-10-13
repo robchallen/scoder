@@ -7,6 +7,7 @@
 // Import test utilities from bun:test
 import { afterAll, expect, test } from "bun:test";
 import { readdirSync, readlinkSync, statSync } from "node:fs";
+import { removeStaleXpraPin } from "../src/cli/dependencies.ts";
 import {
 	addGitExclude,
 	refreshResolvConfSnapshot,
@@ -48,6 +49,10 @@ import type { IdeShutdown } from "../src/types.ts";
 import { servesOpenAiModels } from "../src/utils/checks.ts";
 import { getRealHome } from "../src/utils/paths.ts";
 import { sessionPath } from "../src/utils/session.ts";
+import {
+	meetsXpraMinimum,
+	parseXpraVersion,
+} from "../src/utils/xpra-version.ts";
 
 // ### Constants
 const TEST_BASE = "/tmp/scoder-test-repos";
@@ -3448,6 +3453,46 @@ test("gui-primary-output-goes-to-log: HARNESS_LOG sends the primary tool's outpu
 		});
 		await plain.exited;
 		expect(await new Response(plain.stdout).text()).toContain("to-stdout");
+	} finally {
+		await Bun.spawn(["rm", "-rf", dir]).exited;
+	}
+});
+
+// ### Test: xpra-version-floor
+// EM: 6.5.4 broke wheel scrolling; 6.5.5 fixed it, so scoder needs >= 6.5.5
+// EM: rather than pinning 6.5.3. Parsed from `xpra --version` and dpkg
+// EM: spellings alike.
+test("xpra-version-floor: 6.5.5 and newer pass, 6.5.4 and older are refused, unparseable output is null", () => {
+	const ok = (v: string) => meetsXpraMinimum(parseXpraVersion(v) as number[]);
+	expect(ok("xpra v6.5.5-r0")).toBe(true);
+	expect(ok("6.5.5-r0-1")).toBe(true);
+	expect(ok("xpra v6.6.0-r0")).toBe(true);
+	expect(ok("xpra v7.0")).toBe(true);
+	expect(ok("xpra v6.5.4-r0")).toBe(false);
+	expect(ok("xpra v6.5.3-r0")).toBe(false);
+	expect(ok("xpra v5.0.12")).toBe(false);
+	expect(parseXpraVersion("no version here")).toBeNull();
+});
+
+// ### Test: stale-xpra-pin-removed
+// EM: The 6.5.3 pin earlier scoder versions wrote would hold a machine below
+// EM: the floor forever, so --install-dependencies removes it — but only a
+// EM: pin scoder wrote; someone's own is reported and left alone.
+test("stale-xpra-pin-removed: scoder's old pin file is deleted, a foreign one is kept", async () => {
+	const dir = `/tmp/scoder-pin-${Date.now()}`;
+	const ours = `${dir}/ours.pref`;
+	const theirs = `${dir}/theirs.pref`;
+	try {
+		await Bun.write(
+			ours,
+			"# Written by scoder --install-dependencies. Safe to delete\nPackage: xpra\n",
+		);
+		await Bun.write(theirs, "Package: xpra\nPin: version 6.5.2*\n");
+		expect(await removeStaleXpraPin(ours)).toBe(true);
+		expect(await fileExists(ours)).toBe(false);
+		expect(await removeStaleXpraPin(theirs)).toBe(true);
+		expect(await fileExists(theirs)).toBe(true);
+		expect(await removeStaleXpraPin(`${dir}/missing.pref`)).toBe(true);
 	} finally {
 		await Bun.spawn(["rm", "-rf", dir]).exited;
 	}

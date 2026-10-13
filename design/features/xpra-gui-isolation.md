@@ -586,12 +586,16 @@ per-codename `.sources`, `apt-get update`) before installing
 five years stale on Ubuntu 24.04 and absent on 26.04. See
 `src/cli/dependencies.ts`.
 
-It installs **6.5.3 specifically**, and writes an apt pin holding it there,
-because 6.5.4 makes GUI presets unusable — every mouse-wheel notch stalls the
-UI for seconds. Without the pin an ordinary `apt upgrade` restores the broken
-version silently, and nothing about the symptom points at xpra. See
-`xpra-client-crashes-on-every-discrete-scroll-event` for the pin's exact
-contents and why priority 1001.
+It installs the current release and requires **6.5.5 or newer**: 6.5.4
+makes GUI presets unusable — every mouse-wheel notch stalls the UI for
+seconds — and 6.5.5 fixes it upstream. The floor is checked twice: after
+`--install-dependencies` installs xpra, and in every GUI session's
+preflight (`requireGuiDisplay`), which refuses an older xpra by name rather
+than starting a GUI with broken scrolling. Earlier scoder versions pinned
+6.5.3 instead (an apt preference at priority 1001, to allow downgrading an
+existing 6.5.4); `--install-dependencies` now removes that pin file if
+scoder wrote it, since it would hold the machine below the floor. See
+`xpra-client-crashes-on-every-discrete-scroll-event`.
 
 ## Native mode: the warned opt-out
 

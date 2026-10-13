@@ -195,18 +195,40 @@ Structured, short, and grounded in what the project shows:
    `copilot -i "<prompt>"`. Presets gain `initialPromptArgs(prompt)`
    returning these; the `AGENTS.md` note stays the fallback for an agent
    without one.
-6. **Project only.** `--configure` never edits `~/.config/scoder/`. The
-   per-nature defaults (today's `src/defaults/`) move into the skill.
-   **`~/.config/scoder/` becomes a local extension to the skill:** a
-   markdown file the user edits to supplement it — additional defaults
-   they want and the circumstances they want them in (e.g. local rules
-   about which MCP servers to activate for which kind of project). The
-   configure session consults it (or scoder appends it to the injected
-   skill in the sandbox). It replaces the current file-by-file seeding of
-   `.sandbox/` from `~/.config/scoder/` (`config-defaults.md`), which this
-   work retires.
+6. **Project only.** `--configure` never edits `~/.config/scoder/`; it
+   reads it — as a directory of **recipes** (next section). This retires
+   today's file-by-file seeding of `.sandbox/` from `~/.config/scoder/`
+   (`config-defaults.md`).
 7. **The skill is the arbiter of the defaults table.** No generated or
    code-side table to keep in step; the skill owns it.
+
+## Recipes: `~/.config/scoder/` (decided 2026-10-14)
+
+`~/.config/scoder/` becomes a directory of **task-specific sandbox
+recipes**: any number of markdown files, each describing a kind of project
+or situation and what its sandbox needs.
+
+- **Shipped starter set** in `src/defaults/` (replacing today's `env`,
+  `readonly`, `readwrite`, `ports` there): e.g. a base recipe (the
+  protected-path list, the always-useful env names), Java/Maven, R,
+  Python/uv, Node, Rust, LaTeX, and MCP recipes (an IDE's server, a local
+  LLM port).
+- **Seeding:** any shipped recipe missing from `~/.config/scoder/` (by file
+  name) is copied there; existing files are never overwritten, so the user's
+  edits stand. The user adds their own recipes alongside — local rules,
+  their MCP services, house conventions.
+- **In the configure session only,** `~/.config/scoder/` is bound read-only
+  into the sandbox, and the `configure-scoder-sandbox` skill tells the agent
+  to read **all** the markdown files in it before proposing anything. No
+  fixed naming or format is required — the agent reads prose.
+- **Suggested format** for the shipped recipes (aligned with skill files):
+  a title, then sections **When to use**, **Env**, **Ports**, **Read-only
+  binds**, **Read-write binds** — the last four mapping directly onto
+  `.sandbox/env`, `ports`, `readonly`, `readwrite`.
+- The skill itself keeps the procedure (look, ask, map, explain, review);
+  the recipes carry the per-nature knowledge. That is also how decision 7
+  holds — the skill is the arbiter of the defaults, through the recipes it
+  reads.
 
 ## Automatic configure
 
@@ -218,8 +240,9 @@ once the user accepts.
 
 ## Open questions
 
-1. Exact shape of the `~/.config/scoder/` extension: one markdown file or
-   several, and appended to the skill vs consulted on demand.
+1. The starter recipe set: which recipes ship first, and the base recipe's
+   exact contents (today's `src/defaults/readonly` and `env` are its
+   natural starting point).
 
 ## Appendix: everything scoder binds or sets today, for review
 

@@ -72,12 +72,20 @@ tool is launched, not from the project — plus anything `--bind NAME` adds.
 ### Consequences in the file formats
 
 - **`readonly`'s `$HOME/...` lines are currently "Eclipse dependency
-  projects"** as well as read-only binds: each is collected into
-  `dependencyDirs` and passed to Eclipse as `-importProject`, and the plugin
-  then searches it recursively for `.project` files. Moving `~/R` or
-  `~/.m2` there would make them Eclipse imports (and slow scans). The
-  format needs to tell the two apart — e.g. a marker on dependency-project
-  lines, or a separate `dependencies` file — before anything moves.
+  projects"** as well as read-only binds: each goes into `dependencyDirs`
+  and on to Eclipse as `-importProject`. **Decided (2026-10-13): no separate
+  marker — decide by inspection.** In an Eclipse session only (no other
+  preset uses dependency dirs, so no other session pays for a scan), each
+  `readonly` `$HOME/...` grant is passed to `-importProject` only if a
+  `.project` exists under it: `find` pruning hidden directories and
+  stopping at the first hit (`-quit`; the plugin does its own recursive
+  import from there), perhaps with a depth cap. `.project`, not `pom.xml`
+  or `build.gradle`: the import-projects plugin imports only `.project`
+  files, so a Maven/Gradle tree without one would import nothing — worth a
+  start-up message instead ("found a Maven project the plugin cannot import
+  yet"). Detecting `pom.xml`/Gradle becomes useful if the plugin gains m2e
+  import. Overlap is rare anyway: `~/.m2` is a `readwrite` grant (never a
+  dependency dir), and `~/R` belongs only to R projects.
 - **Files, not only directories.** `readonly`'s `$HOME/...` lines must
   point at an existing directory today; `~/.gitconfig`, `~/.Rprofile`,
   `~/.npmrc` and `mimeapps.list` are files. Single-file binds need
@@ -177,8 +185,6 @@ Structured, short, and grounded in what the project shows:
    while, or drop them at once with the start-up message?
 0. `~/.local/bin`: default grant (it is how most host tools are reached) or
    per-project?
-0. How `readonly` distinguishes a plain read-only grant from an Eclipse
-   dependency project.
 1. After acceptance: re-launch a normal session automatically, ask, or exit?
 2. Should `.mcp.json` edits go through the same diff-and-confirm (it is a
    project file the agent could write anyway in a normal session)?

@@ -23,6 +23,12 @@ import { stageDir } from "../utils/session.ts";
 /** The files whose absence makes an interactive start configure first. */
 export const CONFIG_KEY_FILES = ["env", "readonly", "readwrite", "ports"];
 
+// EM: .sandbox/version marks a config written for explicit grants (toolchain
+// EM: paths granted per project rather than bound for everyone). A project
+// EM: with config but no marker predates that, and is told so at start-up.
+export const CONFIG_FORMAT_FILE = "version";
+export const CONFIG_FORMAT = "2";
+
 export const CONFIGURE_PROMPT =
 	"This is a scoder configure session. Help me configure scoder's sandbox for this project using the configure-scoder-sandbox skill: read my recipes, look at the project, ask me what you cannot see, then write the minimal .sandbox/ files (and .mcp.json entries if needed). When you are done, tell me to exit so scoder can show me the changes.";
 
@@ -39,6 +45,21 @@ export async function missingKeyFiles(projectRoot: string): Promise<string[]> {
 		}
 	}
 	return missing;
+}
+
+// ### predatesExplicitGrants
+// True for a project with .sandbox/ config files but no format marker.
+export async function predatesExplicitGrants(
+	projectRoot: string,
+): Promise<boolean> {
+	if (
+		await Bun.file(
+			`${projectRoot}/${CONFIG_DIR}/${CONFIG_FORMAT_FILE}`,
+		).exists()
+	) {
+		return false;
+	}
+	return (await missingKeyFiles(projectRoot)).length < CONFIG_KEY_FILES.length;
 }
 
 // ### stageWorkingCopy
@@ -182,6 +203,7 @@ export async function applyWorkingCopy(
 			await Bun.write(path, `# ${CONFIG_DIR}/${name} — nothing granted\n`);
 		}
 	}
+	await Bun.write(`${real}/${CONFIG_FORMAT_FILE}`, `${CONFIG_FORMAT}\n`);
 }
 
 // ### relaunchArgs

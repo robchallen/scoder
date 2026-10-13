@@ -51,7 +51,11 @@ import {
 	isManagedWorkspacePath,
 	resetManagedWorkspace,
 } from "../src/tools/new-workspace.ts";
-import { isSnapInstall, TOOL_PRESETS } from "../src/tools/presets.ts";
+import {
+	eclipseImportableDirs,
+	isSnapInstall,
+	TOOL_PRESETS,
+} from "../src/tools/presets.ts";
 import type { IdeShutdown } from "../src/types.ts";
 import {
 	BWRAP_SELF_TEST,
@@ -2998,12 +3002,26 @@ test("scoder-skill-injected-into-agents-snapshot: the bundled skill is added to 
 		).toBe(bundled);
 		expect(await dirExists(`${bare}/.agents`)).toBe(false);
 
-		// The user's own copy wins.
+		// The user's own copy wins — when the project grants it (skills in
+		// ~/.agents are granted per skill since explicit grants).
 		const own = `/tmp/scoder-skillhome-${Date.now()}-b`;
 		homes.push(own);
 		await Bun.write(
 			`${own}/.agents/skills/working-in-a-scoder-sandbox/SKILL.md`,
 			"mine",
+		);
+		const ungranted = await runScoderRaw(repoDir, ["--dry-run", "/bin/bash"], {
+			HOME: own,
+			SCODER_KEEP_SESSION_TMP: "1",
+		});
+		expect(
+			await Bun.file(
+				snapshotSkill(flattenDryRun(ungranted.stdout), own),
+			).text(),
+		).toBe(bundled);
+		await Bun.write(
+			`${repoDir}/.sandbox/readonly`,
+			"$HOME/.agents/skills/working-in-a-scoder-sandbox\n",
 		);
 		const run2 = await runScoderRaw(repoDir, ["--dry-run", "/bin/bash"], {
 			HOME: own,
@@ -3551,9 +3569,11 @@ test("no-worktree-mode: --no-worktree bypasses worktree creation", async () => {
 // EM: ~/.local/share/uv/tools/<tool>/bin, whose scripts' interpreter is the
 // EM: venv's python, itself a link into ~/.local/share/uv/python. Neither
 // EM: was bound, and the launcher was copied rather than linked — reported as
-// EM: `hf: cannot execute: required file not found`. Both trees are bound
-// EM: read-only now, and the symlink survives into the snapshot as a link.
-test("uv-tool-environments-bound: uv tools and managed pythons are bound read-only, and ~/.local/bin links into them stay links", async () => {
+// EM: `hf: cannot execute: required file not found`. Since explicit grants,
+// EM: neither tree nor the entry is there unless .sandbox/readonly grants
+// EM: them; granted, the trees are bound read-only and the symlink survives
+// EM: into the snapshot as a link.
+test("uv-tool-environments-bound: granted uv tools and managed pythons are bound read-only, and ~/.local/bin links into them stay links; ungranted, nothing", async () => {
 	const repoDir = await createTempRepo();
 	tempRepos.push(repoDir);
 	const home = `/tmp/scoder-uvhome-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
@@ -3573,6 +3593,22 @@ test("uv-tool-environments-bound: uv tools and managed pythons are bound read-on
 			`${home}/.local/bin/hf`,
 		]).exited;
 
+		const bare = flattenDryRun(
+			(
+				await runScoderRaw(repoDir, ["--dry-run", "/bin/bash"], {
+					HOME: home,
+				})
+			).stdout,
+		);
+		expect(bare).not.toContain(tools);
+		expect(bare).not.toMatch(
+			new RegExp(`--ro-bind\\s+\\S+\\s+${home}/\\.local/bin\\s`),
+		);
+
+		await Bun.write(
+			`${repoDir}/.sandbox/readonly`,
+			"$HOME/.local/bin/hf\n$HOME/.local/share/uv/tools\n$HOME/.local/share/uv/python\n",
+		);
 		const run = await runScoderRaw(repoDir, ["--dry-run", "/bin/bash"], {
 			HOME: home,
 			SCODER_KEEP_SESSION_TMP: "1",
@@ -8458,6 +8494,7 @@ test("configure-validate-and-apply: readwrite outside $HOME and missing readonly
 			"ports",
 			"readonly",
 			"readwrite",
+			"version",
 		]);
 	} finally {
 		await Bun.spawn(["rm", "-rf", dir]).exited;
@@ -8507,3 +8544,122 @@ test("configure-skill-injected: both bundled skills are in the ~/.agents snapsho
 function dirnameOf(path: string): string {
 	return path.slice(0, path.lastIndexOf("/"));
 }
+
+// ### Test: toolchain-paths-granted-not-implicit
+// EM: Toolchain paths are bound only when a project grants them: ~/.m2,
+// EM: ~/R, ~/.rustup are absent from a session with no grants, and a
+// EM: readwrite $HOME/.m2 grant binds it read-write rather than being
+// EM: refused as an overlap with a fixed bind.
+test("toolchain-paths-granted-not-implicit: ~/.m2, ~/R, ~/.rustup are not bound unless granted; a granted ~/.m2 is read-write", async () => {
+	const repoDir = await createTempRepo();
+	tempRepos.push(repoDir);
+	const home = `/tmp/scoder-grants-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
+	try {
+		for (const dir of [".m2", "R", ".rustup"]) {
+			await Bun.write(`${home}/${dir}/.keep`, "");
+		}
+		const bare = flattenDryRun(
+			await runScoder(repoDir, ["--dry-run", "/bin/bash"], { HOME: home }),
+		);
+		for (const dir of [".m2", "R", ".rustup"]) {
+			expect(bare).not.toMatch(
+				new RegExp(`--(ro-)?bind\\s+${home}/${dir.replace(".", "\\.")}\\s`),
+			);
+		}
+
+		await Bun.write(`${repoDir}/.sandbox/readwrite`, "$HOME/.m2\n");
+		await Bun.write(`${repoDir}/.sandbox/readonly`, "$HOME/R\n");
+		const granted = flattenDryRun(
+			await runScoder(repoDir, ["--dry-run", "/bin/bash"], { HOME: home }),
+		);
+		expect(granted).toMatch(
+			new RegExp(`--bind\\s+${home}/\\.m2\\s+${home}/\\.m2`),
+		);
+		expect(granted).toMatch(new RegExp(`--ro-bind\\s+${home}/R\\s+${home}/R`));
+		expect(granted).not.toContain(`${home}/.rustup`);
+	} finally {
+		await Bun.spawn(["rm", "-rf", home]).exited;
+		await cleanupRepo(repoDir);
+	}
+});
+
+// ### Test: local-bin-granted-per-entry
+// EM: The ~/.local/bin snapshot holds only granted entries, plus the
+// EM: session's own tool when it is installed there; nothing granted and
+// EM: no own tool there, no snapshot at all.
+test("local-bin-granted-per-entry: only granted ~/.local/bin entries (and the session's own tool) are in the snapshot", async () => {
+	const repoDir = await createTempRepo();
+	tempRepos.push(repoDir);
+	const home = `/tmp/scoder-lbgrant-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
+	const snapshotOf = (out: string) =>
+		flattenDryRun(out).match(
+			new RegExp(
+				`--ro-bind\\s+(/tmp/scoder-[0-9a-f]{8}${home}/\\.local/bin)\\s+${home}/\\.local/bin`,
+			),
+		)?.[1];
+	const kept: string[] = [];
+	try {
+		for (const name of ["one", "two", "mytool"]) {
+			await Bun.write(`${home}/.local/bin/${name}`, "#!/bin/sh\ntrue\n");
+			await Bun.spawn(["chmod", "+x", `${home}/.local/bin/${name}`]).exited;
+		}
+		const env = {
+			HOME: home,
+			PATH: `${home}/.local/bin:${process.env.PATH}`,
+			SCODER_KEEP_SESSION_TMP: "1",
+		};
+
+		const none = await runScoderRaw(repoDir, ["--dry-run", "/bin/bash"], env);
+		expect(snapshotOf(none.stdout)).toBeUndefined();
+
+		await Bun.write(`${repoDir}/.sandbox/readonly`, "$HOME/.local/bin/one\n");
+		const run = await runScoderRaw(repoDir, ["--dry-run", "mytool"], env);
+		expect(run.code).toBe(0);
+		const snap = snapshotOf(run.stdout);
+		expect(snap).toBeDefined();
+		kept.push(snap as string);
+		expect(readdirSync(snap as string).sort()).toEqual(["mytool", "one"]);
+	} finally {
+		for (const path of kept) await removeSessionRoot(path);
+		await Bun.spawn(["rm", "-rf", home]).exited;
+		await cleanupRepo(repoDir);
+	}
+});
+
+// ### Test: eclipse-imports-only-dirs-with-a-project-file
+// EM: A read-only $HOME grant is an Eclipse dependency project only if a
+// EM: .project is found under it (hidden directories pruned).
+test("eclipse-imports-only-dirs-with-a-project-file: grants without a .project, or with one only under a hidden dir, are not imported", async () => {
+	const base = `${TEST_BASE}/eclipse-imports-${Date.now()}`;
+	try {
+		await Bun.write(`${base}/withproj/sub/.project`, "");
+		await Bun.write(`${base}/hidden/.cache/.project`, "");
+		await Bun.write(`${base}/maven/pom.xml`, "");
+		await Bun.write(`${base}/plain/file`, "");
+		const dirs = ["withproj", "hidden", "maven", "plain"].map(
+			(d) => `${base}/${d}`,
+		);
+		expect(await eclipseImportableDirs(dirs)).toEqual([`${base}/withproj`]);
+	} finally {
+		await Bun.spawn(["rm", "-rf", base]).exited;
+	}
+});
+
+// ### Test: config-predating-grants-warned
+// EM: A project with .sandbox/ config but no .sandbox/version marker is
+// EM: told at start-up that its config predates explicit grants.
+test("config-predating-grants-warned: config without .sandbox/version gets the start-up message; with it, none", async () => {
+	const repoDir = await createTempRepo();
+	tempRepos.push(repoDir);
+	try {
+		await Bun.write(`${repoDir}/.sandbox/readonly`, ".github/\n");
+		const old = await runScoderRaw(repoDir, ["--dry-run", "/bin/bash"]);
+		expect(old.stderr).toContain("predates explicit grants");
+
+		await Bun.write(`${repoDir}/.sandbox/version`, "2\n");
+		const current = await runScoderRaw(repoDir, ["--dry-run", "/bin/bash"]);
+		expect(current.stderr).not.toContain("predates explicit grants");
+	} finally {
+		await cleanupRepo(repoDir);
+	}
+});

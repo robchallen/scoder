@@ -10,11 +10,15 @@ tags: [feature, tools, configuration]
 
 Selective read-only bind mounts from the host home directory into the
 sandbox's own `$HOME` (the real host `$HOME` — see `path-mirroring`) for
-development tools and configuration that the sandboxed process needs:
-`.gitconfig`, `.local/bin`, `.cargo/bin`, `.rustup`, mise shims and config,
-R packages and profile, `.m2` (Maven), `.npmrc`, `.pypirc`, `.config/gh`,
-`.local/share/fonts`, `.config/mimeapps.list`,
+configuration every session needs: `.gitconfig`, `.config/gh`,
+`.local/share/fonts`, `.config/mimeapps.list`, GTK themes and icons,
 `.config/worktrunk/config.toml`.
+
+Toolchain paths — `.cargo/bin`, `.rustup`, mise shims and config, R
+packages and profile, `.m2`, uv's tools and pythons, `.npmrc`, `.pypirc` —
+and `.local/bin` entries used to be bound here for every session. Since
+[configure mode](./configure-mode.md) they are granted per project in
+`.sandbox/readonly`/`readwrite` instead.
 
 ## Motivation
 

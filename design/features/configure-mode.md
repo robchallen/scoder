@@ -58,6 +58,32 @@ never writes the real files.
   written as an all-comment stub so the next start does not configure
   again, and the original command line is re-run without `--configure`.
 
+## Explicit grants
+
+What a configure session writes is what a session gets: toolchain paths
+are no longer bound for everyone.
+
+- **Granted, not implicit:** `~/.m2`, `~/R`, `~/.Rprofile`, `~/.rustup`,
+  `~/.cargo/bin`, mise (`~/.local/share/mise`, its shims, `~/.config/mise`),
+  uv's tools and pythons, `.npmrc`, `.pypirc` — each only via
+  `.sandbox/readonly` or `readwrite`, and no longer refused there as an
+  overlap with a fixed bind.
+- **`~/.local/bin`** per entry (`$HOME/.local/bin/<name>`) or whole; the
+  session's own tool and IDE, when installed there, are always included.
+  Symlinks resolve into granted paths (e.g. a uv tool's venv).
+- **`~/.agents`** per skill (`$HOME/.agents/skills/<name>`) or whole;
+  scoder's own skills always.
+- **Always bound:** system and sandbox mechanics, fonts, themes, icons, GTK
+  config, `mimeapps.list`, `~/.gitconfig`, `~/.config/gh`, worktrunk config,
+  the presets' own paths, and `--bind`.
+- **Eclipse dependency projects.** A read-only `$HOME` grant is passed to
+  `-importProject` only if a `.project` is found under it (`find`, hidden
+  directories pruned, depth 4, first hit); a Maven/Gradle tree without one
+  gets a message instead.
+- **Format marker.** Applying a configure session writes
+  `.sandbox/version`. A project with config files but no marker predates
+  explicit grants and gets a start-up message to run `--configure`.
+
 ## Implementation
 
 [IMPLEMENTED_BY](/src/configure/configure.ts)
@@ -73,9 +99,12 @@ embedded via `src/skills.ts`, the recipes via `src/recipes.ts`.
 `configure-not-automatic-without-a-terminal`,
 `configure-review-applies-only-on-confirm`, `configure-validate-and-apply`,
 `configure-relaunch-args`, `configure-skill-injected`,
-`user-config-seeds-starter-recipes` — see
+`user-config-seeds-starter-recipes`, `toolchain-paths-granted-not-implicit`,
+`local-bin-granted-per-entry`,
+`eclipse-imports-only-dirs-with-a-project-file`,
+`config-predating-grants-warned` — see
 [validation-suite](../test-scripts/validation-suite.md) cases 138 and
-165-171.
+165-175.
 
 [HAS_FEATURE](./config-defaults.md)
 [HAS_FEATURE](./agents-skills-snapshot.md)

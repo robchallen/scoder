@@ -11,6 +11,7 @@ import {
 	CONFIGURE_NOTE,
 	CONFIGURE_PROMPT,
 	missingKeyFiles,
+	predatesExplicitGrants,
 	readMcpJson,
 	relaunchArgs,
 	reviewConfigure,
@@ -213,6 +214,14 @@ async function main(): Promise<void> {
 		toolArgs = [...toolArgs, ...preset.initialPromptArgs(CONFIGURE_PROMPT)];
 	}
 	const mcpBefore = configureMode ? await readMcpJson(process.cwd()) : null;
+	if (!configureMode && (await predatesExplicitGrants(process.cwd()))) {
+		warning(
+			"This project's .sandbox/ config predates explicit grants: toolchain paths (~/.m2, ~/R, mise, uv, rustup, cargo, ~/.local/bin, ~/.agents skills) are no longer bound unless granted.",
+		);
+		warning(
+			`Run: scoder --configure ${preset?.initialPromptArgs ? toolName : "claude"}`,
+		);
+	}
 
 	// EM: Effective display mode, decided once, before any preset's
 	// EM: validate()/configBinds() runs: a typed flag or its env spelling,
@@ -506,13 +515,19 @@ async function main(): Promise<void> {
 			companionIde,
 		);
 
-		const agentsSnapshotBind = await setupAgentsSnapshot();
+		const agentsSnapshotBind = await setupAgentsSnapshot(
+			protectionConfig.skillGrants,
+		);
 		if (agentsSnapshotBind && protectionConfig) {
 			protectionConfig.safeBinds.push(agentsSnapshotBind);
 		}
 
 		const localBinBind = await setupLocalBinSnapshot(
-			toolBinds.map((bind) => bind.dest),
+			[...toolBinds.map((bind) => bind.dest), ...protectionConfig.homeGrants],
+			[
+				...protectionConfig.localBinGrants,
+				...ownLocalBinEntries(realHome, hostToolBin, hostIdeBin),
+			],
 		);
 		if (localBinBind && protectionConfig) {
 			protectionConfig.safeBinds.push(localBinBind);
@@ -570,14 +585,27 @@ async function main(): Promise<void> {
 			configureMode ? CONFIGURE_NOTE : undefined,
 		);
 
-		const agentsSnapshotBind = await setupAgentsSnapshot();
+		// EM: A configure session sees ~/.agents and ~/.local/bin whole (and
+		// EM: the latter unresolved, so symlinks can be read) to grant from.
+		const agentsSnapshotBind = await setupAgentsSnapshot(
+			configureMode ? ["*"] : protectionConfig.skillGrants,
+		);
 		if (agentsSnapshotBind && protectionConfig) {
 			protectionConfig.safeBinds.push(agentsSnapshotBind);
 		}
 
-		const localBinBind = await setupLocalBinSnapshot(
-			toolBinds.map((bind) => bind.dest),
-		);
+		const localBinBind = configureMode
+			? await realLocalBinBind()
+			: await setupLocalBinSnapshot(
+					[
+						...toolBinds.map((bind) => bind.dest),
+						...protectionConfig.homeGrants,
+					],
+					[
+						...protectionConfig.localBinGrants,
+						...ownLocalBinEntries(realHome, hostToolBin, hostIdeBin),
+					],
+				);
 		if (localBinBind && protectionConfig) {
 			protectionConfig.safeBinds.push(localBinBind);
 		}
@@ -1208,4 +1236,26 @@ async function isDir(path: string): Promise<boolean> {
 	} catch {
 		return false;
 	}
+}
+
+async function realLocalBinBind(): Promise<BindMount | null> {
+	const dir = `${getRealHome()}/.local/bin`;
+	return (await isDir(dir))
+		? { type: "ro-bind", source: dir, dest: dir }
+		: null;
+}
+
+// ### ownLocalBinEntries
+// EM: The session's own tool and companion IDE, when installed in
+// EM: ~/.local/bin (Claude Code's native installer puts itself there), are
+// EM: always in the snapshot: like the presets' own config paths, they follow
+// EM: the tool rather than needing a grant.
+function ownLocalBinEntries(
+	realHome: string,
+	...bins: (string | null)[]
+): string[] {
+	const localBin = `${realHome}/.local/bin/`;
+	return bins.flatMap((bin) =>
+		bin?.startsWith(localBin) ? [bin.slice(localBin.length).split("/")[0]] : [],
+	);
 }

@@ -11,7 +11,7 @@ import type { LiveOverlay } from "../sandbox/overlays.ts";
 import { renderOverlay } from "../sandbox/overlays.ts";
 import { SCODER_SKILLS } from "../skills.ts";
 import type { BindMount } from "../types.ts";
-import { error, info } from "../utils/logger.ts";
+import { error, info, warning } from "../utils/logger.ts";
 import {
 	getRealHome,
 	isUnderAny,
@@ -57,29 +57,24 @@ import {
 // the actual fix the user wanted), so it now correctly *is* in this list.
 // Must be kept in sync with buildExtraBinds, same caveat
 // sandboxMountPrefixes above already carries for a different check.
+//
+// EM: Toolchain paths (~/.m2, ~/R, mise, uv, rustup, cargo, .npmrc, .pypirc)
+// EM: are no longer here: they are not bound unless a project grants them
+// EM: in .sandbox/readonly or readwrite (see design/features/configure-mode.md),
+// EM: so a grant of one is not an overlap. ~/.local/bin and ~/.agents stay:
+// EM: grants under them are taken by the snapshots, before this check.
 function fixedBindDestinations(realHome: string): string[] {
 	return [
 		`${realHome}/.agents`,
-		`${realHome}/.cargo/bin`,
 		`${realHome}/.claude`,
 		`${realHome}/.claude.json`,
 		`${realHome}/.config/gh`,
 		`${realHome}/.config/mimeapps.list`,
-		`${realHome}/.config/mise`,
 		`${realHome}/.config/worktrunk/config.toml`,
 		`${realHome}/.copilot`,
 		`${realHome}/.gitconfig`,
 		`${realHome}/.local/bin`,
 		`${realHome}/.local/share/fonts`,
-		`${realHome}/.local/share/mise`,
-		`${realHome}/.local/share/uv/tools`,
-		`${realHome}/.local/share/uv/python`,
-		`${realHome}/.m2`,
-		`${realHome}/.npmrc`,
-		`${realHome}/.pypirc`,
-		`${realHome}/.Rprofile`,
-		`${realHome}/.rustup`,
-		`${realHome}/R`,
 	];
 }
 
@@ -92,25 +87,15 @@ function fixedBindDestinations(realHome: string): string[] {
 // prefix that is NOT actually bound makes the check claim resolvability it
 // cannot deliver, producing a dangling symlink inside the sandbox — which is
 // why the entries are the precise bound paths rather than their parents.
-// Preset-specific destinations are dynamic and passed in separately. The
+// Preset-specific destinations and the project's own $HOME grants are
+// dynamic and passed in separately. The
 // worktree tree itself isn't listed here — isSandboxResolvable short-circuits
 // on it directly via isWorktreeMountPath, since (unlike this fixed list) its
 // location is user/project-dependent.
 function sandboxMountPrefixes(realHome: string): string[] {
 	return [
 		`${realHome}/.local/bin`,
-		`${realHome}/.local/share/mise`,
-		`${realHome}/.local/share/uv/tools`,
-		`${realHome}/.local/share/uv/python`,
-		`${realHome}/.config/mise`,
 		`${realHome}/.config/gh`,
-		`${realHome}/.cargo/bin`,
-		`${realHome}/.rustup`,
-		`${realHome}/R`,
-		`${realHome}/.Rprofile`,
-		`${realHome}/.m2`,
-		`${realHome}/.npmrc`,
-		`${realHome}/.pypirc`,
 		`${realHome}/.gitconfig`,
 	];
 }
@@ -155,6 +140,14 @@ export interface ProtectionConfig {
 	// Host env var names passed into the sandbox when set: .sandbox/env's
 	// entries. Replaces the list builder.ts used to hardcode.
 	envPassThrough: string[];
+	// .sandbox/readonly grants under ~/.local/bin and ~/.agents/skills: entry
+	// and skill names, or "*" for the whole directory. Taken by the
+	// snapshots rather than bound, since scoder binds those paths itself.
+	localBinGrants: string[];
+	skillGrants: string[];
+	// The sandbox destinations of every $HOME grant, read-only and
+	// read-write, for resolving ~/.local/bin symlinks into them.
+	homeGrants: string[];
 }
 
 // ### setupProtection
@@ -169,9 +162,10 @@ export async function setupProtection(
 	const safeBinds: BindMount[] = [];
 	const dirs: string[] = [];
 	const dependencyDirs: string[] = [];
-	// EM: prepareConfigDir has already copied the user's default in, so a
-	// EM: missing file means it could not be written; the shipped default
-	// EM: applies rather than no protection at all.
+	const localBinGrants: string[] = [];
+	const skillGrants: string[] = [];
+	// EM: A missing file reads as the shipped default rather than no
+	// EM: protection at all.
 	const content = await readConfigText(sourceDir, "readonly");
 
 	const lines = content.split("\n");
@@ -182,6 +176,9 @@ export async function setupProtection(
 		}
 
 		if (line.startsWith("$HOME/")) {
+			if (snapshotGrant(line.trim(), localBinGrants, skillGrants)) {
+				continue;
+			}
 			await registerAgentreadonlyHomeBind(
 				line,
 				safeBinds,
@@ -242,7 +239,57 @@ export async function setupProtection(
 		dirs,
 		dependencyDirs,
 		envPassThrough: await readEnvPassThrough(sourceDir),
+		localBinGrants,
+		skillGrants,
+		homeGrants: [...dependencyDirs, ...(await readWriteGrants(sourceDir))],
 	};
+}
+
+// ### snapshotGrant
+// A .sandbox/readonly line under ~/.local/bin or ~/.agents is a grant to
+// the snapshot scoder builds there, not a bind of its own: `$HOME/.local/bin`
+// (everything) or `$HOME/.local/bin/<name>`; `$HOME/.agents` (everything)
+// or `$HOME/.agents/skills/<name>`. True if the line was one.
+function snapshotGrant(
+	line: string,
+	localBinGrants: string[],
+	skillGrants: string[],
+): boolean {
+	const rel = line.slice("$HOME/".length).replace(/\/+$/, "");
+	if (rel === ".local/bin") {
+		localBinGrants.push("*");
+		return true;
+	}
+	if (rel.startsWith(".local/bin/")) {
+		localBinGrants.push(rel.slice(".local/bin/".length).split("/")[0]);
+		return true;
+	}
+	if (rel === ".agents" || rel === ".agents/skills") {
+		skillGrants.push("*");
+		return true;
+	}
+	if (rel.startsWith(".agents/skills/")) {
+		skillGrants.push(rel.slice(".agents/skills/".length).split("/")[0]);
+		return true;
+	}
+	if (rel.startsWith(".agents/")) {
+		error(
+			`.sandbox/readonly: grant ~/.agents whole or by skill ($HOME/.agents/skills/<name>): ${line}`,
+		);
+		process.exit(1);
+	}
+	return false;
+}
+
+// The sandbox destinations .sandbox/readwrite will bind, read ahead of
+// setupReadWriteAccess (which validates them) for the ~/.local/bin snapshot.
+async function readWriteGrants(sourceDir: string): Promise<string[]> {
+	const realHome = getRealHome();
+	return (await readConfigText(sourceDir, "readwrite"))
+		.split("\n")
+		.map((l) => l.trim())
+		.filter((l) => l.startsWith("$HOME/"))
+		.map((l) => `${realHome}/${l.slice("$HOME/".length)}`);
 }
 
 async function registerAgentreadonlyHomeBind(
@@ -835,13 +882,16 @@ async function safeCopyDirRecursive(
 // [IMPLEMENTS](/design/features/local-bin-resolution.md)
 export async function setupLocalBinSnapshot(
 	extraSandboxPrefixes: string[] = [],
+	grants: string[] = ["*"],
 ): Promise<BindMount | null> {
 	const realHome = getRealHome();
 	const localBinSrc = `${realHome}/.local/bin`;
 
-	if (!(await fileOrDirExists(localBinSrc))) {
+	// EM: Only what the project grants: nothing granted, no ~/.local/bin.
+	if (grants.length === 0 || !(await fileOrDirExists(localBinSrc))) {
 		return null;
 	}
+	const granted = grants.includes("*") ? null : new Set(grants);
 
 	const snapshotDir = await stageDir(`${realHome}/.local/bin`);
 	const sandboxPrefixes = [
@@ -857,6 +907,7 @@ export async function setupLocalBinSnapshot(
 			sandboxPrefixes,
 			homePrefixes,
 			realHome,
+			granted,
 		);
 	} catch (err) {
 		error(`Failed to snapshot ~/.local/bin: ${err}`);
@@ -886,8 +937,21 @@ async function resolveLocalBinEntries(
 	sandboxPrefixes: string[],
 	homePrefixes: string[],
 	realHome: string,
+	granted: Set<string> | null = null,
 ): Promise<void> {
-	const entries = await readdir(srcDir, { withFileTypes: true });
+	const entries = (await readdir(srcDir, { withFileTypes: true })).filter(
+		(entry) => !granted || granted.has(entry.name),
+	);
+	if (granted) {
+		const present = new Set(entries.map((entry) => entry.name));
+		for (const name of granted) {
+			if (!present.has(name)) {
+				warning(
+					`.sandbox/readonly grants ~/.local/bin/${name}, which is not there`,
+				);
+			}
+		}
+	}
 
 	for (const entry of entries) {
 		const src = `${srcDir}/${entry.name}`;
@@ -1001,13 +1065,28 @@ function isSandboxResolvable(
 }
 
 // [IMPLEMENTS](/design/features/agents-skills-snapshot.md)
-export async function setupAgentsSnapshot(): Promise<BindMount | null> {
+export async function setupAgentsSnapshot(
+	grants: string[] = ["*"],
+): Promise<BindMount | null> {
 	const realHome = getRealHome();
 	const agentsSrc = `${realHome}/.agents`;
 
 	const snapshotDir = await stageDir(`${realHome}/.agents`);
 
-	if (await fileOrDirExists(agentsSrc)) {
+	// EM: Granted per skill: only the named skills are copied. "*" (a grant
+	// EM: of ~/.agents itself) copies everything, as before grants.
+	if (!grants.includes("*")) {
+		for (const name of grants) {
+			const src = `${agentsSrc}/skills/${name}`;
+			if (await fileOrDirExists(src)) {
+				await safeCopyDirRecursive(src, `${snapshotDir}/skills/${name}`);
+			} else {
+				warning(
+					`.sandbox/readonly grants skill ${name}, which is not in ~/.agents/skills`,
+				);
+			}
+		}
+	} else if (await fileOrDirExists(agentsSrc)) {
 		try {
 			await safeCopyDirRecursive(agentsSrc, snapshotDir);
 		} catch (err) {

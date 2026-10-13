@@ -1528,7 +1528,8 @@ does not touch it.
 
 With no `~/.agents` on the host, the snapshot is still bound and holds the
 bundled skill, byte-identical to the repository's, and nothing is created
-on the host; a user-installed `SKILL.md` in the same place wins.
+on the host; a user-installed `SKILL.md` in the same place is ignored
+until the project grants that skill, and then wins.
 
 ### 152. agents-md-overlay-names-companion-ide
 [TESTED_BY](/tests/scoder.test.ts#testAgentsMdOverlayNamesCompanionIde)
@@ -1574,7 +1575,8 @@ pattern that matched nothing.
 [TESTED_BY](/tests/scoder.test.ts#testUvToolEnvironmentsBound)
 
 With a throwaway `HOME` laid out as `uv tool install` leaves it, a dry-run
-binds `~/.local/share/uv/tools` and `~/.local/share/uv/python` read-only,
+with no grants binds neither tree nor `~/.local/bin`; with the three granted
+in `.sandbox/readonly` it binds `~/.local/share/uv/tools` and `~/.local/share/uv/python` read-only,
 and the `~/.local/bin/hf` symlink into the tool's venv survives into the
 session's `~/.local/bin` snapshot as a link, not a copied script.
 ### 158. terminal-restored-after-exit
@@ -1681,6 +1683,32 @@ embedded entry point.
 
 Both bundled skills, `working-in-a-scoder-sandbox` and
 `configure-scoder-sandbox`, are in the `~/.agents` snapshot.
+
+### 172. toolchain-paths-granted-not-implicit
+[TESTED_BY](/tests/scoder.test.ts#testToolchainPathsGrantedNotImplicit)
+
+`~/.m2`, `~/R` and `~/.rustup` are not bound in a session with no grants;
+granted (`readwrite $HOME/.m2`, `readonly $HOME/R`) they are bound
+read-write and read-only, with no overlap error.
+
+### 173. local-bin-granted-per-entry
+[TESTED_BY](/tests/scoder.test.ts#testLocalBinGrantedPerEntry)
+
+With nothing granted there is no `~/.local/bin` snapshot; with one entry
+granted, the snapshot holds that entry plus the session's own tool, and
+nothing else.
+
+### 174. eclipse-imports-only-dirs-with-a-project-file
+[TESTED_BY](/tests/scoder.test.ts#testEclipseImportsOnlyDirsWithAProjectFile)
+
+Of four grants, only the one with a `.project` (not under a hidden
+directory) is imported; a `pom.xml`-only tree and a plain one are not.
+
+### 175. config-predating-grants-warned
+[TESTED_BY](/tests/scoder.test.ts#testConfigPredatingGrantsWarned)
+
+A project with `.sandbox/` config but no `.sandbox/version` gets the
+start-up message; with the marker, none.
 
 ## Current Network Coverage
 

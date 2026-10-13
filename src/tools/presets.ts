@@ -1824,12 +1824,13 @@ export const TOOL_PRESETS: Record<string, ToolPreset> = {
 				return existingArgs;
 			}
 
+			const imports = await eclipseImportableDirs(dependencyDirs);
 			return [
 				"-data",
 				layout.workspaceSandboxDir,
 				"-importProject",
 				sandboxProjectDir,
-				...dependencyDirs.flatMap((dir) => ["-importProject", dir]),
+				...imports.flatMap((dir) => ["-importProject", dir]),
 				...existingArgs,
 			];
 		},
@@ -2111,4 +2112,67 @@ async function resolveCommandPath(cmd: string): Promise<string | null> {
 
 async function commandExists(cmd: string): Promise<boolean> {
 	return (await resolveCommandPath(cmd)) !== null;
+}
+
+// ### eclipseImportableDirs
+// EM: Which read-only $HOME grants Eclipse should import. Since grants also
+// EM: carry toolchains and config (~/R, a single file), a grant is a
+// EM: dependency project only if it holds a `.project` — the only thing the
+// EM: import plugin imports. `find` prunes hidden directories, stops at the
+// EM: first hit and is capped in depth; the plugin recurses from there. A
+// EM: Maven/Gradle tree without one gets a message instead of silently
+// EM: importing nothing.
+export async function eclipseImportableDirs(dirs: string[]): Promise<string[]> {
+	const importable: string[] = [];
+	for (const dir of dirs) {
+		if (await findUnder(dir, "-name", ".project")) {
+			importable.push(dir);
+		} else if (
+			await findUnder(
+				dir,
+				"(",
+				"-name",
+				"pom.xml",
+				"-o",
+				"-name",
+				"build.gradle*",
+				")",
+			)
+		) {
+			info(
+				`${dir} looks like a Maven/Gradle project with no Eclipse .project; the import plugin cannot import it yet`,
+			);
+		}
+	}
+	return importable;
+}
+
+async function findUnder(dir: string, ...test: string[]): Promise<boolean> {
+	const proc = Bun.spawn(
+		[
+			"find",
+			dir,
+			"-mindepth",
+			"1",
+			"-maxdepth",
+			"4",
+			"(",
+			"-type",
+			"d",
+			"-name",
+			".*",
+			"-prune",
+			")",
+			"-o",
+			"-type",
+			"f",
+			...test,
+			"-print",
+			"-quit",
+		],
+		{ stdout: "pipe", stderr: "ignore" },
+	);
+	const out = await new Response(proc.stdout).text();
+	await proc.exited;
+	return out.trim() !== "";
 }

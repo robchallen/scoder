@@ -1041,14 +1041,8 @@ async function buildExtraBinds(
 ): Promise<BindMount[]> {
 	const binds: BindMount[] = [];
 
-	const localBinDir = `${realHome}/.local/bin`;
-	if (await dirExists(localBinDir)) {
-		binds.push({
-			type: "ro-bind",
-			source: localBinDir,
-			dest: `${sandboxHome}/.local/bin`,
-		});
-	}
+	// EM: ~/.local/bin is not bound here: the snapshot (setupLocalBinSnapshot)
+	// EM: carries only the entries a project grants.
 
 	const gitconfigPath = `${realHome}/.gitconfig`;
 	if (await fileExists(gitconfigPath)) {
@@ -1059,115 +1053,11 @@ async function buildExtraBinds(
 		});
 	}
 
-	const rDir = `${realHome}/R`;
-	if (await dirExists(rDir)) {
-		binds.push({
-			type: "ro-bind",
-			source: rDir,
-			dest: `${sandboxHome}/R`,
-		});
-	}
-
-	const rprofilePath = `${realHome}/.Rprofile`;
-	if (await fileExists(rprofilePath)) {
-		binds.push({
-			type: "ro-bind",
-			source: rprofilePath,
-			dest: `${sandboxHome}/.Rprofile`,
-		});
-	}
-
-	const m2Dir = `${realHome}/.m2`;
-	if (await dirExists(m2Dir)) {
-		// This kind of has to be read write if maven is to work
-		// a bit like node_modules
-		binds.push({
-			type: "bind",
-			source: m2Dir,
-			dest: `${sandboxHome}/.m2`,
-		});
-	}
-
-	const miseShareDir = `${realHome}/.local/share/mise`;
-	if (await dirExists(miseShareDir)) {
-		binds.push({
-			type: "ro-bind",
-			source: miseShareDir,
-			dest: `${sandboxHome}/.local/share/mise`,
-		});
-	}
-
-	const miseConfigDir = `${realHome}/.config/mise`;
-	if (await dirExists(miseConfigDir)) {
-		binds.push({
-			type: "ro-bind",
-			source: miseConfigDir,
-			dest: `${sandboxHome}/.config/mise`,
-		});
-	}
-
-	const miseShimsDir = `${realHome}/.local/share/mise/shims`;
-	if (await dirExists(miseShimsDir)) {
-		binds.push({
-			type: "ro-bind",
-			source: miseShimsDir,
-			dest: `${sandboxHome}/.local/share/mise/shims`,
-		});
-	}
-
-	const rustupDir = `${realHome}/.rustup`;
-	if (await dirExists(rustupDir)) {
-		binds.push({
-			type: "ro-bind",
-			source: rustupDir,
-			dest: `${sandboxHome}/.rustup`,
-		});
-	}
-
-	// EM: uv tool environments (`uv tool install hf`): ~/.local/bin holds a
-	// EM: symlink into ~/.local/share/uv/tools/<tool>/bin, whose scripts'
-	// EM: interpreter is that venv's python — itself usually a symlink into
-	// EM: ~/.local/share/uv/python, uv's managed interpreters. Neither was
-	// EM: bound: reported as `hf: cannot execute: required file not found`,
-	// EM: for every uv-installed tool. Read-only, like ~/.rustup: tools run,
-	// EM: but installing or upgrading them is done on the host.
-	for (const rel of [".local/share/uv/tools", ".local/share/uv/python"]) {
-		const dir = `${realHome}/${rel}`;
-		if (await dirExists(dir)) {
-			binds.push({
-				type: "ro-bind",
-				source: dir,
-				dest: `${sandboxHome}/${rel}`,
-			});
-		}
-	}
-
-	const cargoBinDir = `${realHome}/.cargo/bin`;
-	if (await dirExists(cargoBinDir)) {
-		binds.push({
-			type: "ro-bind",
-			source: cargoBinDir,
-			dest: `${sandboxHome}/.cargo/bin`,
-		});
-	}
-
-	const npmrcPath = `${realHome}/.npmrc`;
-	if (await fileExists(npmrcPath)) {
-		binds.push({
-			type: "ro-bind",
-			source: npmrcPath,
-			dest: `${sandboxHome}/.npmrc`,
-		});
-	}
-
-	const pypircPath = `${realHome}/.pypirc`;
-	if (await fileExists(pypircPath)) {
-		binds.push({
-			type: "ro-bind",
-			source: pypircPath,
-			dest: `${sandboxHome}/.pypirc`,
-		});
-	}
+	// EM: Toolchain paths — ~/R, ~/.Rprofile, ~/.m2, mise, ~/.rustup, uv's
+	// EM: tools and pythons, ~/.cargo/bin, .npmrc, .pypirc — used to be bound
+	// EM: here for every session. They are now granted per project in
+	// EM: .sandbox/readonly or readwrite, usually by a configure session from
+	// EM: the user's recipes. See design/features/configure-mode.md.
 
 	const ghDir = `${realHome}/.config/gh`;
 	if (await dirExists(ghDir)) {

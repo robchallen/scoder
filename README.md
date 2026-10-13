@@ -184,30 +184,32 @@ jupyter-ai's MCP endpoint.
    `/run/user/<uid>` created mode `0700`; nothing in the sandbox can reach
    your desktop's D-Bus session or system bus, keyring included. GUI presets
    get a private session bus of their own.
-- **Agent skills snapshot** — `~/.agents` is copied at sandbox start and bound
-  read-only into the sandbox, so symlinked skills resolve as a stable snapshot
-  for the duration of the session.
+- **Agent skills snapshot** — the skills a project grants in
+  `.sandbox/readonly` (`$HOME/.agents/skills/<name>`, or `$HOME/.agents` for
+  all) are copied at sandbox start and bound read-only at `~/.agents`, so
+  symlinked skills resolve as a stable snapshot; scoder's own skills are
+  always there.
 - **Sandbox AGENTS.md notice** — the repository `AGENTS.md` seen inside the
   sandbox is overlaid with an extra scoder section so the agent knows it is
   running in an isolated worktree with an ephemeral home. The overlay is
   marked as `--skip-worktree` in git so the agent can use git freely
   (worktree operations, stash, etc.) without seeing a dirty working tree.
-- **Tools** - executable directories and libraries are available read-only
-  for R, Rust, and mise-en-place. Specifically:
-  - **R**: `~/R` (user library) and `~/.Rprofile` are bound read-only, so
-    R processes started inside the sandbox — including R MCP servers configured
-    in the tool's config file — can access user-installed packages.
-  - **Rust**: `~/.rustup` and `~/.cargo/bin` bound read-only
-  - **mise**: `~/.local/share/mise` and `~/.config/mise` bound read-only
-  - **uv tools**: `~/.local/share/uv/tools` and `~/.local/share/uv/python`
-    bound read-only, so tools installed with `uv tool install` (`hf`,
-    `jupyter`, ...) run from `~/.local/bin` as on the host; install and
-    upgrade them on the host
+- **Tools are granted per project** — toolchains and caches in your home
+  directory (`~/R` and `~/.Rprofile`, `~/.m2`, `~/.rustup` and
+  `~/.cargo/bin`, mise, uv's tools and pythons, `.npmrc`, `.pypirc`) and
+  entries in `~/.local/bin` are bound only when the project's
+  `.sandbox/readonly` or `.sandbox/readwrite` lists them — usually written
+  by a [configure session](#setting-up-a-project---configure) from your
+  recipes. `~/.local/bin` is granted entry by entry
+  (`$HOME/.local/bin/hf`), or whole (`$HOME/.local/bin`); the session's own
+  tool is always there. A project whose config predates this (no
+  `.sandbox/version`) gets a start-up message saying so.
+- **Always bound** — `~/.gitconfig`, `~/.config/gh`, worktrunk's config,
+  and the tool's and IDE's own config:
   - **Desktop integration**: `~/.local/share/fonts` and
     `~/.config/mimeapps.list` bound read-only, so GUI presets (`rstudio`,
     `eclipse`, `vscode`, `vscodium`, `positron`) render text with the host's real fonts and see
     the host's file-type "open with" associations
-- **Java/Maven**: `~/.m2` bound read-write, otherwise not much works.
 - **Minimal `/dev`** — individual real host device nodes only (`null`,
   `zero`, `full`, `urandom`, `random`, `tty`, `pts`, `ptmx`, `fd`), not
   the host's whole `/dev` (which would also expose every raw disk, TPM,
@@ -443,7 +445,7 @@ worktrees work, how to set up MCP — so it can help instead of guessing.
 **Agents that read `~/.agents/skills` (pi and others) get it automatically**:
 scoder carries the skill and adds it to the session's copy of `~/.agents`,
 nothing written to your real one. If you have installed your own copy
-there, yours is used instead.
+there and the project grants it, yours is used instead.
 
 **Claude Code** reads `~/.claude/skills` instead, and gets it there too: a
 read-only copy is mounted at `~/.claude/skills/working-in-a-scoder-sandbox`
@@ -593,8 +595,8 @@ $HOME/analysis-output/figures
   including via a symlink that escapes it — fails the session outright,
   with a clear error. Any line not starting with `$HOME/` is rejected the
   same way: nothing outside `$HOME` is supported at all.
-- **Must not overlap a fixed scoder bind** (`~/.gitconfig`, `~/.m2`,
-  `~/.rustup`, and similar) or an `.sandbox/readonly` `$HOME/...` entry —
+- **Must not overlap a fixed scoder bind** (`~/.gitconfig`,
+  `~/.config/gh`, a tool's own config, and similar) or an `.sandbox/readonly` `$HOME/...` entry —
   both are hard errors naming the conflicting path, rather than a silent
   downgrade to read-only.
 - **Always read-only itself inside the sandbox**, like `.sandbox/readonly`

@@ -8,9 +8,12 @@ tags: [feature, skills, agents]
 
 ## Summary
 
-`~/.agents` is copied (with symlink resolution via `cp -aL`) to a temporary
+The skills a project grants in `.sandbox/readonly` —
+`$HOME/.agents/skills/<name>`, one per skill, or `$HOME/.agents` for the
+whole directory — are copied (with symlink resolution) to a temporary
 directory under `/tmp` at session startup, then bind-mounted read-only into
-`$HOME/.agents` (the real host `$HOME`).
+`$HOME/.agents` (the real host `$HOME`). scoder's own skills are always
+added. A configure session gets the whole directory, to choose from.
 
 ## Motivation
 
@@ -29,7 +32,8 @@ after the session begins are not visible.
 The snapshot also carries scoder's own skill,
 `skills/working-in-a-scoder-sandbox/SKILL.md`, embedded in the binary and
 written to `skills/working-in-a-scoder-sandbox/` in the copy unless the
-user's `~/.agents` already has one there (theirs wins). When the host has
+user's `~/.agents` already has one there and the project grants it
+(theirs wins). When the host has
 no `~/.agents` at all, the snapshot is still made, holding just the skill.
 The host's directory is never written. This replaced an `AGENTS.md`
 instruction to `npx skills add` it, which could not work from inside: the

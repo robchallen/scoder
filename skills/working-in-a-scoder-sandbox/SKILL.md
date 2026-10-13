@@ -42,9 +42,11 @@ missing, and how visibility/commits work — not a full description of scoder
   local LLM/MCP server), ask the user to add it to `.sandbox/ports` or restart
   scoder — you cannot add it yourself.
 - **Most of `$HOME`**: only specific things are actually populated — the
-  project itself, a curated set of tool configs (git, cargo/rustup, mise, R,
-  Maven `.m2`, npm/pypi rc files), and whatever `.sandbox/readonly` explicitly
-  adds. Everything else under `$HOME` that exists on the real host may
+  project itself, git and gh config, the tool's own config, and whatever
+  `.sandbox/readonly` grants — toolchains (`~/.m2`, `~/R`, mise, uv,
+  rustup), `~/.local/bin` entries and `~/.agents` skills included. A
+  missing toolchain usually means the project has not granted it: suggest
+  `scoder --configure <agent>`. Everything else under `$HOME` that exists on the real host may
   simply not be there. An `.sandbox/readwrite` file, if the project has one,
   additionally opens specific `$HOME/...` directories read-write (a
   persistent cache or output location) — you can't add entries to it

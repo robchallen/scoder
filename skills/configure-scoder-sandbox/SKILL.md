@@ -34,6 +34,16 @@ GTK config, `mimeapps.list`, and the agent's/IDE's own config. Everything
 else — toolchains, caches, `~/.local/bin` entries, skills in `~/.agents` —
 only if granted here.
 
+Grants under `~/.local/bin` and `~/.agents` go in `readonly`, one per
+entry: `$HOME/.local/bin/<tool>`, `$HOME/.agents/skills/<name>` (or the
+bare directory for all of it). In this session both directories are
+visible whole, read-only, so you can inspect them; other `$HOME` paths are
+visible only if already granted — ask the user, or rely on scoder checking
+on the host that each `readonly` path exists.
+
+Leave `.sandbox/version` alone (scoder writes it when the changes are
+applied).
+
 ## Procedure
 
 1. **Read the recipes.** Read **every** markdown file in

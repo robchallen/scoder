@@ -29,6 +29,10 @@ Look for locally hosted skills that are relevant to document parsing for
 references, zotero library querying and management, bibliographic api querying,
 writing styles, latex.
 
+Pi has a specific zotero plugin (git:github.com/robchallen/pi-zotero-web) that 
+can access zotero directly. Other agents may have a `zotero-cli` skill.
+
 ## MCP servers
 
-Suggest MCP servers such as Nelson (LibreOffice) 
+Suggest MCP servers such as Nelson (LibreOffice), MS Word or google docs MCP if
+available.

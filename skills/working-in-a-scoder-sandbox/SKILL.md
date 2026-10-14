@@ -231,3 +231,7 @@ tool or dependency is missing" above.
 
 **You need a localhost service reachable** — see "Networking" above; the
 user has to add the port to `.sandbox/ports`, you can't.
+
+**Ask the user before trying a work around** — restrictions may be in place by
+design, and spending time finding creative ways around them is a waste of 
+effort and not helpful.

@@ -1,5 +1,5 @@
 ---
-target-version: 2.8.0
+target-version: 3.0.0
 status: implemented
 tags: [feature, config, sandbox, skills]
 ---

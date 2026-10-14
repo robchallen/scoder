@@ -6,7 +6,7 @@ import type { ScoderOptions } from "../types.ts";
 // EM: Host-loopback port access is configured via .sandbox/ports, not a flag —
 // EM: see src/git/protection.ts and design/implementation/plans/agentports.md
 
-const USAGE = `scoder 2.3.3
+const USAGE = `scoder 3.0.0
 Sandboxed runner for coding tools using bubblewrap and pasta.
 
 Usage:
@@ -83,7 +83,7 @@ Setup (run once, requires sudo):
                           absent) before installing xpra and xpra-x11
 `;
 
-const VERSION = "2.3.3";
+const VERSION = "3.0.0";
 
 interface ParseResult {
 	options: ScoderOptions;

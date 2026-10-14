@@ -67,8 +67,8 @@ other `$HOME` paths are visible only if already granted — ask the user.
 shadowing a user one of the same name. `skills` picks from them, and the
 picked ones are bound where the session's agent reads skills. The full
 list is at the end of this file ("Skills on this machine"), in every
-session, marked with whether this session has each one; in a configure
-session every one of them is available to read. Prefer a few precise
+session, marked with whether this session has each one **WHEN IT WAS STARTED**;
+in a configure session every one of them is available to read. Prefer a few precise
 patterns (from the matching recipes, and what the user asks for) to `.*`.
 scoder's own skills are always included.
 
@@ -91,7 +91,7 @@ takes effect:
 | Change | Takes effect |
 |---|---|
 | `.sandbox/ports` | within a couple of seconds, live — no restart. |
-| `.sandbox/skills` (or the baseline's `skills`) | within a couple of seconds the skills directory is updated; the agent then needs its skills reloaded (e.g. `/reload`, or a new conversation), not a scoder restart. |
+| `.sandbox/skills` (or the baseline's `skills`) | within a couple of seconds the skills directory is updated; the agent then needs its skills reloaded (e.g. `/reload`, or a new conversation), not a scoder restart. N.B. The full skills list at the end of this skill is only updated on scoder restart |
 | `.mcp.json` | it is a project file you can edit; the agent must be restarted (or its MCP reloaded) to connect. |
 | `.sandbox/env`, `.sandbox/readonly`, `.sandbox/readwrite`, a new `~/.local/bin` grant, anything in the baseline other than ports/skills | only when scoder is restarted: exit, then run scoder again. |
 
@@ -133,8 +133,8 @@ takes effect:
    not the whole directory to be safe. A path that does not exist yet but
    will (see above) is still granted.
 6. **Write the minimal config** — the base recipe plus the matching ones,
-   nothing redundant, nothing already in the baseline or always bound. Keep existing entries
-   unless they are clearly wrong; say so if you remove one.
+   nothing redundant, nothing already in the baseline or always bound. Keep 
+   existing entries unless they are clearly wrong; say so if you remove one.
 7. **Explain each entry** as you add it, in one line: what it is for, and
    for read-write paths and ports, what it opens up.
 8. **MCP servers**: add the matching entries to `.mcp.json` (merge, never

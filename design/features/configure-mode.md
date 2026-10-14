@@ -52,8 +52,12 @@ never writes the real files.
   all. The starter set (`src/defaults/recipes/`) is written there by file
   name on each real run, never overwriting a file the user has.
   `--configure` never edits the recipes.
-- **Note and prompt.** The AGENTS.md overlay says this is a configure
-  session; the agent starts with a prompt to use the skill.
+- **Note, prompt and environment.** The AGENTS.md overlay says this is a
+  configure session, `SCODER_CONFIGURE=1` is set inside the sandbox, and
+  the agent starts with a prompt to use the skill. Outside a configure
+  session the skill tells the agent `.sandbox/` is read-only, to give the
+  user the lines to add on the host (or suggest `--configure`), and which
+  changes apply live (ports, skills) and which need a restart.
 - **Skills.** Every skill on the machine is bound, and the list is
   appended to the configure skill (see
   [agent skills](./agents-skills-snapshot.md)); the agent writes

@@ -38,6 +38,10 @@ missing, and how visibility/commits work — not a full description of scoder
   can't relax it yourself from inside the sandbox.
 - **`AGENTS.md`**: always read-only inside the sandbox (overlaid with the
   sandbox notice). Don't try to edit it — ask the user instead.
+- **Changing the sandbox**: `.sandbox/` is read-only here (unless
+  `SCODER_CONFIGURE=1`). The `configure-scoder-sandbox` skill says what the
+  user can change on the host and what applies live (ports, skills) or
+  needs a restart (env, readonly, readwrite).
 - **`.sandbox/ports`**: read-only. If you need a localhost port opened (e.g. a
   local LLM/MCP server), ask the user to add it to `.sandbox/ports` or restart
   scoder — you cannot add it yourself.

@@ -67,6 +67,7 @@ import {
 	readSkillPatterns,
 	selectSkills,
 	setupSkills,
+	watchSkills,
 } from "./sandbox/skills.ts";
 import {
 	describeSshAccess,
@@ -392,6 +393,12 @@ async function main(): Promise<void> {
 		);
 	}
 
+	// EM: Tells the agent (and its skills) this is a configure session, where
+	// EM: .sandbox/, the baseline and the recipes are writable working copies.
+	if (configureMode) {
+		toolEnv = { ...toolEnv, SCODER_CONFIGURE: "1" };
+	}
+
 	// EM: A GUI preset is a GUI preset whether it was named as the primary
 	// EM: tool (`scoder rstudio`) or as the companion (`--ide rstudio`); the
 	// EM: companion wins if somehow both are GUI, since that is the
@@ -536,6 +543,7 @@ async function main(): Promise<void> {
 				toolName,
 				realHome,
 				false,
+				options.dryRun,
 			)),
 		);
 
@@ -603,7 +611,13 @@ async function main(): Promise<void> {
 		);
 
 		protectionConfig.safeBinds.push(
-			...(await skillsBind(cwd, toolName, realHome, configureMode)),
+			...(await skillsBind(
+				cwd,
+				toolName,
+				realHome,
+				configureMode,
+				options.dryRun,
+			)),
 		);
 
 		// EM: A configure session sees ~/.local/bin whole (and unresolved, so
@@ -1294,6 +1308,7 @@ async function skillsBind(
 	toolName: string,
 	realHome: string,
 	configure: boolean,
+	dryRun: boolean,
 ): Promise<BindMount[]> {
 	const candidates = await discoverSkills(projectRoot, realHome);
 	const dir = AGENT_SKILLS_DIRS[toolName] ?? DEFAULT_SKILLS_DIRS;
@@ -1304,5 +1319,13 @@ async function skillsBind(
 		});
 	}
 	const patterns = await readSkillPatterns(projectRoot);
-	return setupSkills(selectSkills(candidates, patterns), realHome, dir);
+	const selected = selectSkills(candidates, patterns);
+	const binds = await setupSkills(selected, realHome, dir);
+	// EM: Live: an edit to .sandbox/skills or the baseline's skills file
+	// EM: re-selects into the bound directory; the agent's own reload picks
+	// EM: the change up. Not under --dry-run, which launches nothing.
+	if (!dryRun) {
+		watchSkills(projectRoot, realHome, binds[0].source, selected);
+	}
+	return binds;
 }

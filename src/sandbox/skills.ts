@@ -1,6 +1,10 @@
-import { mkdir, realpath, stat } from "node:fs/promises";
+import { mkdir, realpath, rm, stat } from "node:fs/promises";
 import { basename, dirname } from "node:path";
-import { CONFIG_DIR, readConfigText } from "../git/sandbox-config.ts";
+import {
+	baselineDir,
+	CONFIG_DIR,
+	readConfigText,
+} from "../git/sandbox-config.ts";
 import { SCODER_SKILLS } from "../skills.ts";
 import type { BindMount } from "../types.ts";
 import { info, warning } from "../utils/logger.ts";
@@ -272,4 +276,89 @@ async function copyDir(src: string, dest: string): Promise<void> {
 		stdout: "ignore",
 		stderr: "ignore",
 	}).exited;
+}
+
+const SKILLS_POLL_MS =
+	Number.parseInt(process.env.SCODER_SKILLS_POLL_MS || "", 10) || 2000;
+
+// ### watchSkills
+// Poll .sandbox/skills and the baseline's skills file; when either changes,
+// re-discover and re-select, then make the staged directory (bound
+// read-only into the sandbox, so its contents are live there) match:
+// newly selected skills copied in, deselected ones removed. scoder's own
+// skills are never removed. Returns a function that stops the watch; the
+// timer does not keep scoder alive on its own.
+export function watchSkills(
+	projectRoot: string,
+	realHome: string,
+	staged: string,
+	initial: SkillCandidate[],
+): () => void {
+	const files = [
+		`${projectRoot}/${CONFIG_DIR}/skills`,
+		`${baselineDir()}/skills`,
+	];
+	let current = new Map(initial.map((s) => [s.name, s]));
+	let last: string | null = null;
+	let busy = false;
+	const signature = async () =>
+		(
+			await Promise.all(
+				files.map(async (f) =>
+					(await Bun.file(f).exists()) ? await Bun.file(f).text() : "",
+				),
+			)
+		).join("\0");
+
+	const tick = async () => {
+		if (busy) return;
+		busy = true;
+		try {
+			const sig = await signature();
+			if (last === null) {
+				last = sig;
+				return;
+			}
+			if (sig === last) return;
+			last = sig;
+			const wanted = selectSkills(
+				await discoverSkills(projectRoot, realHome),
+				await readSkillPatterns(projectRoot),
+			);
+			const next = new Map(wanted.map((s) => [s.name, s]));
+			const scoderNames = new Set(SCODER_SKILLS.map((s) => s.name));
+			const added = wanted.filter((s) => !current.has(s.name));
+			const removed = [...current.keys()].filter(
+				(n) => !next.has(n) && !scoderNames.has(n),
+			);
+			for (const skill of added) {
+				await rm(`${staged}/${skill.name}`, { recursive: true, force: true });
+				await copyDir(skill.dir, `${staged}/${skill.name}`);
+			}
+			for (const name of removed) {
+				await rm(`${staged}/${name}`, { recursive: true, force: true });
+			}
+			for (const skill of SCODER_SKILLS) {
+				const file = `${staged}/${skill.name}/SKILL.md`;
+				if (!(await Bun.file(file).exists())) {
+					await Bun.write(file, skill.text);
+				}
+			}
+			current = next;
+			if (added.length + removed.length > 0) {
+				info(
+					`Skills updated${added.length ? ` +${added.map((s) => s.name).join(" +")}` : ""}${removed.length ? ` -${removed.join(" -")}` : ""} — reload the agent's skills to see them`,
+				);
+			}
+		} catch (err) {
+			warning(`Could not update skills: ${err}`);
+		} finally {
+			busy = false;
+		}
+	};
+
+	void tick();
+	const timer = setInterval(() => void tick(), SKILLS_POLL_MS);
+	timer.unref();
+	return () => clearInterval(timer);
 }

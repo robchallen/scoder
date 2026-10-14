@@ -61,10 +61,20 @@ replaced it, which left most sessions with no skills at all.
 - **Recipes** carry a *Skills* section: the patterns for that kind of
   project.
 
+- **Live.** In an ordinary session scoder polls `.sandbox/skills` and the
+  baseline's `skills` every 2 s (`SCODER_SKILLS_POLL_MS`). On a change it
+  re-discovers and re-selects, and makes the staged directory match —
+  newly selected skills copied in, deselected ones removed, scoder's own
+  kept. The staged directory is the bind source, so the change is visible
+  in the sandbox at once; the agent picks it up on its own skills reload
+  (e.g. `/reload`), with no scoder restart.
+
 ## Limitations
 
 - Copilot may also read `~/.claude/skills` (unconfirmed); it is not hidden.
-- A snapshot: skills changed on the host mid-session are not seen.
+- The content of an already-selected skill is a start-up copy: edits to
+  it on the host are not seen until it is deselected and reselected, or
+  scoder restarts.
 
 ## Implementation
 

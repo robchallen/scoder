@@ -660,6 +660,11 @@ pi, `~/.config/opencode/skills` for opencode, `~/.copilot/skills` for
 Copilot, `~/.agents/skills` otherwise — and only for that agent, not for
 presets added with `--bind`.
 
+Edits to `.sandbox/skills` (or your baseline's `skills`) during a session
+are applied within a couple of seconds; reload the agent's skills (e.g.
+`/reload`) to see them — no restart needed. `.sandbox/ports` is live the
+same way; `env`, `readonly` and `readwrite` take effect on the next start.
+
 ## Environment passthrough (`.sandbox/env`)
 
 `.sandbox/env` lists, one per line, the host environment variables passed
@@ -752,7 +757,8 @@ the sandbox's own; and `SUDO_USER`/`SUDO_UID`/`SUDO_GID`, so that under
 `sudo` the sandbox runs as you rather than as root.
 
 **Set inside the sandbox** by scoder: `SCODER_SANDBOX=1` (a nested
-`scoder -w` refuses to run; `--no-worktree` still works), `HOME`, `PATH`,
+`scoder -w` refuses to run; `--no-worktree` still works),
+`SCODER_CONFIGURE=1` in a configure session, `HOME`, `PATH`,
 `USER`, `LOGNAME`, `TERM` and `LANG`, plus `MCPTOOLS_SOCKET_DIR` for
 `rstudio`. Everything else in the sandbox's environment — `SHELL` and
 `EDITOR` included — is there because `.sandbox/env` lists it.

@@ -74,6 +74,26 @@ scoder's own skills are always included.
 Leave `.sandbox/version` alone (scoder writes it when the changes are
 applied).
 
+## Configure session or not?
+
+`SCODER_CONFIGURE=1` in the environment means a configure session: the
+files above (and `~/.config/scoder/sandbox/` and `recipes/`) are writable
+working copies — edit them directly, and the user reviews on exit.
+
+Without it (an ordinary session, `SCODER_SANDBOX=1`), `.sandbox/` is
+**read-only** to you and the baseline and recipes are not visible. Don't
+try to work around that. Either suggest the user run
+`scoder --configure <agent>`, or tell them the exact lines to add and
+which file, for them to edit **on the host**. Then say when the change
+takes effect:
+
+| Change | Takes effect |
+|---|---|
+| `.sandbox/ports` | within a couple of seconds, live — no restart. |
+| `.sandbox/skills` (or the baseline's `skills`) | within a couple of seconds the skills directory is updated; the agent then needs its skills reloaded (e.g. `/reload`, or a new conversation), not a scoder restart. |
+| `.mcp.json` | it is a project file you can edit; the agent must be restarted (or its MCP reloaded) to connect. |
+| `.sandbox/env`, `.sandbox/readonly`, `.sandbox/readwrite`, a new `~/.local/bin` grant, anything in the baseline other than ports/skills | only when scoder is restarted: exit, then run scoder again. |
+
 ## Procedure
 
 0. **Commit first.** `.sandbox/` belongs in version control. If it (or

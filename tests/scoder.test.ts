@@ -49,6 +49,12 @@ import {
 import { renderOverlay, startOverlayWatcher } from "../src/sandbox/overlays.ts";
 import { isIpv6RoutabilityFailure } from "../src/sandbox/pasta.ts";
 import {
+	discoverSkills,
+	readSkillPatterns,
+	selectSkills,
+	watchSkills,
+} from "../src/sandbox/skills.ts";
+import {
 	isManagedWorkspacePath,
 	resetManagedWorkspace,
 } from "../src/tools/new-workspace.ts";
@@ -8398,6 +8404,7 @@ test("configure-session-dry-run: each agent gets the prompt its own way, and wri
 				expect(run.code).toBe(0);
 				const flat = flattenDryRun(run.stdout);
 				expect(flat).toMatch(form);
+				expect(flat).toMatch(/--setenv\s+SCODER_CONFIGURE\s+1/);
 				expect(flat).toMatch(
 					new RegExp(
 						`--bind (/tmp/scoder-[0-9a-f]{8}${repoDir}/\\.sandbox) ${repoDir}/\\.sandbox`,
@@ -8825,3 +8832,43 @@ test("missing-skills-file-starts-configure: .sandbox/skills is one of the key fi
 		await cleanupRepo(repoDir);
 	}
 });
+
+// ### Test: skills-follow-edits-to-the-skills-file
+// EM: The staged skills directory is live inside the sandbox, so the
+// EM: watcher re-selects into it when .sandbox/skills changes: a newly
+// EM: matched skill appears, a deselected one goes, scoder's stay.
+test("skills-follow-edits-to-the-skills-file: editing .sandbox/skills adds and removes skills in the staged directory", async () => {
+	const repoDir = await createTempRepo();
+	tempRepos.push(repoDir);
+	const home = `/tmp/scoder-skillwatch-${Date.now()}`;
+	const staged = `${TEST_BASE}/skillwatch-staged-${Date.now()}`;
+	let stop = () => {};
+	try {
+		await Bun.write(`${home}/.agents/skills/one/SKILL.md`, "one");
+		await Bun.write(`${home}/.agents/skills/two/SKILL.md`, "two");
+		await Bun.write(`${repoDir}/.sandbox/skills`, "one\n");
+		const candidates = await discoverSkills(repoDir, home);
+		const initial = selectSkills(candidates, await readSkillPatterns(repoDir));
+		await Bun.write(`${staged}/one/SKILL.md`, "one");
+		stop = watchSkills(repoDir, home, staged, initial);
+		await Bun.sleep(300);
+
+		await Bun.write(`${repoDir}/.sandbox/skills`, "two\n");
+		const deadline = Date.now() + 8000;
+		while (
+			Date.now() < deadline &&
+			!(await fileExists(`${staged}/two/SKILL.md`))
+		) {
+			await Bun.sleep(200);
+		}
+		expect(await fileExists(`${staged}/two/SKILL.md`)).toBe(true);
+		expect(await dirExists(`${staged}/one`)).toBe(false);
+		expect(
+			await fileExists(`${staged}/working-in-a-scoder-sandbox/SKILL.md`),
+		).toBe(true);
+	} finally {
+		stop();
+		await Bun.spawn(["rm", "-rf", home, staged]).exited;
+		await cleanupRepo(repoDir);
+	}
+}, 15000);

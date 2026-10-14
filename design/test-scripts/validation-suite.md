@@ -1735,6 +1735,13 @@ For opencode, the skills are bound at `~/.config/opencode/skills`; `~/.claude/sk
 
 `skills` is one of the key files whose absence starts a configure session.
 
+### 180. skills-follow-edits-to-the-skills-file
+[TESTED_BY](/tests/scoder.test.ts#testSkillsFollowEditsToTheSkillsFile)
+
+With the watcher running on a staged skills directory, changing
+`.sandbox/skills` from `one` to `two` copies `two` in and removes `one`;
+scoder's own skills stay.
+
 ## Current Network Coverage
 
 - Host loopback access is blocked (`host-loopback-blocked`)

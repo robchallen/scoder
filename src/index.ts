@@ -1320,7 +1320,13 @@ async function skillsBind(
 	}
 	const patterns = await readSkillPatterns(projectRoot);
 	const selected = selectSkills(candidates, patterns);
-	const binds = await setupSkills(selected, realHome, dir);
+	// EM: The full list goes into every session, not just configure, so an
+	// EM: agent asked for a skill this project does not select can say it
+	// EM: exists and how to add it.
+	const binds = await setupSkills(selected, realHome, dir, {
+		skill: "configure-scoder-sandbox",
+		text: candidateList(candidates, selected),
+	});
 	// EM: Live: an edit to .sandbox/skills or the baseline's skills file
 	// EM: re-selects into the bound directory; the agent's own reload picks
 	// EM: the change up. Not under --dry-run, which launches nothing.

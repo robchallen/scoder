@@ -54,10 +54,14 @@ replaced it, which left most sessions with no skills at all.
   bwrap cannot make a mountpoint through a link whose target is not
   mounted (reported earlier as `Can't mkdir ~/.claude/skills/...`). bwrap
   leaves an empty directory as the mountpoint when the host has none.
+- **The list.** In every session the staged `configure-scoder-sandbox`
+  skill ends with a table of every candidate ("Skills on this machine":
+  name, where found, whether this session has it, description), so an
+  agent asked for a missing skill knows it exists locally and how to add
+  it. The table is from start-up; the live watch below does not rewrite
+  it.
 - **Configure sessions** ignore `.sandbox/skills` and bind every
-  candidate, and the staged `configure-scoder-sandbox` skill ends with a
-  table of them ("Skills on this machine": name, where found,
-  description), so the agent can choose.
+  candidate.
 - **Recipes** carry a *Skills* section: the patterns for that kind of
   project.
 

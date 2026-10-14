@@ -1,6 +1,6 @@
 ---
 name: configure-scoder-sandbox
-description: 'Use when the user asks to configure scoder for a project, set up or change `.sandbox/` (env, readonly, readwrite, ports, skills), choose which agent skills a project gets, edit the scoder recipes or the baseline grants in `~/.config/scoder/sandbox/`, connect the agent to an IDE or a host MCP server, or when the session''s AGENTS.md says it is a scoder configure session. Also use when a build or tool fails inside a scoder sandbox because a path, port or environment variable it needs was not granted.'
+description: 'Use when the user asks to configure scoder for a project, set up or change `.sandbox/` (env, readonly, readwrite, ports, skills), choose which agent skills a project gets, asks about or for a skill that is not available in this session (the full list of skills on the machine is at the end of this skill), edit the scoder recipes or the baseline grants in `~/.config/scoder/sandbox/`, connect the agent to an IDE or a host MCP server, or when the session''s AGENTS.md says it is a scoder configure session. Also use when a build or tool fails inside a scoder sandbox because a path, port or environment variable it needs was not granted.'
 license: MIT
 allowed-tools: Read Bash Grep Glob Write Edit
 ---
@@ -66,7 +66,8 @@ other `$HOME` paths are visible only if already granted — ask the user.
 `~/.config/opencode/skills`, `~/.pi/agent/skills` — a project skill
 shadowing a user one of the same name. `skills` picks from them, and the
 picked ones are bound where the session's agent reads skills. The full
-list is at the end of this file ("Skills on this machine"), and in this
+list is at the end of this file ("Skills on this machine"), in every
+session, marked with whether this session has each one; in a configure
 session every one of them is available to read. Prefer a few precise
 patterns (from the matching recipes, and what the user asks for) to `.*`.
 scoder's own skills are always included.

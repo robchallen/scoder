@@ -3051,6 +3051,13 @@ test("skills-bound-where-the-agent-reads-them: candidates deduplicated (project 
 		expect(
 			await Bun.file(`${some}/working-in-a-scoder-sandbox/SKILL.md`).text(),
 		).not.toBe("mine");
+		// Every session lists all the machine's skills, marking which it has.
+		const list = await Bun.file(
+			`${some}/configure-scoder-sandbox/SKILL.md`,
+		).text();
+		expect(list).toContain("## Skills on this machine");
+		expect(list).toMatch(/\| `alpha` \| project \| no \|/);
+		expect(list).toMatch(/\| `beta` \| home \| yes \|/);
 		expect(
 			await dirExists(`${home}/.agents/skills/configure-scoder-sandbox`),
 		).toBe(false);
@@ -8577,7 +8584,7 @@ test("configure-session-gets-every-skill-and-the-list: all candidates bound, lis
 			`${m![1]}/configure-scoder-sandbox/SKILL.md`,
 		).text();
 		expect(text).toContain("## Skills on this machine");
-		expect(text).toContain("| `gamma` | home | Gamma does things |");
+		expect(text).toContain("| `gamma` | home | yes | Gamma does things |");
 		await removeSessionRoot(m![1]);
 	} finally {
 		await Bun.spawn(["rm", "-rf", home, bin]).exited;

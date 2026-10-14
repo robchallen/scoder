@@ -1530,8 +1530,9 @@ For a plain tool, skills are staged and bound read-only at
 `~/.agents/skills`: candidates from the project and `$HOME` deduplicated
 by name with the project's copy winning, a user's own copy of a scoder
 skill winning over the bundled one, and scoder's skills always present;
-`.sandbox/skills` narrows the set by whole-name regex. Nothing is written
-on the host.
+`.sandbox/skills` narrows the set by whole-name regex, and the configure
+skill's copy lists every candidate with whether the session has it.
+Nothing is written on the host.
 
 ### 152. agents-md-overlay-names-companion-ide
 [TESTED_BY](/tests/scoder.test.ts#testAgentsMdOverlayNamesCompanionIde)

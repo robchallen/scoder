@@ -1,12 +1,62 @@
 ---
-target-version: unscheduled
-status: draft
+target-version: 3.0.0
+status: implemented
 tags: [plan, config, skill, onboarding, mcp]
 ---
 
 # `--configure`: Agent-Guided Setup of `.sandbox/`
 
-> **Draft — for further thought, not scheduled.** No spike.
+> **Implemented in 3.0.0**, in two parts as planned (the `--configure`
+> session, then moving the implicit binds to grants), followed by several
+> refinements. See [configure-mode](/design/features/configure-mode.md),
+> [config-defaults](/design/features/config-defaults.md) and
+> [agent skills](/design/features/agents-skills-snapshot.md) for what the
+> code actually does. Kept as the record of how it was arrived at.
+>
+> **What changed against the plan, and why:**
+>
+> - **Decision 6 ("project only") was reversed.** Two user-level
+>   directories replaced the single recipes directory:
+>   `~/.config/scoder/recipes/` (the recipes) and
+>   `~/.config/scoder/sandbox/` (a **baseline**: the same five files, the
+>   user's grants for every sandbox, which a project adds to and cannot
+>   remove from). Both are seeded from `src/defaults/` and are edited in a
+>   configure session through working copies, like `.sandbox/`, and backed
+>   up before they are changed. Machine-wide choices (provider keys, the
+>   protected-file list) belong in the baseline rather than being repeated
+>   in every project.
+> - **The base recipe no longer carries the base grants.** Those became the
+>   shipped baseline (`src/defaults/sandbox/`); `base.md` became a
+>   questionnaire (inference, web search and decision model providers,
+>   local and cloud model hosting) that asks whether each choice is
+>   baseline or project. The separate decision-model and model-hosting
+>   recipes were folded into it, and the research recipe replaced the web
+>   search one.
+> - **Skills got their own file.** Per-skill grants under `~/.agents` in
+>   `readonly` (from the bind inventory) were replaced by
+>   `.sandbox/skills`: regular expressions over every skill found on the
+>   machine (project and user skill directories, project first), bound
+>   only where the active agent reads skills, with that agent's other skill
+>   directories hidden, and updated live when the file changes. The
+>   `~/.agents` snapshot is gone. `skills` is the fifth key file whose
+>   absence starts a configure session, and every session's configure
+>   skill lists the machine's skills and which ones it has.
+> - **The review is a one-line summary per changed file**, not a file by
+>   file diff: `.sandbox/` is expected to be in git (the skill asks for a
+>   commit before and after), and the user-level directories are backed up.
+> - **A `readonly` grant may name a path that does not exist yet**
+>   (`~/.Rprofile`): it is skipped with a message rather than refused, so
+>   validation no longer checks existence.
+> - **The format marker is `.sandbox/version`**, written when a configure
+>   session is applied; config without it gets a start-up message.
+> - **Added beyond the plan:** `SCODER_CONFIGURE=1` inside a configure
+>   session, and guidance in the skill for ordinary sessions (what the user
+>   changes on the host, what applies live and what needs a restart); a
+>   session's own tool and IDE entries in `~/.local/bin` are always
+>   included; a configure session sees `~/.local/bin` whole to grant from;
+>   `.sandbox/README.md` is no longer written.
+> - **The bind inventory below describes 2.x**, before this change. What is
+>   now always bound and what is granted is in the feature docs above.
 
 ## Summary
 

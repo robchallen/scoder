@@ -5,10 +5,6 @@
 # project's and your own skill directories (.agents/skills, .claude/skills,
 # ...); project skills shadow yours of the same name. scoder's own skills
 # are always included.
-#
-# Examples:
-#   web-search
-#   deep-research|arxiv-.*
-#
-# The default keeps every skill:
-.*
+
+# Uncomment to keep every skill:
+# .*

@@ -21,8 +21,7 @@ $HOME/R
 $HOME/.Rprofile
 ```
 
-(`.Rprofile` only if it exists. scoder overlays the *project's* `.Rprofile`
-with the btw session hook for `rstudio`/`positron`.)
+N.b. `.Rprofile` may not exist, it still needs a grant.
 
 ## Read-write binds
 
@@ -38,5 +37,4 @@ r-.*|tidyverse.*|shiny.*|quarto.*
 
 With `--ide rstudio` or `--ide positron`: btw (`btw::btw_mcp_server()`) —
 see "RStudio: btw" and "Positron" under MCP servers in the
-`configure-scoder-sandbox` skill. Positron also gets
-vscode-mcp-server.
+`configure-scoder-sandbox` skill.

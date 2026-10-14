@@ -17,6 +17,12 @@ changed file in one line and applies the lot only if the user accepts
 (backing the recipes up first), then starts a normal session. So be
 complete, but never quietly generous.
 
+scoder will not bind files that don't exist, but a grant needs to cover
+files that already exist AND files that are likely to exist in a project of this
+nature in the future (as described in the recipes). An example is `$HOME/.Rprofile`
+which may not exist when the sandbox is configured but must be bound if it is
+later created. In this case the grant is needed even if the file is missing.
+
 ## The files
 
 All in `.sandbox/` at the project root; one entry per line, `#` comments.
@@ -325,3 +331,4 @@ forward): its kernels would execute on the host, outside the sandbox.
 ```
 
 
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        

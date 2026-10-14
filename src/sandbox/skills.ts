@@ -272,13 +272,43 @@ async function findSkillFiles(dir: string): Promise<string[]> {
 
 async function readDescription(file: string): Promise<string> {
 	try {
-		const text = await Bun.file(file).text();
-		const m = text.match(/^description:\s*['"]?(.*?)['"]?\s*$/m);
-		const d = m?.[1] ?? "";
-		return d.length > 140 ? `${d.slice(0, 137)}...` : d;
+		const d = skillDescription(await Bun.file(file).text());
+		return d.length > 300 ? `${d.slice(0, 297)}...` : d;
 	} catch {
 		return "";
 	}
+}
+
+// ### skillDescription
+// A SKILL.md's frontmatter `description`, as one line. Parsed as YAML, so
+// block scalars (`description: >` folded, `|` literal) and quoted strings
+// come out as their text; reported, a line-matching reader turned every
+// `>` description into a bare ">". Frontmatter that is not valid YAML
+// (unquoted colons are common) falls back to reading the field by hand,
+// including its indented continuation lines.
+export function skillDescription(text: string): string {
+	const fm = text.match(/^---\r?\n([\s\S]*?)\r?\n---/)?.[1] ?? "";
+	let value: unknown;
+	try {
+		value = (Bun.YAML.parse(fm) as Record<string, unknown> | null)?.description;
+	} catch {
+		value = descriptionByHand(fm);
+	}
+	return typeof value === "string" ? value.replace(/\s+/g, " ").trim() : "";
+}
+
+function descriptionByHand(fm: string): string {
+	const lines = fm.split(/\r?\n/);
+	const i = lines.findIndex((l) => /^description:/.test(l));
+	if (i < 0) return "";
+	const first = lines[i].replace(/^description:\s*/, "");
+	const rest: string[] = [];
+	for (const line of lines.slice(i + 1)) {
+		if (!/^\s/.test(line) && line.trim() !== "") break;
+		rest.push(line.trim());
+	}
+	const head = /^[>|][+-]?$/.test(first.trim()) ? "" : first;
+	return [head, ...rest].join(" ").replace(/^\s*['"]|['"]\s*$/g, "");
 }
 
 // Copy a skill directory, dereferencing symlinks inside it.

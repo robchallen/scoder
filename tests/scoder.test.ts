@@ -52,6 +52,7 @@ import {
 	discoverSkills,
 	readSkillPatterns,
 	selectSkills,
+	skillDescription,
 	watchSkills,
 } from "../src/sandbox/skills.ts";
 import {
@@ -8879,3 +8880,30 @@ test("skills-follow-edits-to-the-skills-file: editing .sandbox/skills adds and r
 		await cleanupRepo(repoDir);
 	}
 }, 15000);
+
+// ### Test: skill-descriptions-parsed-as-yaml
+// EM: Reported: folded (`description: >`) descriptions showed as a bare ">"
+// EM: in the skills table. Block scalars, quoted strings and frontmatter
+// EM: that is not valid YAML all give the description's text.
+test("skill-descriptions-parsed-as-yaml: folded, literal, quoted, plain and invalid-YAML frontmatter all give the text", () => {
+	expect(
+		skillDescription(
+			"---\nname: a\ndescription: >\n  Folded one\n  and two\n---\nbody",
+		),
+	).toBe("Folded one and two");
+	expect(
+		skillDescription("---\ndescription: |\n  Literal\n  lines\nname: b\n---\n"),
+	).toBe("Literal lines");
+	expect(skillDescription("---\ndescription: 'Quoted: yes'\n---\n")).toBe(
+		"Quoted: yes",
+	);
+	expect(skillDescription("---\ndescription: Plain text\n---\n")).toBe(
+		"Plain text",
+	);
+	expect(
+		skillDescription(
+			"---\ndescription: >\n  Use when: this: breaks YAML\nkey: [unclosed\n---\n",
+		),
+	).toBe("Use when: this: breaks YAML");
+	expect(skillDescription("no frontmatter")).toBe("");
+});

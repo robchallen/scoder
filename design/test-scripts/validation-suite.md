@@ -1743,6 +1743,14 @@ With the watcher running on a staged skills directory, changing
 `.sandbox/skills` from `one` to `two` copies `two` in and removes `one`;
 scoder's own skills stay.
 
+### 181. skill-descriptions-parsed-as-yaml
+[TESTED_BY](/tests/scoder.test.ts#testSkillDescriptionsParsedAsYaml)
+
+A SKILL.md description is read from its YAML frontmatter: folded (`>`)
+and literal (`|`) block scalars, quoted and plain strings give their text
+on one line; frontmatter that is not valid YAML falls back to reading the
+field and its indented continuation lines; no frontmatter gives nothing.
+
 ## Current Network Coverage
 
 - Host loopback access is blocked (`host-loopback-blocked`)

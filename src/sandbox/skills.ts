@@ -22,15 +22,19 @@ import { stageDir } from "../utils/session.ts";
 // EM: See design/features/agents-skills-snapshot.md.
 // [IMPLEMENTS](/design/features/agents-skills-snapshot.md)
 
-/** Where each agent reads user-level skills, relative to $HOME. */
-export const AGENT_SKILLS_DIRS: Record<string, string> = {
-	claude: ".claude/skills",
-	pi: ".pi/agent/skills",
-	opencode: ".config/opencode/skills",
-	copilot: ".copilot/skills",
+/**
+ * Every directory each agent reads user-level skills from, relative to
+ * $HOME, its own first. The skills are bound at the first; the rest are
+ * hidden, so the agent sees each selected skill once and nothing else.
+ */
+export const AGENT_SKILLS_DIRS: Record<string, string[]> = {
+	claude: [".claude/skills"],
+	pi: [".pi/agent/skills", ".agents/skills"],
+	opencode: [".config/opencode/skills", ".claude/skills", ".agents/skills"],
+	copilot: [".copilot/skills", ".agents/skills"],
 };
 /** For any other tool: the cross-agent location. */
-export const DEFAULT_SKILLS_DIR = ".agents/skills";
+export const DEFAULT_SKILLS_DIRS = [".agents/skills"];
 
 const PROJECT_SKILL_DIRS = [
 	".agents/skills",
@@ -145,9 +149,10 @@ export function selectSkills(
 export async function setupSkills(
 	skills: SkillCandidate[],
 	realHome: string,
-	skillsDirRel: string,
+	skillsDirs: string[],
 	appendix?: { skill: string; text: string },
-): Promise<BindMount> {
+): Promise<BindMount[]> {
+	const [skillsDirRel, ...others] = skillsDirs;
 	// EM: Through a symlinked skills directory (~/.claude/skills ->
 	// EM: ~/.agents/skills is common), bind at its target: bwrap cannot make
 	// EM: a mountpoint through a link whose target is not mounted.
@@ -176,9 +181,29 @@ export async function setupSkills(
 		await Bun.write(file, `${await Bun.file(file).text()}\n${appendix.text}`);
 	}
 	if (skills.length > 0) {
-		info(`Skills (${skillsDirRel}): ${skills.map((s) => s.name).join(", ")}`);
+		info(`Skills (~/${skillsDirRel}): ${skills.map((s) => s.name).join(", ")}`);
 	}
-	return { type: "ro-bind", source: staged, dest };
+	const binds: BindMount[] = [{ type: "ro-bind", source: staged, dest }];
+
+	// EM: The agent's other skill directories, hidden behind an empty one —
+	// EM: only those that exist on the host, so nothing is created there
+	// EM: (a `--bind claude` must not leave a skills directory in ~/.claude).
+	for (const rel of others) {
+		let other: string;
+		try {
+			other = await realpath(`${realHome}/${rel}`);
+			if (!(await stat(other)).isDirectory()) continue;
+		} catch {
+			continue;
+		}
+		if (other === dest) continue;
+		binds.push({
+			type: "ro-bind",
+			source: await stageDir(`/scoder-empty-skills${other}`),
+			dest: other,
+		});
+	}
+	return binds;
 }
 
 // ### candidateList

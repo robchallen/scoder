@@ -7,29 +7,28 @@ declare module "*.sh" {
 	export default content;
 }
 
-// The shipped .sandbox defaults in src/defaults/, imported the same way.
+// The shipped baseline in src/defaults/sandbox/, imported the same way.
 declare module "*.md" {
 	const content: string;
 	export default content;
 }
-declare module "*/defaults/env" {
+declare module "*/defaults/sandbox/env" {
 	const content: string;
 	export default content;
 }
-declare module "*/defaults/ports" {
+declare module "*/defaults/sandbox/ports" {
 	const content: string;
 	export default content;
 }
-declare module "*/defaults/readonly" {
+declare module "*/defaults/sandbox/readonly" {
 	const content: string;
 	export default content;
 }
-declare module "*/defaults/readwrite" {
+declare module "*/defaults/sandbox/readwrite" {
 	const content: string;
 	export default content;
 }
-
-declare module "*/defaults/skills" {
+declare module "*/defaults/sandbox/skills" {
 	const content: string;
 	export default content;
 }

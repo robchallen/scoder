@@ -32,9 +32,11 @@ replaced it, which left most sessions with no skills at all.
   A skill's name is its directory's name. Deduplicated by name and by
   resolved directory, first found wins — so project skills shadow the
   user's.
-- **Selection.** `.sandbox/skills`: one regular expression per line, `#`
-  comments, each matched against the whole name. Missing file: the shipped
-  default, `.*`. A line that does not compile is warned about and skipped
+- **Selection.** The baseline `~/.config/scoder/sandbox/skills` plus the
+  project's `.sandbox/skills`: one regular expression per line, `#`
+  comments, each matched against the whole name. The shipped baseline
+  selects nothing; a missing project file starts a configure session on
+  an interactive start. A line that does not compile is warned about and skipped
   (and refused by the configure review).
 - **scoder's own skills** (`working-in-a-scoder-sandbox`,
   `configure-scoder-sandbox`) are always added, unless a selected skill of
@@ -42,8 +44,12 @@ replaced it, which left most sessions with no skills at all.
 - **Where.** Bound read-only at the main agent's own user-skills
   directory: Claude Code `~/.claude/skills`, pi `~/.pi/agent/skills`,
   opencode `~/.config/opencode/skills`, Copilot `~/.copilot/skills`; any
-  other tool `~/.agents/skills`. Only there: with `--bind claude pi`, pi
-  gets the skills and Claude Code's directory is as the host has it. When
+  other tool `~/.agents/skills`. The other directories that agent also
+  reads (pi and Copilot: `~/.agents/skills`; opencode: `~/.claude/skills`
+  and `~/.agents/skills`) are hidden behind an empty directory when they
+  exist on the host, so the agent sees each selected skill once; when
+  they do not exist nothing is bound, so nothing is created there. With
+  `--bind claude pi`, only pi's directories are touched. When
   that directory is a symlink on the host, the bind goes to its target —
   bwrap cannot make a mountpoint through a link whose target is not
   mounted (reported earlier as `Can't mkdir ~/.claude/skills/...`). bwrap
@@ -57,9 +63,7 @@ replaced it, which left most sessions with no skills at all.
 
 ## Limitations
 
-- An agent that also reads other directories still sees them if they are
-  bound: opencode reads `~/.claude/skills` and `~/.agents/skills` too, so
-  `scoder --bind claude opencode` shows it Claude's skills unfiltered.
+- Copilot may also read `~/.claude/skills` (unconfirmed); it is not hidden.
 - A snapshot: skills changed on the host mid-session are not seen.
 
 ## Implementation

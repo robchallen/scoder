@@ -12,12 +12,13 @@ tags: [feature, config, sandbox, skills]
 up the project's `.sandbox/` files (and `.mcp.json`) with the user, guided
 by the bundled `configure-scoder-sandbox` skill and the user's markdown
 recipes in `~/.config/scoder/recipes/`. The agent edits working copies of
-`.sandbox/` and the recipes; when the session ends scoder lists each
+`.sandbox/`, the user's baseline (`~/.config/scoder/sandbox/`) and the
+recipes; when the session ends scoder lists each
 changed file on the host, validates, applies only if the user accepts
 (backing up the recipes first), and then starts the normal session.
 
 An interactive start in a project whose `.sandbox/` is missing any of
-`env`, `readonly`, `readwrite` or `ports` runs configure first,
+`env`, `readonly`, `readwrite`, `ports` or `skills` runs configure first,
 automatically.
 
 ## Motivation
@@ -43,9 +44,11 @@ never writes the real files.
 - **Working copy.** `.sandbox/` is copied into the session staging root
   and bound read-write at `.sandbox/`, in place of the usual read-only
   bind. `.mcp.json` is snapshotted before the session.
-- **Recipes.** `~/.config/scoder/recipes/` (under `$XDG_CONFIG_HOME` when
-  set) is staged and bound read-write as a working copy, so the agent can
-  refine or add recipes with the user. Any number of markdown files, any names; the skill reads them
+- **Baseline and recipes.** `~/.config/scoder/sandbox/` and
+  `~/.config/scoder/recipes/` (under `$XDG_CONFIG_HOME` when set) are
+  staged and bound read-write as working copies, so the agent can refine
+  the user's machine-wide grants and recipes with them. The skill reads
+  the baseline first and never repeats it in `.sandbox/`. Any number of markdown files, any names; the skill reads them
   all. The starter set (`src/defaults/recipes/`) is written there by file
   name on each real run, never overwriting a file the user has.
   `--configure` never edits the recipes.
@@ -65,7 +68,7 @@ never writes the real files.
   then "Apply these changes? [y/N]". Invalid or declined: nothing applied
   and `.mcp.json` restored. Accepted: the recipes are backed up
   (`recipes.bak-<timestamp>` beside them) and replaced by their working
-  copy if they changed; the working copy replaces
+  copy if they changed, and the baseline the same way; the working copy replaces
   `.sandbox/` (deleted files removed), any still-missing key file is
   written as an all-comment stub so the next start does not configure
   again, and the original command line is re-run without `--configure`.
@@ -112,7 +115,7 @@ embedded via `src/skills.ts`, the recipes via `src/recipes.ts`.
 `configure-not-automatic-without-a-terminal`,
 `configure-review-applies-only-on-confirm`, `configure-validate-and-apply`,
 `configure-relaunch-args`, `configure-session-gets-every-skill-and-the-list`,
-`configure-recipes-backed-up-and-applied`,
+`configure-recipes-backed-up-and-applied`, `missing-skills-file-starts-configure`,
 `user-config-seeds-starter-recipes`, `toolchain-paths-granted-not-implicit`,
 `local-bin-granted-per-entry`,
 `eclipse-imports-only-dirs-with-a-project-file`,

@@ -43,7 +43,8 @@ missing, and how visibility/commits work — not a full description of scoder
   scoder — you cannot add it yourself.
 - **Most of `$HOME`**: only specific things are actually populated — the
   project itself, git and gh config, the tool's own config, and whatever
-  `.sandbox/readonly` grants — toolchains (`~/.m2`, `~/R`, mise, uv,
+  the user's baseline (`~/.config/scoder/sandbox/`, every project) and the
+  project's `.sandbox/readonly` grant — toolchains (`~/.m2`, `~/R`, mise, uv,
   rustup) and `~/.local/bin` entries included. Skills are the ones
   `.sandbox/skills` selects. A missing toolchain or skill usually means
   the project has not granted it: suggest `scoder --configure <agent>`.

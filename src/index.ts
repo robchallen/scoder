@@ -15,7 +15,7 @@ import {
 	readMcpJson,
 	relaunchArgs,
 	reviewConfigure,
-	stageRecipes,
+	stageUserDir,
 	stageWorkingCopy,
 	type WorkingCopy,
 } from "./configure/configure.ts";
@@ -32,7 +32,11 @@ import {
 	setupReadWriteAccess,
 	setupResolvConf,
 } from "./git/protection.ts";
-import { prepareConfigDir, recipesDir } from "./git/sandbox-config.ts";
+import {
+	baselineDir,
+	prepareConfigDir,
+	recipesDir,
+} from "./git/sandbox-config.ts";
 import {
 	commitAllChanges,
 	getCommitCount,
@@ -58,7 +62,7 @@ import { setupOverlays } from "./sandbox/overlays.ts";
 import {
 	AGENT_SKILLS_DIRS,
 	candidateList,
-	DEFAULT_SKILLS_DIR,
+	DEFAULT_SKILLS_DIRS,
 	discoverSkills,
 	readSkillPatterns,
 	selectSkills,
@@ -477,7 +481,7 @@ async function main(): Promise<void> {
 	let worktreeInfo: GitWorktreeInfo | null = null;
 	let protectionConfig: ProtectionConfig | undefined;
 	let configureWorkingCopy: string | undefined;
-	let recipesWorkingCopy: WorkingCopy | undefined;
+	const userWorkingCopies: WorkingCopy[] = [];
 	let sandboxProjDir = "";
 	let identity: SandboxIdentity | undefined;
 	let sshTunnel: SshTunnel | null = null;
@@ -527,7 +531,12 @@ async function main(): Promise<void> {
 		);
 
 		protectionConfig.safeBinds.push(
-			await skillsBind(worktreeInfo.worktreeDir, toolName, realHome, false),
+			...(await skillsBind(
+				worktreeInfo.worktreeDir,
+				toolName,
+				realHome,
+				false,
+			)),
 		);
 
 		const localBinBind = await setupLocalBinSnapshot(
@@ -594,7 +603,7 @@ async function main(): Promise<void> {
 		);
 
 		protectionConfig.safeBinds.push(
-			await skillsBind(cwd, toolName, realHome, configureMode),
+			...(await skillsBind(cwd, toolName, realHome, configureMode)),
 		);
 
 		// EM: A configure session sees ~/.local/bin whole (and unresolved, so
@@ -779,15 +788,21 @@ async function main(): Promise<void> {
 		if (agentPortsBind) {
 			protectionConfig.safeBinds.push(agentPortsBind);
 		}
-		// EM: The user's recipes, as a working copy the configure session can
-		// EM: edit; changes reach the real directory only after review.
-		if (configureMode && (await isDir(recipesDir()))) {
-			recipesWorkingCopy = await stageRecipes(recipesDir());
-			protectionConfig.safeBinds.push({
-				type: "bind",
-				source: recipesWorkingCopy.staged,
-				dest: recipesDir(),
-			});
+		// EM: The user's baseline and recipes, as working copies the
+		// EM: configure session can edit; changes reach the real directories
+		// EM: only after review, backed up first.
+		if (configureMode) {
+			for (const dir of [baselineDir(), recipesDir()]) {
+				if (await isDir(dir)) {
+					const copy = await stageUserDir(dir);
+					userWorkingCopies.push(copy);
+					protectionConfig.safeBinds.push({
+						type: "bind",
+						source: copy.staged,
+						dest: dir,
+					});
+				}
+			}
 		}
 
 		await setupReadWriteAccess(
@@ -1038,7 +1053,7 @@ async function main(): Promise<void> {
 			configureWorkingCopy,
 			mcpBefore,
 			undefined,
-			recipesWorkingCopy,
+			userWorkingCopies,
 		);
 		if (review.applied) {
 			info("Starting the session with the new configuration");
@@ -1279,9 +1294,9 @@ async function skillsBind(
 	toolName: string,
 	realHome: string,
 	configure: boolean,
-): Promise<BindMount> {
+): Promise<BindMount[]> {
 	const candidates = await discoverSkills(projectRoot, realHome);
-	const dir = AGENT_SKILLS_DIRS[toolName] ?? DEFAULT_SKILLS_DIR;
+	const dir = AGENT_SKILLS_DIRS[toolName] ?? DEFAULT_SKILLS_DIRS;
 	if (configure) {
 		return setupSkills(candidates, realHome, dir, {
 			skill: "configure-scoder-sandbox",

@@ -288,11 +288,12 @@ async function registerAgentreadonlyHomeBind(
 
 	const sourceReal = await realpath(sourcePath);
 
+	// EM: A grant may name something that does not exist yet (a
+	// EM: ~/.Rprofile the user may create later): it is kept in the file and
+	// EM: bound from the first session after it appears. Nothing to bind now.
 	if (!sourceReal || !(await fileOrDirExists(sourceReal))) {
-		error(
-			`.sandbox/readonly HOME bind must reference an existing file or directory: ${homePathExpr}`,
-		);
-		process.exit(1);
+		info(`Not binding ${homePathExpr} (does not exist yet)`);
+		return;
 	}
 
 	if (sourceReal !== realHome && !sourceReal.startsWith(`${realHome}/`)) {
@@ -516,8 +517,11 @@ export async function readEnvPassThrough(
 // catches the throw and just warns, keeping the last-known-good config
 // running; only the startup caller in index.ts, where nothing is running
 // yet, treats it as fatal and exits.
-export async function readAgentPorts(projectRoot: string): Promise<number[]> {
-	const content = await readConfigText(projectRoot, "ports");
+export async function readAgentPorts(
+	projectRoot: string,
+	baseline?: string,
+): Promise<number[]> {
+	const content = await readConfigText(projectRoot, "ports", baseline);
 	const ports: number[] = [];
 
 	for (const rawLine of content.split("\n")) {

@@ -2,6 +2,7 @@ import { mkdir, readdir, rm } from "node:fs/promises";
 import { dirname } from "node:path";
 import { readAgentPorts } from "../git/protection.ts";
 import {
+	baselineDir,
 	CONFIG_DIR,
 	parseEnvNames,
 	readConfigText,
@@ -22,7 +23,13 @@ import { stageDir } from "../utils/session.ts";
 // EM: See design/features/configure-mode.md.
 
 /** The files whose absence makes an interactive start configure first. */
-export const CONFIG_KEY_FILES = ["env", "readonly", "readwrite", "ports"];
+export const CONFIG_KEY_FILES = [
+	"env",
+	"readonly",
+	"readwrite",
+	"ports",
+	"skills",
+];
 
 // EM: .sandbox/version marks a config written for explicit grants (toolchain
 // EM: paths granted per project rather than bound for everyone). A project
@@ -84,8 +91,8 @@ export async function readMcpJson(projectRoot: string): Promise<string | null> {
 export interface ReviewResult {
 	changed: boolean;
 	applied: boolean;
-	/** Where the recipes were backed up, when they changed and were applied. */
-	recipesBackup?: string;
+	/** Backups made of user directories that changed and were applied. */
+	backups: string[];
 }
 
 /** A directory edited through a staged working copy. */
@@ -98,15 +105,16 @@ export interface WorkingCopy {
 
 // ### reviewConfigure
 // After the configure session: one line per changed file in .sandbox/, the
-// recipes and .mcp.json; validate; ask; apply or discard. The recipes are
-// backed up before they are changed (.sandbox/ is expected to be in git).
+// user directories (the baseline and the recipes) and .mcp.json; validate;
+// ask; apply or discard. User directories are backed up before they are
+// changed (.sandbox/ is expected to be in git).
 // `confirm` is injectable for tests; the default asks on the terminal.
 export async function reviewConfigure(
 	projectRoot: string,
 	staged: string,
 	mcpBefore: string | null,
 	confirm: (question: string) => Promise<boolean> = askYesNo,
-	recipes?: WorkingCopy,
+	userCopies: WorkingCopy[] = [],
 ): Promise<ReviewResult> {
 	const sandbox: WorkingCopy = {
 		real: `${projectRoot}/${CONFIG_DIR}`,
@@ -117,15 +125,15 @@ export async function reviewConfigure(
 	const mcpAfter = await readMcpJson(projectRoot);
 
 	const sandboxChanges = await summarise(sandbox);
-	const recipeChanges = recipes ? await summarise(recipes) : [];
-	const changes = [...sandboxChanges, ...recipeChanges];
+	const userChanges = await Promise.all(userCopies.map(summarise));
+	const changes = [...sandboxChanges, ...userChanges.flat()];
 	if (mcpAfter !== mcpBefore) {
 		changes.push(summaryLine(".mcp.json", mcpBefore, mcpAfter));
 	}
 
 	if (changes.length === 0) {
 		info("The configure session made no changes.");
-		return { changed: false, applied: false };
+		return { changed: false, applied: false, backups: [] };
 	}
 
 	console.error("");
@@ -134,7 +142,8 @@ export async function reviewConfigure(
 		console.error(`  ${change}`);
 	}
 
-	const problems = await validateConfig(dirname(staged));
+	const baseline = userCopies.find((c) => c.real === baselineDir());
+	const problems = await validateConfig(dirname(staged), baseline?.staged);
 	if (problems.length > 0) {
 		error("These changes cannot be applied as they stand:");
 		for (const problem of problems) {
@@ -142,26 +151,29 @@ export async function reviewConfigure(
 		}
 		await restoreMcp(mcpPath, mcpBefore);
 		info("Nothing applied. Run scoder --configure again to fix them.");
-		return { changed: true, applied: false };
+		return { changed: true, applied: false, backups: [] };
 	}
 
 	if (!(await confirm("Apply these changes? [y/N] "))) {
 		await restoreMcp(mcpPath, mcpBefore);
 		info("Discarded; nothing was changed.");
-		return { changed: true, applied: false };
+		return { changed: true, applied: false, backups: [] };
 	}
 
-	let recipesBackup: string | undefined;
-	if (recipes && recipeChanges.length > 0) {
-		recipesBackup = await backupDir(recipes.real);
-		await syncDir(recipes.staged, recipes.real);
-		info(`Recipes updated; the previous ones are in ${recipesBackup}`);
+	const backups: string[] = [];
+	for (const [i, copy] of userCopies.entries()) {
+		if (userChanges[i].length > 0) {
+			const backup = await backupDir(copy.real);
+			backups.push(backup);
+			await syncDir(copy.staged, copy.real);
+			info(`Updated ${copy.label}; the previous version is in ${backup}`);
+		}
 	}
 	await applyWorkingCopy(staged, sandbox.real);
 	info(
 		`Applied. Commit ${CONFIG_DIR}/ to keep this configuration with the project.`,
 	);
-	return { changed: true, applied: true, recipesBackup };
+	return { changed: true, applied: true, backups };
 }
 
 // One line per added, removed or modified file.
@@ -199,10 +211,10 @@ function summaryLine(
 	return `modified  ${label} (+${added} -${removed})`;
 }
 
-// ### stageRecipes
-// A working copy of the recipes directory, for binding read-write over it
-// in a configure session.
-export async function stageRecipes(real: string): Promise<WorkingCopy> {
+// ### stageUserDir
+// A working copy of a user directory (recipes, baseline), for binding
+// read-write over it in a configure session.
+export async function stageUserDir(real: string): Promise<WorkingCopy> {
 	const staged = await stageDir(real);
 	for (const name of await listFiles(real)) {
 		await Bun.write(`${staged}/${name}`, Bun.file(`${real}/${name}`));
@@ -234,41 +246,37 @@ async function syncDir(staged: string, real: string): Promise<void> {
 }
 
 // ### validateConfig
-// The same rules a session applies, without exiting: a port list that
-// parses, readwrite entries under $HOME, readonly $HOME entries that exist.
-// Env names are only warned about, as in a session.
-export async function validateConfig(root: string): Promise<string[]> {
+// The same rules a session applies, without exiting, to the project's
+// files on top of the baseline: a port list that parses, readwrite entries
+// under $HOME, skill patterns that compile. Env names are only warned
+// about, as in a session; a readonly $HOME path that does not exist yet is
+// allowed (it is bound once it does).
+export async function validateConfig(
+	root: string,
+	baseline?: string,
+): Promise<string[]> {
 	const problems: string[] = [];
 	try {
-		await readAgentPorts(root);
+		await readAgentPorts(root, baseline);
 	} catch (err) {
 		problems.push(err instanceof Error ? err.message : String(err));
 	}
-	parseEnvNames(await readConfigText(root, "env"), `${CONFIG_DIR}/env`);
-
-	const realHome = getRealHome();
-	for (const line of lines(await readConfigText(root, "readwrite"))) {
+	parseEnvNames(
+		await readConfigText(root, "env", baseline),
+		`${CONFIG_DIR}/env`,
+	);
+	for (const line of lines(await readConfigText(root, "readwrite", baseline))) {
 		if (!line.startsWith("$HOME/")) {
-			problems.push(
-				`${CONFIG_DIR}/readwrite: "${line}" must start with $HOME/`,
-			);
+			problems.push(`readwrite: "${line}" must start with $HOME/`);
 		}
 	}
-	for (const line of skillPatternLines(await readConfigText(root, "skills"))) {
+	for (const line of skillPatternLines(
+		await readConfigText(root, "skills", baseline),
+	)) {
 		try {
 			new RegExp(line);
 		} catch {
-			problems.push(
-				`${CONFIG_DIR}/skills: "${line}" is not a regular expression`,
-			);
-		}
-	}
-	for (const line of lines(await readConfigText(root, "readonly"))) {
-		if (
-			line.startsWith("$HOME/") &&
-			!(await pathExists(`${realHome}/${line.slice("$HOME/".length)}`))
-		) {
-			problems.push(`${CONFIG_DIR}/readonly: "${line}" does not exist`);
+			problems.push(`skills: "${line}" is not a regular expression`);
 		}
 	}
 	return problems;

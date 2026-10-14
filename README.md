@@ -611,21 +611,29 @@ starts the agent with the `configure-scoder-sandbox` skill to work out,
 with you, what this project needs inside the sandbox — environment
 variables, host ports, read-only and read-write paths, MCP servers — and
 write `.sandbox/` (and `.mcp.json`). The agent edits working copies of
-`.sandbox/` and of your recipes; when you exit, scoder lists each changed
-file in one line, checks them, and applies them only if you say yes — the
-recipes backed up first — then starts a normal session. Commit `.sandbox/`
-before and after: it is meant to live in version control with the project.
+`.sandbox/`, your baseline and your recipes; when you exit, scoder lists
+each changed file in one line, checks them, and applies them only if you
+say yes — the baseline and recipes backed up first — then starts a normal
+session. Commit `.sandbox/` before and after: it is meant to live in
+version control with the project.
+
+**Baseline and project.** `~/.config/scoder/sandbox/` (same five files)
+holds what **every** sandbox on this machine gets — your provider keys,
+the usual protected files, skills you always want. A project's `.sandbox/`
+only adds to it, and cannot remove anything. scoder writes the baseline
+from its defaults the first time, never overwriting your edits; the
+configure agent can help you change it.
 
 An interactive start in a project whose `.sandbox/` lacks any of `env`,
-`readonly`, `readwrite` or `ports` does this automatically. Scripts and
-piped runs never do; they use the built-in defaults.
+`readonly`, `readwrite`, `ports` or `skills` does this automatically.
+Scripts and piped runs never do; they run on the baseline alone.
 
 The agent works from your **recipes**: markdown files in
 `~/.config/scoder/recipes/` (or `$XDG_CONFIG_HOME/scoder/recipes/`), any
 number, any names, each with *When to use*, *Env*, *Ports*, *Read-only
-binds*, *Read-write binds*, *Skills* and *MCP servers* sections. scoder writes a starter set
-there (base, Java/Gradle, TypeScript, R, Python, polyglot, web search,
-model hosting) and never overwrites a file you have edited — edit them, or
+binds*, *Read-write binds*, *Skills* and *MCP servers* sections. scoder
+writes a starter set there (base, Java/Gradle, TypeScript, R, Python,
+polyglot, research) and never overwrites a file you have edited — edit them, or
 ask the agent to during `--configure`, to describe your machine.
 
 ## Agent skills (`.sandbox/skills`)
@@ -644,7 +652,8 @@ web-search
 .*research.*
 ```
 
-Without the file every skill is included (`.*`). The selection, plus
+The user's baseline `~/.config/scoder/sandbox/skills` applies too (the
+shipped one selects nothing). The selection, plus
 scoder's own skills, is bound read-only where the session's agent looks
 for skills — `~/.claude/skills` for Claude Code, `~/.pi/agent/skills` for
 pi, `~/.config/opencode/skills` for opencode, `~/.copilot/skills` for
@@ -713,7 +722,7 @@ you start scoder in — none of them is passed into the sandbox (that is
 | `SCODER_LLM_PORT` | The host port probed for a local OpenAI-compatible API at startup (default `11434`, Ollama's). When something answers, the port is forwarded and appended to `.sandbox/ports`. Port `11435` is also probed, and taken only if it serves an OpenAI-style `/v1/models`. |
 | `SCODER_KEEP_SCREEN` | Any non-empty value leaves the terminal as the tool left it on exit. By default scoder resets terminal modes (alternate screen, hidden cursor, mouse reporting, bracketed paste, raw input) and clears the screen, keeping scrollback. |
 | `SCODER_KEEP_SESSION_TMP` | Any non-empty value keeps the session's temp root (`/tmp/scoder-<id>`) after exit instead of deleting it — the staged files scoder put in front of the sandbox, and the IDE/xpra log. Useful with `--dry-run` to inspect what it built. |
-| `XDG_CONFIG_HOME` | Where the recipes live: `$XDG_CONFIG_HOME/scoder/`, else `~/.config/scoder/`. |
+| `XDG_CONFIG_HOME` | Where the baseline and recipes live: `$XDG_CONFIG_HOME/scoder/`, else `~/.config/scoder/`. |
 
 **GUI presets (xpra)**
 

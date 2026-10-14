@@ -760,9 +760,8 @@ different reason.
 ### 86. sandbox-config-not-seeded-by-a-session
 [TESTED_BY](/tests/scoder.test.ts#testSandboxConfigNotSeededByASession)
 
-A non-interactive session in a project with no `.sandbox/` writes only
-`.sandbox/README.md`; `env`, `readonly`, `readwrite` and `ports` are not
-created — the session runs on the shipped base defaults. (Replaces
+A non-interactive session in a project with no `.sandbox/` writes none of
+its files — the session runs on the user's baseline. (Replaces
 `sandbox-readonly-created-if-missing`.)
 
 ### 87. sandbox-readonly-missing-file-not-writable-from-sandbox
@@ -1423,15 +1422,16 @@ not; a line that is not a variable name is warned about and skipped.
 [TESTED_BY](/tests/scoder.test.ts#testUserConfigSeedsStarterRecipes)
 
 In-process with a fresh `XDG_CONFIG_HOME`: every starter recipe missing
-from `~/.config/scoder/recipes/` is written byte-identical to
-`src/defaults/recipes/`, an edited one is kept, and the project's
-`.sandbox/` gets only its README.
+from `~/.config/scoder/recipes/`, and every baseline file missing from
+`~/.config/scoder/sandbox/`, is written byte-identical to
+`src/defaults/`, an edited one is kept, and the project's `.sandbox/` is
+left empty.
 
 ### 139. user-config-dry-run-writes-nothing-but-previews-it
 [TESTED_BY](/tests/scoder.test.ts#testUserConfigDryRunWritesNothingButPreviewsIt)
 
 `--dry-run` creates no configuration at either level, yet its preview uses
-the user's `env` list when the project has none yet.
+the user's baseline `env`.
 
 ### 140. scoder-bind-env-adds-presets
 [TESTED_BY](/tests/scoder.test.ts#testScoderBindEnvAddsPresets)
@@ -1719,6 +1719,21 @@ Recipe changes from a configure session are listed one line per file
 with the `.sandbox/` changes; on "no" nothing changes; on "yes" the
 recipes directory is backed up (dated copy beside it), then made to match
 the working copy, and `.sandbox/` is applied.
+
+### 177. baseline-applies-to-every-project
+[TESTED_BY](/tests/scoder.test.ts#testBaselineAppliesToEveryProject)
+
+Baseline `env` and `readonly` entries in `~/.config/scoder/sandbox/` apply alongside the project's; a project `readonly` with none of them does not remove the baseline protection.
+
+### 178. skills-hide-the-agents-other-skill-dirs
+[TESTED_BY](/tests/scoder.test.ts#testSkillsHideTheAgentsOtherSkillDirs)
+
+For opencode, the skills are bound at `~/.config/opencode/skills`; `~/.claude/skills` and `~/.agents/skills` are hidden behind an empty directory only when they exist on the host, and nothing is bound (or created) when they do not.
+
+### 179. missing-skills-file-starts-configure
+[TESTED_BY](/tests/scoder.test.ts#testMissingSkillsFileStartsConfigure)
+
+`skills` is one of the key files whose absence starts a configure session.
 
 ## Current Network Coverage
 

@@ -1,20 +1,31 @@
 ---
 name: configure-scoder-sandbox
-description: 'Use when the user asks to configure scoder for a project, set up or change `.sandbox/` (env, readonly, readwrite, ports, skills), choose which agent skills a project gets, edit the scoder recipes, connect the agent to an IDE or a host MCP server, or when the session''s AGENTS.md says it is a scoder configure session. Also use when a build or tool fails inside a scoder sandbox because a path, port or environment variable it needs was not granted.'
+description: 'Use when the user asks to configure scoder for a project, set up or change `.sandbox/` (env, readonly, readwrite, ports, skills), choose which agent skills a project gets, edit the scoder recipes or the baseline grants in `~/.config/scoder/sandbox/`, connect the agent to an IDE or a host MCP server, or when the session''s AGENTS.md says it is a scoder configure session. Also use when a build or tool fails inside a scoder sandbox because a path, port or environment variable it needs was not granted.'
 license: MIT
 allowed-tools: Read Bash Grep Glob Write Edit
 ---
 
 # Configuring a scoder sandbox
 
-scoder runs a project in a sandbox that sees only what the project's
-`.sandbox/` grants. This skill is how you set that up with the user: look
-at the project, ask what you cannot see, write the **minimal** config, and
-explain each line. In a **configure session** (`scoder --configure`), the
-`.sandbox/` you edit is a working copy, and so is the recipes directory
-`~/.config/scoder/recipes/`: when the session ends, scoder lists each
-changed file in one line and applies the lot only if the user accepts
-(backing the recipes up first), then starts a normal session. So be
+scoder runs a project in a sandbox that sees only what is granted, in two
+layers:
+
+- **Baseline** — `~/.config/scoder/sandbox/` (`env`, `readonly`,
+  `readwrite`, `ports`, `skills`): the user's grants for **every** sandbox
+  on this machine. Non-negotiable: a project cannot remove anything from
+  it. Seeded from scoder's defaults.
+- **Project** — `<project>/.sandbox/`, the same files: additions for this
+  project only, mostly about its code (toolchains, dependencies, caches).
+
+What a session gets is the baseline plus the project's additions. This
+skill is how you set them up with the user: look at the project, ask what
+you cannot see, write the **minimal** config, and explain each line.
+
+In a **configure session** (`scoder --configure`), `.sandbox/`, the
+baseline directory and the recipes directory (`~/.config/scoder/recipes/`)
+are all working copies: when the session ends, scoder lists each changed
+file in one line and applies the lot only if the user accepts (backing up
+the baseline and recipes first), then starts a normal session. So be
 complete, but never quietly generous.
 
 scoder will not bind files that don't exist, but a grant needs to cover
@@ -25,7 +36,8 @@ later created. In this case the grant is needed even if the file is missing.
 
 ## The files
 
-All in `.sandbox/` at the project root; one entry per line, `#` comments.
+The same five in `~/.config/scoder/sandbox/` (baseline) and `.sandbox/`
+(project); one entry per line, `#` comments.
 
 | File | Grants |
 |---|---|
@@ -33,7 +45,7 @@ All in `.sandbox/` at the project root; one entry per line, `#` comments.
 | `readonly` | project-relative paths kept read-only (`.github/`, lockfiles); and `$HOME/...` paths bound read-only (a directory or a single file). |
 | `readwrite` | `$HOME/...` directories bound read-write (created if missing). Nothing outside `$HOME`. |
 | `ports` | host loopback ports forwarded into the sandbox (a service running on the host). |
-| `skills` | regular expressions matched against whole skill names: which of the machine's skills the session's agent gets. Missing: `.*`, all of them. |
+| `skills` | regular expressions matched against whole skill names: which of the machine's skills the session's agent gets. |
 
 Plus `.mcp.json` (the agent's MCP servers), reviewed the same way.
 
@@ -46,8 +58,7 @@ and skills only if `skills` selects them.
 Grants under `~/.local/bin` go in `readonly`, one per entry:
 `$HOME/.local/bin/<tool>` (or the bare directory for all of it). In this
 session `~/.local/bin` is visible whole, read-only, so you can inspect it;
-other `$HOME` paths are visible only if already granted — ask the user, or
-rely on scoder checking on the host that each `readonly` path exists.
+other `$HOME` paths are visible only if already granted — ask the user.
 
 **Skills.** scoder finds every skill on the machine — the project's
 `.agents/skills`, `.claude/skills`, `.github/skills`, ... and the user's
@@ -69,7 +80,13 @@ applied).
    `.mcp.json`) has uncommitted changes, ask the user to commit them — or
    offer to — before you change anything, so this session's changes can
    be reviewed and undone on their own.
-1. **Read the recipes.** Read **every** markdown file in
+1. **Read the baseline.** Read every file in `~/.config/scoder/sandbox/`.
+   Never repeat a baseline entry in `.sandbox/` — it applies already.
+   When something the user wants is true of every project on this machine
+   (their inference provider's key, a search provider, a skill they always
+   use), offer to put it in the baseline instead; otherwise it belongs to
+   the project. The recipes say which choices are usually which.
+2. **Read the recipes.** Read **every** markdown file in
    `~/.config/scoder/recipes/` — scoder's starter recipes plus any the user
    has written (their own defaults and rules, e.g. which MCP servers or
    skills to turn on for which kind of project). Formats vary; read them as
@@ -78,30 +95,31 @@ applied).
    binds*, *Skills* and *MCP servers* sections. If the user wants to
    change a recipe, or record a new one (say, a set of skills for a kind
    of work), edit or add the file there.
-2. **Look at the project before asking.** Build files (`pom.xml`,
+3. **Look at the project before asking.** Build files (`pom.xml`,
    `build.gradle*`, `package.json`, `pyproject.toml`/`uv.lock`,
    `DESCRIPTION`/`*.Rproj`, `Cargo.toml`), lockfiles, an existing
    `.sandbox/` and `.mcp.json`. Decide which recipes apply (several → the
    polyglot recipe).
-3. **Ask only what you cannot see**, briefly and together: which IDE (if
+4. **Ask only what you cannot see**, briefly and together: which IDE (if
    any) they will use with `--ide`; local model or other host services
    (and their ports); which providers/credentials the session needs (names
    only); directories outside the project the work needs, and whether
    read-only (dependencies, references) or read-write (caches, output).
-4. **Resolve before granting.** For tools in `~/.local/bin`, check whether
+5. **Resolve before granting.** For tools in `~/.local/bin`, check whether
    each entry is a symlink (`ls -l ~/.local/bin/<tool>`, `readlink -f`) and
    grant the entry plus what it needs to run (e.g. a uv tool needs
    `$HOME/.local/share/uv/tools` and `$HOME/.local/share/uv/python`) —
-   not the whole directory to be safe. Check each `$HOME/...` path exists.
-5. **Write the minimal config** — the base recipe plus the matching ones,
-   nothing redundant, nothing already always bound. Keep existing entries
+   not the whole directory to be safe. A path that does not exist yet but
+   will (see above) is still granted.
+6. **Write the minimal config** — the base recipe plus the matching ones,
+   nothing redundant, nothing already in the baseline or always bound. Keep existing entries
    unless they are clearly wrong; say so if you remove one.
-6. **Explain each entry** as you add it, in one line: what it is for, and
+7. **Explain each entry** as you add it, in one line: what it is for, and
    for read-write paths and ports, what it opens up.
-7. **MCP servers**: add the matching entries to `.mcp.json` (merge, never
+8. **MCP servers**: add the matching entries to `.mcp.json` (merge, never
    overwrite), using the setups below; walk the user through any host-side
    step (installing an extension on the host, creating a token).
-8. **Finish** by summarising the files you changed, and tell the user to
+9. **Finish** by summarising the files you changed, and tell the user to
    exit the session: scoder will list the changes, ask, and start a normal
    session with the result. Remind them to commit `.sandbox/` (and
    `.mcp.json`) afterwards, so the configuration travels with the project
@@ -329,6 +347,3 @@ forward): its kernels would execute on the host, outside the sandbox.
   }
 }
 ```
-
-
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        

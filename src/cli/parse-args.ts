@@ -6,7 +6,7 @@ import type { ScoderOptions } from "../types.ts";
 // EM: Host-loopback port access is configured via .sandbox/ports, not a flag —
 // EM: see src/git/protection.ts and design/implementation/plans/agentports.md
 
-const USAGE = `scoder 2.3.3
+const USAGE = `scoder 3.0.0
 Sandboxed runner for coding tools using bubblewrap and pasta.
 
 Usage:
@@ -60,6 +60,12 @@ Options:
                             positron and webstorm, as the
                             tool or as --ide; refused while a session is
                             using it
+       --configure         Start an agent-guided session that sets up this
+                            project's .sandbox/ (and .mcp.json) with you; the
+                            changes are shown for approval when it ends, then
+                            a normal session starts. Runs automatically when
+                            .sandbox/ lacks env, readonly, readwrite or ports.
+                            e.g. scoder --configure pi
        --env NAME=VALUE    Set NAME to VALUE inside the sandbox, for this
                             session only. Repeatable. Overrides what
                             .sandbox/env passes through for that name.
@@ -77,7 +83,7 @@ Setup (run once, requires sudo):
                           absent) before installing xpra and xpra-x11
 `;
 
-const VERSION = "2.3.3";
+const VERSION = "3.0.0";
 
 interface ParseResult {
 	options: ScoderOptions;
@@ -100,6 +106,7 @@ export function parseArgs(args: string[]): ParseResult {
 		sshTarget: null,
 		ide: null,
 		newWorkspace: false,
+		configure: false,
 		setEnv: [],
 		bind: [],
 		nativeDisplay: false,
@@ -227,6 +234,12 @@ export function parseArgs(args: string[]): ParseResult {
 
 		if (arg === "--new-workspace") {
 			options.newWorkspace = true;
+			i++;
+			continue;
+		}
+
+		if (arg === "--configure") {
+			options.configure = true;
 			i++;
 			continue;
 		}

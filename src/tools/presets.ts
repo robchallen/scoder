@@ -1,9 +1,6 @@
 import { randomBytes } from "node:crypto";
 import { lstat, readdir, realpath } from "node:fs/promises";
 import { dirname } from "node:path";
-import scoderSkill from "../../skills/working-in-a-scoder-sandbox/SKILL.md" with {
-	type: "text",
-};
 import { getProjDir } from "../git/worktree.ts";
 import { BROWSER_DEST } from "../sandbox/browser.ts";
 import type { LiveOverlay } from "../sandbox/overlays.ts";
@@ -1214,6 +1211,8 @@ const jupyterlabPreset: ToolPreset = {
 export const TOOL_PRESETS: Record<string, ToolPreset> = {
 	opencode: {
 		description: "OpenCode",
+		// EM: First-prompt spelling, confirmed by the user (2026-10-14).
+		initialPromptArgs: (prompt) => ["--prompt", prompt],
 
 		configBinds: async (realHome, sandboxHome) => {
 			const binds: BindMount[] = [];
@@ -1263,6 +1262,8 @@ export const TOOL_PRESETS: Record<string, ToolPreset> = {
 
 	claude: {
 		description: "Claude Code",
+		// EM: First-prompt spelling, confirmed by the user (2026-10-14).
+		initialPromptArgs: (prompt) => [prompt],
 
 		configBinds: async (realHome, sandboxHome) => {
 			const binds: BindMount[] = [];
@@ -1308,45 +1309,8 @@ export const TOOL_PRESETS: Record<string, ToolPreset> = {
 			// ~/.local/bin/claude at it. Without this bind that symlink dangles
 			// inside the sandbox. Read-only, so the sandbox cannot self-update
 			// the host's installation.
-			// EM: scoder's own skill, for Claude Code, which reads
-			// EM: ~/.claude/skills rather than ~/.agents/skills (where the
-			// EM: snapshot already carries it). A staged copy bound read-only
-			// EM: over the read-write ~/.claude, so nothing is written into the
-			// EM: user's real skills — except, accepted knowingly, the empty
-			// EM: directory bwrap creates there as the mountpoint, the first
-			// EM: time. Skipped when the user's own copy is there: a SKILL.md,
-			// EM: not merely the path, since our own leftover mountpoint is an
-			// EM: empty directory and must not count as "installed".
-			// EM: Not through a symlink. Reported: launch failed with `Can't
-			// EM: mkdir ~/.claude/skills/working-in-a-scoder-sandbox: No such
-			// EM: file or directory` — ~/.claude/skills is commonly a symlink
-			// EM: (often to ~/.agents/skills), and at the moment this bind is
-			// EM: applied its target is not mounted yet, so bwrap cannot make
-			// EM: the mountpoint through it. A symlinked skills dir pointing at
-			// EM: ~/.agents/skills already shows Claude the skill via the
-			// EM: snapshot; one pointing elsewhere is the user's arrangement to
-			// EM: keep. Either way: leave it alone.
-			const skillRel = ".claude/skills/working-in-a-scoder-sandbox";
-			if (
-				(await dirExists(claudeDir)) &&
-				!(await isSymlink(`${realHome}/.claude/skills`)) &&
-				!(await isSymlink(`${realHome}/${skillRel}`)) &&
-				!(await fileExists(`${realHome}/${skillRel}/SKILL.md`))
-			) {
-				// EM: Make the parent ourselves, as cheap insurance: a bind's
-				// EM: mountpoint needs its parent, and on some bwrap versions a
-				// EM: missing one is an error rather than created. The empty
-				// EM: skills dir is the same side effect already accepted for
-				// EM: the mountpoint itself.
-				await ensureDir(`${realHome}/.claude/skills`);
-				const staged = await stageFile(`${sandboxHome}/${skillRel}/SKILL.md`);
-				await Bun.write(staged, scoderSkill);
-				binds.push({
-					type: "ro-bind",
-					source: dirname(staged),
-					dest: `${sandboxHome}/${skillRel}`,
-				});
-			}
+			// EM: Skills: bound over ~/.claude/skills by index.ts's skillsBind
+			// EM: (src/sandbox/skills.ts), scoder's own included.
 
 			const claudeDataDir = `${realHome}/.local/share/claude`;
 			if (await dirExists(claudeDataDir)) {
@@ -1381,6 +1345,8 @@ export const TOOL_PRESETS: Record<string, ToolPreset> = {
 
 	copilot: {
 		description: "GitHub Copilot CLI",
+		// EM: First-prompt spelling, confirmed by the user (2026-10-14).
+		initialPromptArgs: (prompt) => ["-i", prompt],
 
 		configBinds: async (realHome, sandboxHome) => {
 			const binds: BindMount[] = [];
@@ -1449,6 +1415,8 @@ export const TOOL_PRESETS: Record<string, ToolPreset> = {
 
 	pi: {
 		description: "Pi Coding Agent",
+		// EM: First-prompt spelling, confirmed by the user (2026-10-14).
+		initialPromptArgs: (prompt) => [prompt],
 
 		configBinds: piConfigBinds,
 
@@ -1816,12 +1784,13 @@ export const TOOL_PRESETS: Record<string, ToolPreset> = {
 				return existingArgs;
 			}
 
+			const imports = await eclipseImportableDirs(dependencyDirs);
 			return [
 				"-data",
 				layout.workspaceSandboxDir,
 				"-importProject",
 				sandboxProjectDir,
-				...dependencyDirs.flatMap((dir) => ["-importProject", dir]),
+				...imports.flatMap((dir) => ["-importProject", dir]),
 				...existingArgs,
 			];
 		},
@@ -2034,14 +2003,6 @@ function vscodeFamilyPreset(flavor: VscodeFlavor): ToolPreset {
 	};
 }
 
-async function isSymlink(path: string): Promise<boolean> {
-	try {
-		return (await lstat(path)).isSymbolicLink();
-	} catch {
-		return false;
-	}
-}
-
 // ### piConfigBinds
 // Shared between the `pi` preset and `rstudio` (pi runs inside RStudio's
 // embedded terminal, and needs the identical access it would get as
@@ -2103,4 +2064,67 @@ async function resolveCommandPath(cmd: string): Promise<string | null> {
 
 async function commandExists(cmd: string): Promise<boolean> {
 	return (await resolveCommandPath(cmd)) !== null;
+}
+
+// ### eclipseImportableDirs
+// EM: Which read-only $HOME grants Eclipse should import. Since grants also
+// EM: carry toolchains and config (~/R, a single file), a grant is a
+// EM: dependency project only if it holds a `.project` — the only thing the
+// EM: import plugin imports. `find` prunes hidden directories, stops at the
+// EM: first hit and is capped in depth; the plugin recurses from there. A
+// EM: Maven/Gradle tree without one gets a message instead of silently
+// EM: importing nothing.
+export async function eclipseImportableDirs(dirs: string[]): Promise<string[]> {
+	const importable: string[] = [];
+	for (const dir of dirs) {
+		if (await findUnder(dir, "-name", ".project")) {
+			importable.push(dir);
+		} else if (
+			await findUnder(
+				dir,
+				"(",
+				"-name",
+				"pom.xml",
+				"-o",
+				"-name",
+				"build.gradle*",
+				")",
+			)
+		) {
+			info(
+				`${dir} looks like a Maven/Gradle project with no Eclipse .project; the import plugin cannot import it yet`,
+			);
+		}
+	}
+	return importable;
+}
+
+async function findUnder(dir: string, ...test: string[]): Promise<boolean> {
+	const proc = Bun.spawn(
+		[
+			"find",
+			dir,
+			"-mindepth",
+			"1",
+			"-maxdepth",
+			"4",
+			"(",
+			"-type",
+			"d",
+			"-name",
+			".*",
+			"-prune",
+			")",
+			"-o",
+			"-type",
+			"f",
+			...test,
+			"-print",
+			"-quit",
+		],
+		{ stdout: "pipe", stderr: "ignore" },
+	);
+	const out = await new Response(proc.stdout).text();
+	await proc.exited;
+	return out.trim() !== "";
 }

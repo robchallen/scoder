@@ -171,42 +171,44 @@ jupyter-ai's MCP endpoint.
 - **Protected infrastructure** — `.github/`, `.claude/`, `opencode.json`,
    `.gitignore`, `package-lock.json`, `poetry.lock`, `Cargo.lock`, `pnpm-lock.yaml`, `yarn.lock`, `mise.toml`
    are read-only by default. The list lives in the project's `.sandbox/readonly`
-   (seeded from `~/.config/scoder/readonly`, see
-   [defaults](#defaults-configscoder-and-environment-passthrough-sandboxenv));
-   the whole `.sandbox/` directory is always read-only inside the sandbox.
+   (written by a [configure session](#setting-up-a-project---configure),
+   or the built-in default when absent);
+   the whole `.sandbox/` directory is read-only inside the sandbox (outside
+   a configure session, which edits a reviewed working copy).
 - **Cleared environment** — the sandbox starts with no host environment
    variables except the names listed in `.sandbox/env` (see
-   [defaults](#defaults-configscoder-and-environment-passthrough-sandboxenv))
+   [environment passthrough](#environment-passthrough-sandboxenv))
    and the few scoder sets itself (see
    [environment variables](#environment-variables)).
 - **No host session bus, no host `/run`** — `/run` is a fresh tmpfs, with
    `/run/user/<uid>` created mode `0700`; nothing in the sandbox can reach
    your desktop's D-Bus session or system bus, keyring included. GUI presets
    get a private session bus of their own.
-- **Agent skills snapshot** — `~/.agents` is copied at sandbox start and bound
-  read-only into the sandbox, so symlinked skills resolve as a stable snapshot
-  for the duration of the session.
+- **Agent skills** — see [skills](#agent-skills-sandboxskills): the
+  machine's skills that `.sandbox/skills` selects, plus scoder's own, are
+  copied at start (symlinks resolved) and bound read-only where the agent
+  reads skills.
 - **Sandbox AGENTS.md notice** — the repository `AGENTS.md` seen inside the
   sandbox is overlaid with an extra scoder section so the agent knows it is
   running in an isolated worktree with an ephemeral home. The overlay is
   marked as `--skip-worktree` in git so the agent can use git freely
   (worktree operations, stash, etc.) without seeing a dirty working tree.
-- **Tools** - executable directories and libraries are available read-only
-  for R, Rust, and mise-en-place. Specifically:
-  - **R**: `~/R` (user library) and `~/.Rprofile` are bound read-only, so
-    R processes started inside the sandbox — including R MCP servers configured
-    in the tool's config file — can access user-installed packages.
-  - **Rust**: `~/.rustup` and `~/.cargo/bin` bound read-only
-  - **mise**: `~/.local/share/mise` and `~/.config/mise` bound read-only
-  - **uv tools**: `~/.local/share/uv/tools` and `~/.local/share/uv/python`
-    bound read-only, so tools installed with `uv tool install` (`hf`,
-    `jupyter`, ...) run from `~/.local/bin` as on the host; install and
-    upgrade them on the host
+- **Tools are granted per project** — toolchains and caches in your home
+  directory (`~/R` and `~/.Rprofile`, `~/.m2`, `~/.rustup` and
+  `~/.cargo/bin`, mise, uv's tools and pythons, `.npmrc`, `.pypirc`) and
+  entries in `~/.local/bin` are bound only when the project's
+  `.sandbox/readonly` or `.sandbox/readwrite` lists them — usually written
+  by a [configure session](#setting-up-a-project---configure) from your
+  recipes. `~/.local/bin` is granted entry by entry
+  (`$HOME/.local/bin/hf`), or whole (`$HOME/.local/bin`); the session's own
+  tool is always there. A project whose config predates this (no
+  `.sandbox/version`) gets a start-up message saying so.
+- **Always bound** — `~/.gitconfig`, `~/.config/gh`, worktrunk's config,
+  and the tool's and IDE's own config:
   - **Desktop integration**: `~/.local/share/fonts` and
     `~/.config/mimeapps.list` bound read-only, so GUI presets (`rstudio`,
     `eclipse`, `vscode`, `vscodium`, `positron`) render text with the host's real fonts and see
     the host's file-type "open with" associations
-- **Java/Maven**: `~/.m2` bound read-write, otherwise not much works.
 - **Minimal `/dev`** — individual real host device nodes only (`null`,
   `zero`, `full`, `urandom`, `random`, `tty`, `pts`, `ptmx`, `fd`), not
   the host's whole `/dev` (which would also expose every raw disk, TPM,
@@ -288,6 +290,8 @@ scoder --dry-run opencode         # show bwrap command without running
                          private virtual display (see below)
     --env NAME=VALUE    Set NAME inside the sandbox for this session only;
                          repeatable (see below)
+    --configure         Set up this project's .sandbox/ with the agent
+                         first (see below)
     --dry-run           Print bwrap command without executing
 
 Setup (run once, with sudo):
@@ -437,17 +441,10 @@ The skill (`skills/working-in-a-scoder-sandbox/` in this repository)
 teaches an agent how a scoder sandbox behaves — what is read-only, how
 worktrees work, how to set up MCP — so it can help instead of guessing.
 
-**Agents that read `~/.agents/skills` (pi and others) get it automatically**:
-scoder carries the skill and adds it to the session's copy of `~/.agents`,
-nothing written to your real one. If you have installed your own copy
-there, yours is used instead.
-
-**Claude Code** reads `~/.claude/skills` instead, and gets it there too: a
-read-only copy is mounted at `~/.claude/skills/working-in-a-scoder-sandbox`
-inside the session. Your real `~/.claude` is untouched except for one
-thing — the empty `working-in-a-scoder-sandbox` directory left as the mount
-point (it needs somewhere to attach). If you install your own copy there,
-with a `SKILL.md`, yours is used instead. If your `~/.claude/skills` is a symlink (to `~/.agents/skills`, say), it is left alone — pointing at `~/.agents/skills`, Claude sees the skill there anyway.
+Nothing to install: scoder carries it (and `configure-scoder-sandbox`) and
+adds both to every session's skills, wherever the agent reads them —
+nothing written to your real skill directories. A copy of your own with
+the same name, if selected, is used instead.
 
 With `--ide`, scoder also tells the agent (through the sandbox's
 `AGENTS.md` note) which IDE is running beside it, and asks it to offer once
@@ -545,8 +542,8 @@ file's presence and content is the entire mechanism, same as
 ```
 
 - **Always read-only inside the sandbox**, like the rest of `.sandbox/` —
-  only the host side can change it. A project without one gets a copy of
-  `~/.config/scoder/ports` (all comments by default).
+  only the host side can change it. A project without one forwards no
+  ports (beyond an auto-detected local model).
 - **A malformed line fails the session outright**, naming the bad line —
   this is network exposure, not a workspace-protection list, so a config
   file that could silently mean less than it looks like is the wrong
@@ -590,8 +587,8 @@ $HOME/analysis-output/figures
   including via a symlink that escapes it — fails the session outright,
   with a clear error. Any line not starting with `$HOME/` is rejected the
   same way: nothing outside `$HOME` is supported at all.
-- **Must not overlap a fixed scoder bind** (`~/.gitconfig`, `~/.m2`,
-  `~/.rustup`, and similar) or an `.sandbox/readonly` `$HOME/...` entry —
+- **Must not overlap a fixed scoder bind** (`~/.gitconfig`,
+  `~/.config/gh`, a tool's own config, and similar) or an `.sandbox/readonly` `$HOME/...` entry —
   both are hard errors naming the conflicting path, rather than a silent
   downgrade to read-only.
 - **Always read-only itself inside the sandbox**, like `.sandbox/readonly`
@@ -604,16 +601,71 @@ automatically. Gitignored works too, but only in direct mode: a new
 worktree checkout contains only tracked files, so an untracked
 `.sandbox/readwrite` from your main checkout won't appear there on its own.
 
-## Defaults (`~/.config/scoder`) and environment passthrough (`.sandbox/env`)
+## Setting up a project (`--configure`)
 
-The first time scoder runs in a project it creates `.sandbox/` by copying
-in each file from `~/.config/scoder/` (or `$XDG_CONFIG_HOME/scoder/`) that
-the project does not already have. `~/.config/scoder/` is itself created
-from scoder's built-in defaults, file by file, the first time it is
-needed. Nothing is ever overwritten at either level, so:
+```bash
+scoder --configure claude     # or pi, opencode, copilot
+```
 
-- edit `~/.config/scoder/` to change what **new** projects start with;
-- edit a project's `.sandbox/` to change **that** project.
+starts the agent with the `configure-scoder-sandbox` skill to work out,
+with you, what this project needs inside the sandbox — environment
+variables, host ports, read-only and read-write paths, MCP servers — and
+write `.sandbox/` (and `.mcp.json`). The agent edits working copies of
+`.sandbox/`, your baseline and your recipes; when you exit, scoder lists
+each changed file in one line, checks them, and applies them only if you
+say yes — the baseline and recipes backed up first — then starts a normal
+session. Commit `.sandbox/` before and after: it is meant to live in
+version control with the project.
+
+**Baseline and project.** `~/.config/scoder/sandbox/` (same five files)
+holds what **every** sandbox on this machine gets — your provider keys,
+the usual protected files, skills you always want. A project's `.sandbox/`
+only adds to it, and cannot remove anything. scoder writes the baseline
+from its defaults the first time, never overwriting your edits; the
+configure agent can help you change it.
+
+An interactive start in a project whose `.sandbox/` lacks any of `env`,
+`readonly`, `readwrite`, `ports` or `skills` does this automatically.
+Scripts and piped runs never do; they run on the baseline alone.
+
+The agent works from your **recipes**: markdown files in
+`~/.config/scoder/recipes/` (or `$XDG_CONFIG_HOME/scoder/recipes/`), any
+number, any names, each with *When to use*, *Env*, *Ports*, *Read-only
+binds*, *Read-write binds*, *Skills* and *MCP servers* sections. scoder
+writes a starter set there (base, Java/Gradle, TypeScript, R, Python,
+polyglot, research) and never overwrites a file you have edited — edit them, or
+ask the agent to during `--configure`, to describe your machine.
+
+## Agent skills (`.sandbox/skills`)
+
+At start-up scoder finds every skill on the machine — in the project's
+`.agents/skills`, `.claude/skills`, `.github/skills`, ... and your
+`~/.agents/skills`, `~/.claude/skills`, `~/.copilot/skills`,
+`~/.config/opencode/skills`, `~/.pi/agent/skills` — a project skill
+shadowing one of yours with the same name. `.sandbox/skills` picks the
+ones this project's sessions get: one regular expression per line, matched
+against the whole skill name.
+
+```
+# .sandbox/skills
+web-search
+.*research.*
+```
+
+The user's baseline `~/.config/scoder/sandbox/skills` applies too (the
+shipped one selects nothing). The selection, plus
+scoder's own skills, is bound read-only where the session's agent looks
+for skills — `~/.claude/skills` for Claude Code, `~/.pi/agent/skills` for
+pi, `~/.config/opencode/skills` for opencode, `~/.copilot/skills` for
+Copilot, `~/.agents/skills` otherwise — and only for that agent, not for
+presets added with `--bind`.
+
+Edits to `.sandbox/skills` (or your baseline's `skills`) during a session
+are applied within a couple of seconds; reload the agent's skills (e.g.
+`/reload`) to see them — no restart needed. `.sandbox/ports` is live the
+same way; `env`, `readonly` and `readwrite` take effect on the next start.
+
+## Environment passthrough (`.sandbox/env`)
 
 `.sandbox/env` lists, one per line, the host environment variables passed
 into the sandbox (when set); nothing else is passed. A `*` makes a line a
@@ -638,10 +690,10 @@ start-up scoder lists what each pattern matched — names only, never values.
 
 The built-in default passes your shell/editor variables and `GH_TOKEN` /
 `GITHUB_TOKEN` only, with the common provider API keys listed but
-commented out — uncomment the ones you use in `~/.config/scoder/env` (for
-new projects) or `.sandbox/env` (for an existing one). This replaces the
+commented out — a configure session, or you, lists the ones a project
+uses in its `.sandbox/env`. This replaces the
 fixed list earlier versions passed unconditionally. `--dry-run` writes no
-configuration files, but previews the values a real run would use.
+configuration files.
 
 For a one-off value, `--env` sets a variable in this session's sandbox
 only — nothing is written to `.sandbox/env`:
@@ -675,7 +727,7 @@ you start scoder in — none of them is passed into the sandbox (that is
 | `SCODER_LLM_PORT` | The host port probed for a local OpenAI-compatible API at startup (default `11434`, Ollama's). When something answers, the port is forwarded and appended to `.sandbox/ports`. Port `11435` is also probed, and taken only if it serves an OpenAI-style `/v1/models`. |
 | `SCODER_KEEP_SCREEN` | Any non-empty value leaves the terminal as the tool left it on exit. By default scoder resets terminal modes (alternate screen, hidden cursor, mouse reporting, bracketed paste, raw input) and clears the screen, keeping scrollback. |
 | `SCODER_KEEP_SESSION_TMP` | Any non-empty value keeps the session's temp root (`/tmp/scoder-<id>`) after exit instead of deleting it — the staged files scoder put in front of the sandbox, and the IDE/xpra log. Useful with `--dry-run` to inspect what it built. |
-| `XDG_CONFIG_HOME` | Where the user defaults live: `$XDG_CONFIG_HOME/scoder/`, else `~/.config/scoder/`. |
+| `XDG_CONFIG_HOME` | Where the baseline and recipes live: `$XDG_CONFIG_HOME/scoder/`, else `~/.config/scoder/`. |
 
 **GUI presets (xpra)**
 
@@ -705,7 +757,8 @@ the sandbox's own; and `SUDO_USER`/`SUDO_UID`/`SUDO_GID`, so that under
 `sudo` the sandbox runs as you rather than as root.
 
 **Set inside the sandbox** by scoder: `SCODER_SANDBOX=1` (a nested
-`scoder -w` refuses to run; `--no-worktree` still works), `HOME`, `PATH`,
+`scoder -w` refuses to run; `--no-worktree` still works),
+`SCODER_CONFIGURE=1` in a configure session, `HOME`, `PATH`,
 `USER`, `LOGNAME`, `TERM` and `LANG`, plus `MCPTOOLS_SOCKET_DIR` for
 `rstudio`. Everything else in the sandbox's environment — `SHELL` and
 `EDITOR` included — is there because `.sandbox/env` lists it.

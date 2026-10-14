@@ -11,6 +11,11 @@ export interface ScoderOptions {
 	// EM: (eclipse workspace, vscode user-data-dir) before setup, so it is
 	// EM: re-seeded fresh from the host.
 	newWorkspace: boolean;
+	// EM: --configure: an agent-guided session that sets up .sandbox/ (and
+	// EM: .mcp.json) with the user; changes are reviewed on the host when it
+	// EM: ends, then a normal session is launched. See
+	// EM: design/features/configure-mode.md.
+	configure: boolean;
 	// EM: --env NAME=VALUE (repeatable): set in this session's sandbox only,
 	// EM: in the order given; a later --env for the same name wins.
 	setEnv: Array<{ name: string; value: string }>;
@@ -90,6 +95,10 @@ export interface ToolPreset {
 	// an --ide companion beside an agent — e.g. where its server is and how
 	// to authenticate, so the agent can configure an MCP connection itself.
 	agentsNote?: () => string;
+	// How this agent takes a first prompt on its command line (`claude
+	// "<p>"`, `opencode --prompt "<p>"`, ...). Used by --configure to start
+	// the agent on the configure task; presets without it cannot run one.
+	initialPromptArgs?: (prompt: string) => string[];
 	fileOverlays?: (
 		hostProjectDir: string,
 		sandboxProjectDir: string,

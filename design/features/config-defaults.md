@@ -8,12 +8,19 @@ tags: [feature, config, sandbox, environment]
 
 ## Summary
 
-scoder's per-project configuration in `.sandbox/` is seeded from the user's
-own defaults in `~/.config/scoder/` (or `$XDG_CONFIG_HOME/scoder/`), which
-are in turn seeded from the defaults shipped in the binary
-(`src/defaults/`). A fourth file, `.sandbox/env`, lists the host environment
-variables passed into the sandbox, replacing the list that used to be
-hardcoded in `src/sandbox/builder.ts`.
+Every sandbox gets two layers of grants, read file by file (`env`,
+`readonly`, `readwrite`, `ports`, `skills`):
+
+- **Baseline** — `~/.config/scoder/sandbox/` (under `$XDG_CONFIG_HOME` when
+  set): the user's grants for every sandbox on the machine, seeded from
+  `src/defaults/sandbox/`. Non-negotiable: a project cannot remove from it.
+- **Project** — `<project>/.sandbox/`: additions for that project, written
+  by a [configure session](./configure-mode.md) or by hand.
+
+`~/.config/scoder/recipes/` holds the markdown recipes the configure skill
+works from. `env` lists the host environment variables passed into the
+sandbox, replacing the list that used to be hardcoded in
+`src/sandbox/builder.ts`.
 
 ## Motivation
 
@@ -30,30 +37,27 @@ scoder does out of the box.
 
 [IMPLEMENTED_BY](/src/git/sandbox-config.ts)
 
-Three levels, each filled only where the next one down is missing a file —
-nothing is ever overwritten:
+1. **Shipped baseline** — `src/defaults/sandbox/` (`env`, `readonly`,
+   `readwrite`, `ports`, `skills`), embedded in the binary with Bun's
+   `with { type: "text" }` imports, and written into
+   `~/.config/scoder/sandbox/` by file name when missing (`seedBaseline`);
+   the user's edits are kept. Not under `--dry-run`, which uses the
+   shipped files when the user's are absent.
+2. **Recipes** — `src/defaults/recipes/*.md`, written into
+   `~/.config/scoder/recipes/` the same way (`seedRecipes`).
+3. **Project** — nothing is written into `.sandbox/` by a session.
 
-1. **Shipped defaults** — `src/defaults/` (`README.md`, `env`, `readonly`,
-   `readwrite`, `ports`), embedded in the binary with Bun's
-   `with { type: "text" }` imports (the same mechanism as `entrypoint.sh`;
-   verified to survive `bun build --compile`).
-2. **User defaults** — `~/.config/scoder/`. On every run, any shipped
-   default missing there is written. A user's edit is kept; a deleted file
-   comes back as the shipped default (an empty or all-comment file is how
-   to opt out of one).
-3. **Project** — `<project>/.sandbox/`. `prepareConfigDir` copies every
-   regular file in `~/.config/scoder/` that the project lacks, after the
-   legacy-dotfile migration, so a migrated `.agentreadonly` is not shadowed
-   by a fresh default. From then on the project's copy is the one in
-   force: editing `~/.config/scoder/` changes what *new* projects start
-   with, not existing ones.
+Every reader goes through `readConfigText`, which returns the baseline
+file (or the shipped one if the user's is missing) followed by the
+project's, duplicate lines dropped. All the formats are line lists, so
+this is a union: the project adds, and a project entry can never cancel a
+baseline one. A baseline `readonly` `$HOME/...` entry and a project
+`readwrite` one for the same path is the same "listed in both" error as
+within a project. The baseline is read once at start-up.
 
-`readonly`, `readwrite` and `ports` are read from `.sandbox/` exactly as
-before. Every reader goes through `readConfigText`, whose fallbacks —
-`~/.config/scoder/`, then the shipped default — exist for `--dry-run`,
-which writes nothing at either level yet previews what a real run would
-apply. The old in-code defaults (`DEFAULT_PROTECTED`, the readwrite and
-ports header strings, the README literal) are gone.
+A `readonly` `$HOME/...` grant whose target does not exist yet (a
+`~/.Rprofile` not yet written) is kept and skipped with a message, and
+bound from the first session after it appears.
 
 ### `.sandbox/env`
 
@@ -101,7 +105,7 @@ variables its sessions see, the same trust a committed
 
 ## Tests
 
-`env-file-controls-passthrough`, `user-config-seeds-project-sandbox-dir`,
+`env-file-controls-passthrough`, `user-config-seeds-starter-recipes`, `baseline-applies-to-every-project`,
 `user-config-dry-run-writes-nothing-but-previews-it` — see
 [validation-suite](../test-scripts/validation-suite.md) cases 137-139. The
 test file points `XDG_CONFIG_HOME` at a directory under its own temp root

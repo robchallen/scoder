@@ -1,0 +1,10 @@
+# .sandbox/skills — which agent skills this project's sessions get.
+#
+# One regular expression per line, matched against the whole skill name
+# (the directory holding its SKILL.md). Candidates are every skill in the
+# project's and your own skill directories (.agents/skills, .claude/skills,
+# ...); project skills shadow yours of the same name. scoder's own skills
+# are always included.
+
+# Uncomment to keep every skill:
+# .*

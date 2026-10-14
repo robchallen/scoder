@@ -1,10 +1,14 @@
-import { constants } from "node:fs";
-import { copyFile, mkdir, readdir, rename } from "node:fs/promises";
-import defaultEnv from "../defaults/env" with { type: "text" };
-import defaultPorts from "../defaults/ports" with { type: "text" };
-import defaultReadme from "../defaults/README.md" with { type: "text" };
-import defaultReadonly from "../defaults/readonly" with { type: "text" };
-import defaultReadwrite from "../defaults/readwrite" with { type: "text" };
+import { mkdir, rename } from "node:fs/promises";
+import defaultEnv from "../defaults/sandbox/env" with { type: "text" };
+import defaultPorts from "../defaults/sandbox/ports" with { type: "text" };
+import defaultReadonly from "../defaults/sandbox/readonly" with {
+	type: "text",
+};
+import defaultReadwrite from "../defaults/sandbox/readwrite" with {
+	type: "text",
+};
+import defaultSkills from "../defaults/sandbox/skills" with { type: "text" };
+import { STARTER_RECIPES } from "../recipes.ts";
 import { info, warning } from "../utils/logger.ts";
 import { getRealHome } from "../utils/paths.ts";
 
@@ -35,6 +39,7 @@ export const CONFIG_FILES: Record<
 	readwrite: { path: `${CONFIG_DIR}/readwrite`, legacy: ".agentreadwrite" },
 	ports: { path: `${CONFIG_DIR}/ports`, legacy: ".agentports" },
 	env: { path: `${CONFIG_DIR}/env`, legacy: null },
+	skills: { path: `${CONFIG_DIR}/skills`, legacy: null },
 };
 
 // EM: The shipped defaults, embedded at build time like entrypoint.sh: the
@@ -42,11 +47,11 @@ export const CONFIG_FILES: Record<
 // EM: runtime. They are the only defaults scoder has — every reader below that
 // EM: finds a file missing falls back to these, not to a literal of its own.
 const DEFAULT_FILES: Record<string, string> = {
-	"README.md": defaultReadme,
 	env: defaultEnv,
 	readonly: defaultReadonly,
 	readwrite: defaultReadwrite,
 	ports: defaultPorts,
+	skills: defaultSkills,
 };
 
 // ### defaultConfigText
@@ -158,28 +163,38 @@ function escapeRegExp(text: string): string {
 }
 
 // ### readConfigText
-// One configuration file's content as the session will use it: the
-// project's own `.sandbox/` copy, else the user's `~/.config/scoder/` one,
-// else the shipped default.
-//
-// EM: The fallbacks exist for --dry-run, which writes nothing and so never
-// EM: creates the project's copy: it still previews exactly what a real run
-// EM: would apply. On a real run prepareConfigDir has already filled the
-// EM: project's copy, and the first branch is the only one taken.
+// The configuration in force for one file: the user's baseline
+// (~/.config/scoder/sandbox/<file>, or the shipped default when that is
+// missing) followed by the project's additions (.sandbox/<file>), duplicate
+// lines dropped. Every reader parses line by line, so this is a union: a
+// project adds to the baseline and can never take anything away from it.
+// EM: The baseline is the user's non-negotiable defaults for every sandbox on
+// EM: this machine; the project file tailors it. `baseline` is overridable
+// EM: so the configure review can validate a staged working copy.
+// EM: See design/features/config-defaults.md.
 export async function readConfigText(
 	projectRoot: string,
 	file: keyof typeof CONFIG_FILES,
+	baseline: string = baselineDir(),
 ): Promise<string> {
 	const leaf = CONFIG_FILES[file].path.slice(CONFIG_DIR.length + 1);
-	for (const path of [
-		configPath(projectRoot, file),
-		`${userConfigDir()}/${leaf}`,
-	]) {
-		if (await fileExists(path)) {
-			return await Bun.file(path).text();
+	const base = await textOr(`${baseline}/${leaf}`, defaultConfigText(file));
+	const project = await textOr(configPath(projectRoot, file), "");
+	const seen = new Set<string>();
+	const out: string[] = [];
+	for (const line of `${base}\n${project}`.split("\n")) {
+		const key = line.trim();
+		if (key !== "" && !key.startsWith("#")) {
+			if (seen.has(key)) continue;
+			seen.add(key);
 		}
+		out.push(line);
 	}
-	return defaultConfigText(file);
+	return out.join("\n");
+}
+
+async function textOr(path: string, fallback: string): Promise<string> {
+	return (await fileExists(path)) ? await Bun.file(path).text() : fallback;
 }
 
 // ### userConfigDir
@@ -192,21 +207,46 @@ export function userConfigDir(): string {
 	return `${base}/scoder`;
 }
 
-// ### ensureUserConfig
-// Write any shipped default the user's config directory is missing.
-//
-// EM: Per file, never overwriting: a user who has edited
-// EM: ~/.config/scoder/env keeps their edit forever, and a file they delete
-// EM: comes back as the shipped default on the next run — deletion is not a
-// EM: way to opt out of a file, an empty or all-comment file is.
-async function ensureUserConfig(): Promise<string> {
-	const dir = userConfigDir();
+// ### baselineDir
+// The user's baseline grants for every sandbox: `~/.config/scoder/sandbox/`.
+export function baselineDir(): string {
+	return `${userConfigDir()}/sandbox`;
+}
+
+// ### seedBaseline
+// Write each shipped baseline file missing from baselineDir(). Never
+// overwrites the user's.
+export async function seedBaseline(): Promise<string> {
+	const dir = baselineDir();
 	await mkdir(dir, { recursive: true });
 	for (const [name, content] of Object.entries(DEFAULT_FILES)) {
 		const path = `${dir}/${name}`;
 		if (!(await fileExists(path))) {
 			await Bun.write(path, content);
-			info(`Created ${path} from scoder's defaults`);
+			info(`Added baseline ${path}`);
+		}
+	}
+	return dir;
+}
+
+// ### recipesDir
+// The configure skill's recipes: `~/.config/scoder/recipes/`.
+export function recipesDir(): string {
+	return `${userConfigDir()}/recipes`;
+}
+
+// ### seedRecipes
+// Copy each starter recipe missing from the recipes directory, by file
+// name. Never overwrites: a user's edits, and their own recipes beside
+// these, stand. Returns the directory.
+export async function seedRecipes(): Promise<string> {
+	const dir = recipesDir();
+	await mkdir(dir, { recursive: true });
+	for (const [name, content] of Object.entries(STARTER_RECIPES)) {
+		const path = `${dir}/${name}`;
+		if (!(await fileExists(path))) {
+			await Bun.write(path, content);
+			info(`Added starter recipe ${path}`);
 		}
 	}
 	return dir;
@@ -287,37 +327,19 @@ export async function prepareConfigDir(
 		void name;
 	}
 
-	// EM: Then fill the gaps from the user's own defaults: every file in
-	// EM: ~/.config/scoder the project lacks, copied as-is, never one it
-	// EM: already has. After the migration, so a legacy dotfile becomes the
-	// EM: project's file rather than being shadowed by a fresh default. The
-	// EM: project's copy is from then on the only one read — editing
-	// EM: ~/.config/scoder changes what new projects start with, not what
-	// EM: existing ones have.
-	// EM: Not under --dry-run, which must not create configuration files —
-	// EM: in the project or in ~/.config. readConfigText's fallbacks give
-	// EM: the preview the same values a real run would write.
+	// EM: No longer seeded from ~/.config/scoder file by file (retired with
+	// EM: --configure, design/features/configure-mode.md): a project's
+	// EM: env/readonly/readwrite/ports are written by a configure session,
+	// EM: which an interactive start triggers when any is missing. Until then
+	// EM: the user's baseline (~/.config/scoder/sandbox) applies alone. What
+	// EM: is seeded, never overwriting: that baseline and the recipes the
+	// EM: configure skill reads, from src/defaults/.
+	// EM: Not under --dry-run, which must not create configuration files.
 	if (dryRun) {
 		return;
 	}
-	const userDir = await ensureUserConfig();
-	for (const entry of await readdir(userDir, { withFileTypes: true })) {
-		if (!entry.isFile()) {
-			continue;
-		}
-		try {
-			await copyFile(
-				`${userDir}/${entry.name}`,
-				`${dir}/${entry.name}`,
-				constants.COPYFILE_EXCL,
-			);
-			info(`Created ${CONFIG_DIR}/${entry.name} from ${userDir}/${entry.name}`);
-		} catch (err) {
-			if ((err as NodeJS.ErrnoException).code !== "EEXIST") {
-				warning(`could not create ${CONFIG_DIR}/${entry.name}: ${err}`);
-			}
-		}
-	}
+	await seedBaseline();
+	await seedRecipes();
 }
 
 // ### looksLikeOurs

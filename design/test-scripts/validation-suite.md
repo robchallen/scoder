@@ -602,9 +602,9 @@ host afterward — the real end-to-end proof the bind works, replacing the
 [TESTED_BY](/tests/scoder.test.ts#testSandboxReadwriteCreatedIfMissing)
 
 Same bug class already fixed twice, for `.sandbox/readonly` and
-`.sandbox/ports`: a missing `.sandbox/readwrite` is created and protected
-read-only in the very same session that finds it missing, not just from
-the next run onward.
+`.sandbox/ports`: a missing `.sandbox/readwrite` cannot be created or
+written from inside the session that finds it missing. (A session no
+longer creates the file itself; the directory bind is what protects it.)
 
 ### 67. sandbox-readwrite-self-protected-readonly
 [TESTED_BY](/tests/scoder.test.ts#testSandboxReadwriteSelfProtectedReadonly)
@@ -738,13 +738,10 @@ constrains.
 never runs anything inside the sandbox, so there is nothing for a missing
 bind to expose, and dry-run must stay side-effect free regardless.
 
-### 84. sandbox-ports-created-if-missing
-[TESTED_BY](/tests/scoder.test.ts#testSandboxPortsCreatedIfMissing)
+### 84. (retired) sandbox-ports-created-if-missing
 
-A real session with no pre-existing `.sandbox/ports` creates one on the host,
-containing a header comment, before the sandbox is ever built — closing the
-bind-mount gap described below regardless of whether the rest of the
-session goes on to succeed or fail.
+Retired with `--configure`: a session no longer seeds `.sandbox/`. See
+`sandbox-config-not-seeded-by-a-session` (case 86).
 
 ### 85. sandbox-ports-missing-file-not-writable-from-sandbox
 [TESTED_BY](/tests/scoder.test.ts#testSandboxPortsMissingFileNotWritableFromSandbox)
@@ -760,12 +757,12 @@ pasta-attach failure (this suite's own dev environment lacks
 cannot pass trivially just because the sandbox failed to launch for a
 different reason.
 
-### 86. sandbox-readonly-created-if-missing
-[TESTED_BY](/tests/scoder.test.ts#testSandboxReadonlyCreatedIfMissing)
+### 86. sandbox-config-not-seeded-by-a-session
+[TESTED_BY](/tests/scoder.test.ts#testSandboxConfigNotSeededByASession)
 
-A real session with no pre-existing `.sandbox/readonly` creates one on the
-host, containing the default protected-path list, before the sandbox is
-ever built.
+A non-interactive session in a project with no `.sandbox/` writes none of
+its files — the session runs on the user's baseline. (Replaces
+`sandbox-readonly-created-if-missing`.)
 
 ### 87. sandbox-readonly-missing-file-not-writable-from-sandbox
 [TESTED_BY](/tests/scoder.test.ts#testSandboxReadonlyMissingFileNotWritableFromSandbox)
@@ -1421,20 +1418,20 @@ reset goes ahead.
 passed (a trailing `#` comment allowed); a commented-out or unlisted one is
 not; a line that is not a variable name is warned about and skipped.
 
-### 138. user-config-seeds-project-sandbox-dir
-[TESTED_BY](/tests/scoder.test.ts#testUserConfigSeedsProjectSandboxDir)
+### 138. user-config-seeds-starter-recipes
+[TESTED_BY](/tests/scoder.test.ts#testUserConfigSeedsStarterRecipes)
 
-In-process with a fresh `XDG_CONFIG_HOME`: missing user defaults are
-written byte-identical to `src/defaults/`, an edited one is kept; every
-user file the project lacks is copied into `.sandbox/` (an extra user file
-too), a project's existing file is untouched, and a later user-level edit
-does not reach a project that already has the file.
+In-process with a fresh `XDG_CONFIG_HOME`: every starter recipe missing
+from `~/.config/scoder/recipes/`, and every baseline file missing from
+`~/.config/scoder/sandbox/`, is written byte-identical to
+`src/defaults/`, an edited one is kept, and the project's `.sandbox/` is
+left empty.
 
 ### 139. user-config-dry-run-writes-nothing-but-previews-it
 [TESTED_BY](/tests/scoder.test.ts#testUserConfigDryRunWritesNothingButPreviewsIt)
 
 `--dry-run` creates no configuration at either level, yet its preview uses
-the user's `env` list when the project has none yet.
+the user's baseline `env`.
 
 ### 140. scoder-bind-env-adds-presets
 [TESTED_BY](/tests/scoder.test.ts#testScoderBindEnvAddsPresets)
@@ -1526,12 +1523,16 @@ user-data-dir and `~/.positron/extensions`, seeded from
 shared btw hook (`if (interactive() ...) btw::btw_mcp_session()`); `vscode`
 does not touch it.
 
-### 151. scoder-skill-injected-into-agents-snapshot
-[TESTED_BY](/tests/scoder.test.ts#testScoderSkillInjectedIntoAgentsSnapshot)
+### 151. skills-bound-where-the-agent-reads-them
+[TESTED_BY](/tests/scoder.test.ts#testSkillsBoundWhereTheAgentReadsThem)
 
-With no `~/.agents` on the host, the snapshot is still bound and holds the
-bundled skill, byte-identical to the repository's, and nothing is created
-on the host; a user-installed `SKILL.md` in the same place wins.
+For a plain tool, skills are staged and bound read-only at
+`~/.agents/skills`: candidates from the project and `$HOME` deduplicated
+by name with the project's copy winning, a user's own copy of a scoder
+skill winning over the bundled one, and scoder's skills always present;
+`.sandbox/skills` narrows the set by whole-name regex, and the configure
+skill's copy lists every candidate with whether the session has it.
+Nothing is written on the host.
 
 ### 152. agents-md-overlay-names-companion-ide
 [TESTED_BY](/tests/scoder.test.ts#testAgentsMdOverlayNamesCompanionIde)
@@ -1540,13 +1541,12 @@ With `--ide rstudio`, the `AGENTS.md` overlay names RStudio and asks the
 agent to offer an MCP connection once; without `--ide` there is no such
 line. The old `npx skills add` instruction is gone.
 
-### 153. scoder-skill-bound-for-claude-code
-[TESTED_BY](/tests/scoder.test.ts#testScoderSkillBoundForClaudeCode)
+### 153. skills-bound-for-the-main-agent-only
+[TESTED_BY](/tests/scoder.test.ts#testSkillsBoundForTheMainAgentOnly)
 
-A `claude` session binds the staged skill read-only at
-`~/.claude/skills/working-in-a-scoder-sandbox`, after the read-write
-`~/.claude` bind, even when an empty leftover mountpoint is there; with the
-user's own `SKILL.md` in place, no such bind; nor when `~/.claude/skills` is a symlink (bwrap cannot make the mountpoint through it, which failed the launch).
+`claude` gets the skills bind at `~/.claude/skills`, after the read-write
+`~/.claude` bind; `--bind claude pi` binds them at `~/.pi/agent/skills`
+only; a symlinked `~/.claude/skills` is bound at its target.
 
 ### 154. llm-probe-requires-openai-models-list
 [TESTED_BY](/tests/scoder.test.ts#testLlmProbeRequiresOpenaiModelsList)
@@ -1577,7 +1577,8 @@ pattern that matched nothing.
 [TESTED_BY](/tests/scoder.test.ts#testUvToolEnvironmentsBound)
 
 With a throwaway `HOME` laid out as `uv tool install` leaves it, a dry-run
-binds `~/.local/share/uv/tools` and `~/.local/share/uv/python` read-only,
+with no grants binds neither tree nor `~/.local/bin`; with the three granted
+in `.sandbox/readonly` it binds `~/.local/share/uv/tools` and `~/.local/share/uv/python` read-only,
 and the `~/.local/bin/hf` symlink into the tool's venv survives into the
 session's `~/.local/bin` snapshot as a link, not a copied script.
 ### 158. terminal-restored-after-exit
@@ -1638,13 +1639,125 @@ refuse an older xpra by name.
 (recognised by its header), leaves a pin file someone else wrote in place,
 and is a no-op when there is none.
 
+### 165. configure-flag-parsed
+[TESTED_BY](/tests/scoder.test.ts#testConfigureFlagParsed)
+
+`--configure` before the tool name sets configure mode; after it, it is
+passed to the tool.
+
+### 166. configure-session-dry-run
+[TESTED_BY](/tests/scoder.test.ts#testConfigureSessionDryRun)
+
+For claude, pi, opencode and copilot, `--dry-run --configure` passes the
+configure prompt in each agent's own form (`claude "<p>"`, `pi "<p>"`,
+`opencode --prompt "<p>"`, `copilot -i "<p>"`), binds `.sandbox/`
+read-write from a staged working copy (never the real directory), and
+binds the recipes directory read-only.
+
+### 167. configure-not-automatic-without-a-terminal
+[TESTED_BY](/tests/scoder.test.ts#testConfigureNotAutomaticWithoutATerminal)
+
+With no `.sandbox/` and no terminal, a session starts normally: configure
+starts automatically only for an interactive start.
+
+### 168. configure-review-applies-only-on-confirm
+[TESTED_BY](/tests/scoder.test.ts#testConfigureReviewAppliesOnlyOnConfirm)
+
+The host-side review applies the working copy only on "yes", writing stubs
+for missing key files; "no" leaves `.sandbox/` alone and restores
+`.mcp.json`; a change that fails validation is never offered.
+
+### 169. configure-validate-and-apply
+[TESTED_BY](/tests/scoder.test.ts#testConfigureValidateAndApply)
+
+Validation rejects a `readwrite` line outside `$HOME` and a missing
+`readonly` `$HOME` path; applying removes files deleted in the working
+copy.
+
+### 170. configure-relaunch-args
+[TESTED_BY](/tests/scoder.test.ts#testConfigureRelaunchArgs)
+
+The relaunch command line drops `--configure`, and the compiled binary's
+embedded entry point.
+
+### 171. configure-session-gets-every-skill-and-the-list
+[TESTED_BY](/tests/scoder.test.ts#testConfigureSessionGetsEverySkillAndTheList)
+
+`--configure claude` binds every candidate skill despite a
+`.sandbox/skills` that matches none, and the staged configure skill ends
+with the "Skills on this machine" table.
+
+### 172. toolchain-paths-granted-not-implicit
+[TESTED_BY](/tests/scoder.test.ts#testToolchainPathsGrantedNotImplicit)
+
+`~/.m2`, `~/R` and `~/.rustup` are not bound in a session with no grants;
+granted (`readwrite $HOME/.m2`, `readonly $HOME/R`) they are bound
+read-write and read-only, with no overlap error.
+
+### 173. local-bin-granted-per-entry
+[TESTED_BY](/tests/scoder.test.ts#testLocalBinGrantedPerEntry)
+
+With nothing granted there is no `~/.local/bin` snapshot; with one entry
+granted, the snapshot holds that entry plus the session's own tool, and
+nothing else.
+
+### 174. eclipse-imports-only-dirs-with-a-project-file
+[TESTED_BY](/tests/scoder.test.ts#testEclipseImportsOnlyDirsWithAProjectFile)
+
+Of four grants, only the one with a `.project` (not under a hidden
+directory) is imported; a `pom.xml`-only tree and a plain one are not.
+
+### 175. config-predating-grants-warned
+[TESTED_BY](/tests/scoder.test.ts#testConfigPredatingGrantsWarned)
+
+A project with `.sandbox/` config but no `.sandbox/version` gets the
+start-up message; with the marker, none.
+
+### 176. configure-recipes-backed-up-and-applied
+[TESTED_BY](/tests/scoder.test.ts#testConfigureRecipesBackedUpAndApplied)
+
+Recipe changes from a configure session are listed one line per file
+with the `.sandbox/` changes; on "no" nothing changes; on "yes" the
+recipes directory is backed up (dated copy beside it), then made to match
+the working copy, and `.sandbox/` is applied.
+
+### 177. baseline-applies-to-every-project
+[TESTED_BY](/tests/scoder.test.ts#testBaselineAppliesToEveryProject)
+
+Baseline `env` and `readonly` entries in `~/.config/scoder/sandbox/` apply alongside the project's; a project `readonly` with none of them does not remove the baseline protection.
+
+### 178. skills-hide-the-agents-other-skill-dirs
+[TESTED_BY](/tests/scoder.test.ts#testSkillsHideTheAgentsOtherSkillDirs)
+
+For opencode, the skills are bound at `~/.config/opencode/skills`; `~/.claude/skills` and `~/.agents/skills` are hidden behind an empty directory only when they exist on the host, and nothing is bound (or created) when they do not.
+
+### 179. missing-skills-file-starts-configure
+[TESTED_BY](/tests/scoder.test.ts#testMissingSkillsFileStartsConfigure)
+
+`skills` is one of the key files whose absence starts a configure session.
+
+### 180. skills-follow-edits-to-the-skills-file
+[TESTED_BY](/tests/scoder.test.ts#testSkillsFollowEditsToTheSkillsFile)
+
+With the watcher running on a staged skills directory, changing
+`.sandbox/skills` from `one` to `two` copies `two` in and removes `one`;
+scoder's own skills stay.
+
+### 181. skill-descriptions-parsed-as-yaml
+[TESTED_BY](/tests/scoder.test.ts#testSkillDescriptionsParsedAsYaml)
+
+A SKILL.md description is read from its YAML frontmatter: folded (`>`)
+and literal (`|`) block scalars, quoted and plain strings give their text
+on one line; frontmatter that is not valid YAML falls back to reading the
+field and its indented continuation lines; no frontmatter gives nothing.
+
 ## Current Network Coverage
 
 - Host loopback access is blocked (`host-loopback-blocked`)
 - A port listed in `.sandbox/ports` can be reached (`sandbox-ports-forwards-listed-port`)
 - Auto-detection of an open LLM port appends it to `.sandbox/ports` (`sandbox-ports-auto-detect-appends`)
 - Editing `.sandbox/ports` mid-session live-reloads pasta (`sandbox-ports-live-reload-adds-port`, `sandbox-ports-live-reload-bad-edit-keeps-old-config`)
-- A missing `.sandbox/ports` is created and stays protected in the same session (`sandbox-ports-created-if-missing`, `sandbox-ports-missing-file-not-writable-from-sandbox`)
+- A missing `.sandbox/ports` cannot be created from inside the sandbox (`sandbox-ports-missing-file-not-writable-from-sandbox`)
 - Outbound DNS resolution works (`outbound-dns-works`)
 - Terminal signals (resize, Ctrl-C) reach the sandboxed process despite `--new-session` (`terminal-signals-forwarded-to-sandbox`)
 

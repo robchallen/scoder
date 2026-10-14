@@ -8,7 +8,10 @@ tags: [feature, tools, bin, symlinks]
 
 ## Summary
 
-At session startup, `~/.local/bin` contents are copied to a temporary
+At session startup, the `~/.local/bin` entries the project grants
+(`$HOME/.local/bin/<name>` lines in `.sandbox/readonly`, or
+`$HOME/.local/bin` for all), plus the session's own tool and IDE when
+installed there, are copied to a temporary
 directory under `/tmp`. A symlink whose target *is* bound into the sandbox is
 kept as a symlink, with its target canonicalized to the spelling actually
 bound into the sandbox (see `path-mirroring`); a symlink whose target is not
@@ -47,7 +50,10 @@ session temp root, at the host path mirroring `~/.local/bin` itself (see
    alongside them, so skipping them (as an earlier version did) left the
    tool present but unable to load what it needs.
 
-The result is bind-mounted read-only at `$HOME/.local/bin`.
+The result is bind-mounted read-only at `$HOME/.local/bin`. Nothing
+granted and no own tool there: no snapshot, and no `~/.local/bin`. A
+configure session instead binds the real directory read-only, so the agent
+can read symlinks to decide what to grant.
 
 ### Which paths count as bound
 

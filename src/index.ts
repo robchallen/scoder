@@ -8,6 +8,18 @@ import { configureAppArmor } from "./cli/apparmor.ts";
 import { installDependencies } from "./cli/dependencies.ts";
 import { parseArgs, printUsage, printVersion } from "./cli/parse-args.ts";
 import {
+	CONFIGURE_NOTE,
+	CONFIGURE_PROMPT,
+	missingKeyFiles,
+	predatesExplicitGrants,
+	readMcpJson,
+	relaunchArgs,
+	reviewConfigure,
+	stageUserDir,
+	stageWorkingCopy,
+	type WorkingCopy,
+} from "./configure/configure.ts";
+import {
 	addGitExclude,
 	appendAgentPort,
 	getAgentsMdOverlayBind,
@@ -15,13 +27,16 @@ import {
 	type ProtectionConfig,
 	readAgentPorts,
 	removeGitExclude,
-	setupAgentsSnapshot,
 	setupLocalBinSnapshot,
 	setupProtection,
 	setupReadWriteAccess,
 	setupResolvConf,
 } from "./git/protection.ts";
-import { prepareConfigDir } from "./git/sandbox-config.ts";
+import {
+	baselineDir,
+	prepareConfigDir,
+	recipesDir,
+} from "./git/sandbox-config.ts";
 import {
 	commitAllChanges,
 	getCommitCount,
@@ -44,6 +59,16 @@ import {
 } from "./sandbox/identity.ts";
 import { describeLaunch, launchSandbox } from "./sandbox/launch.ts";
 import { setupOverlays } from "./sandbox/overlays.ts";
+import {
+	AGENT_SKILLS_DIRS,
+	candidateList,
+	DEFAULT_SKILLS_DIRS,
+	discoverSkills,
+	readSkillPatterns,
+	selectSkills,
+	setupSkills,
+	watchSkills,
+} from "./sandbox/skills.ts";
 import {
 	describeSshAccess,
 	type SshTunnel,
@@ -171,6 +196,47 @@ async function main(): Promise<void> {
 	// EM: realHome is needed for both preset binds and tool path translation
 	const realHome = getRealHome();
 	const preset = TOOL_PRESETS[toolName];
+
+	// EM: Configure mode: --configure, or an interactive start in a project
+	// EM: whose .sandbox/ lacks a key file. Decided before configBinds, and it
+	// EM: forces direct mode — the session edits this checkout's .sandbox/
+	// EM: (a working copy of it), not a worktree's. Non-interactive starts
+	// EM: never auto-configure; they fall back to the base defaults.
+	// EM: See design/features/configure-mode.md.
+	let configureMode = options.configure;
+	if (
+		!configureMode &&
+		!options.dryRun &&
+		process.stdin.isTTY &&
+		process.stdout.isTTY &&
+		process.env.SCODER_SANDBOX !== "1" &&
+		preset?.initialPromptArgs
+	) {
+		const missing = await missingKeyFiles(process.cwd());
+		if (missing.length > 0) {
+			info(
+				`.sandbox/ has no ${missing.join(", ")} — starting a configure session first`,
+			);
+			configureMode = true;
+		}
+	}
+	if (configureMode) {
+		if (!preset?.initialPromptArgs) {
+			error(`--configure needs an agent preset that takes an initial prompt`);
+			process.exit(1);
+		}
+		options.worktree = false;
+		toolArgs = [...toolArgs, ...preset.initialPromptArgs(CONFIGURE_PROMPT)];
+	}
+	const mcpBefore = configureMode ? await readMcpJson(process.cwd()) : null;
+	if (!configureMode && (await predatesExplicitGrants(process.cwd()))) {
+		warning(
+			"This project's .sandbox/ config predates explicit grants: toolchain paths (~/.m2, ~/R, mise, uv, rustup, cargo, ~/.local/bin, ~/.agents skills) are no longer bound unless granted.",
+		);
+		warning(
+			`Run: scoder --configure ${preset?.initialPromptArgs ? toolName : "claude"}`,
+		);
+	}
 
 	// EM: Effective display mode, decided once, before any preset's
 	// EM: validate()/configBinds() runs: a typed flag or its env spelling,
@@ -327,6 +393,12 @@ async function main(): Promise<void> {
 		);
 	}
 
+	// EM: Tells the agent (and its skills) this is a configure session, where
+	// EM: .sandbox/, the baseline and the recipes are writable working copies.
+	if (configureMode) {
+		toolEnv = { ...toolEnv, SCODER_CONFIGURE: "1" };
+	}
+
 	// EM: A GUI preset is a GUI preset whether it was named as the primary
 	// EM: tool (`scoder rstudio`) or as the companion (`--ide rstudio`); the
 	// EM: companion wins if somehow both are GUI, since that is the
@@ -415,6 +487,8 @@ async function main(): Promise<void> {
 
 	let worktreeInfo: GitWorktreeInfo | null = null;
 	let protectionConfig: ProtectionConfig | undefined;
+	let configureWorkingCopy: string | undefined;
+	const userWorkingCopies: WorkingCopy[] = [];
 	let sandboxProjDir = "";
 	let identity: SandboxIdentity | undefined;
 	let sshTunnel: SshTunnel | null = null;
@@ -463,13 +537,22 @@ async function main(): Promise<void> {
 			companionIde,
 		);
 
-		const agentsSnapshotBind = await setupAgentsSnapshot();
-		if (agentsSnapshotBind && protectionConfig) {
-			protectionConfig.safeBinds.push(agentsSnapshotBind);
-		}
+		protectionConfig.safeBinds.push(
+			...(await skillsBind(
+				worktreeInfo.worktreeDir,
+				toolName,
+				realHome,
+				false,
+				options.dryRun,
+			)),
+		);
 
 		const localBinBind = await setupLocalBinSnapshot(
-			toolBinds.map((bind) => bind.dest),
+			[...toolBinds.map((bind) => bind.dest), ...protectionConfig.homeGrants],
+			[
+				...protectionConfig.localBinGrants,
+				...ownLocalBinEntries(realHome, hostToolBin, hostIdeBin),
+			],
 		);
 		if (localBinBind && protectionConfig) {
 			protectionConfig.safeBinds.push(localBinBind);
@@ -520,16 +603,38 @@ async function main(): Promise<void> {
 		// EM: that has no relation to where it actually lives.
 		sandboxProjDir = toSandboxPath(cwd, homePrefixes);
 		await prepareConfigDir(cwd, options.dryRun);
-		protectionConfig = await setupProtection(cwd, sandboxProjDir, companionIde);
-
-		const agentsSnapshotBind = await setupAgentsSnapshot();
-		if (agentsSnapshotBind && protectionConfig) {
-			protectionConfig.safeBinds.push(agentsSnapshotBind);
-		}
-
-		const localBinBind = await setupLocalBinSnapshot(
-			toolBinds.map((bind) => bind.dest),
+		protectionConfig = await setupProtection(
+			cwd,
+			sandboxProjDir,
+			companionIde,
+			configureMode ? CONFIGURE_NOTE : undefined,
 		);
+
+		protectionConfig.safeBinds.push(
+			...(await skillsBind(
+				cwd,
+				toolName,
+				realHome,
+				configureMode,
+				options.dryRun,
+			)),
+		);
+
+		// EM: A configure session sees ~/.local/bin whole (and unresolved, so
+		// EM: symlinks can be read) to grant from.
+
+		const localBinBind = configureMode
+			? await realLocalBinBind()
+			: await setupLocalBinSnapshot(
+					[
+						...toolBinds.map((bind) => bind.dest),
+						...protectionConfig.homeGrants,
+					],
+					[
+						...protectionConfig.localBinGrants,
+						...ownLocalBinEntries(realHome, hostToolBin, hostIdeBin),
+					],
+				);
 		if (localBinBind && protectionConfig) {
 			protectionConfig.safeBinds.push(localBinBind);
 		}
@@ -685,13 +790,33 @@ async function main(): Promise<void> {
 			}
 		}
 
+		configureWorkingCopy = configureMode
+			? await stageWorkingCopy(projectRoot)
+			: undefined;
 		const agentPortsBind = await getConfigDirBind(
 			projectRoot,
 			sandboxProjDir,
 			options.dryRun,
+			configureWorkingCopy,
 		);
 		if (agentPortsBind) {
 			protectionConfig.safeBinds.push(agentPortsBind);
+		}
+		// EM: The user's baseline and recipes, as working copies the
+		// EM: configure session can edit; changes reach the real directories
+		// EM: only after review, backed up first.
+		if (configureMode) {
+			for (const dir of [baselineDir(), recipesDir()]) {
+				if (await isDir(dir)) {
+					const copy = await stageUserDir(dir);
+					userWorkingCopies.push(copy);
+					protectionConfig.safeBinds.push({
+						type: "bind",
+						source: copy.staged,
+						dest: dir,
+					});
+				}
+			}
 		}
 
 		await setupReadWriteAccess(
@@ -934,6 +1059,26 @@ async function main(): Promise<void> {
 		// EM: this finally at all.
 	}
 
+	// EM: After a configure session: review on the host, and on acceptance
+	// EM: start the normal session the user asked for.
+	if (configureMode && configureWorkingCopy && !options.dryRun) {
+		const review = await reviewConfigure(
+			process.cwd(),
+			configureWorkingCopy,
+			mcpBefore,
+			undefined,
+			userWorkingCopies,
+		);
+		if (review.applied) {
+			info("Starting the session with the new configuration");
+			const proc = Bun.spawn(relaunchArgs(), {
+				stdio: ["inherit", "inherit", "inherit"],
+				env: process.env,
+			});
+			exitCode = await proc.exited;
+		}
+	}
+
 	process.exit(exitCode);
 }
 
@@ -1123,3 +1268,70 @@ main().catch((err) => {
 	error(`Fatal error: ${err}`);
 	process.exit(1);
 });
+
+async function isDir(path: string): Promise<boolean> {
+	try {
+		return (await Bun.file(path).stat()).isDirectory();
+	} catch {
+		return false;
+	}
+}
+
+async function realLocalBinBind(): Promise<BindMount | null> {
+	const dir = `${getRealHome()}/.local/bin`;
+	return (await isDir(dir))
+		? { type: "ro-bind", source: dir, dest: dir }
+		: null;
+}
+
+// ### ownLocalBinEntries
+// EM: The session's own tool and companion IDE, when installed in
+// EM: ~/.local/bin (Claude Code's native installer puts itself there), are
+// EM: always in the snapshot: like the presets' own config paths, they follow
+// EM: the tool rather than needing a grant.
+function ownLocalBinEntries(
+	realHome: string,
+	...bins: (string | null)[]
+): string[] {
+	const localBin = `${realHome}/.local/bin/`;
+	return bins.flatMap((bin) =>
+		bin?.startsWith(localBin) ? [bin.slice(localBin.length).split("/")[0]] : [],
+	);
+}
+
+// ### skillsBind
+// The session's skills, bound where its main agent reads them: those
+// .sandbox/skills selects, or in a configure session every candidate, with
+// the list appended to the configure skill.
+async function skillsBind(
+	projectRoot: string,
+	toolName: string,
+	realHome: string,
+	configure: boolean,
+	dryRun: boolean,
+): Promise<BindMount[]> {
+	const candidates = await discoverSkills(projectRoot, realHome);
+	const dir = AGENT_SKILLS_DIRS[toolName] ?? DEFAULT_SKILLS_DIRS;
+	if (configure) {
+		return setupSkills(candidates, realHome, dir, {
+			skill: "configure-scoder-sandbox",
+			text: candidateList(candidates),
+		});
+	}
+	const patterns = await readSkillPatterns(projectRoot);
+	const selected = selectSkills(candidates, patterns);
+	// EM: The full list goes into every session, not just configure, so an
+	// EM: agent asked for a skill this project does not select can say it
+	// EM: exists and how to add it.
+	const binds = await setupSkills(selected, realHome, dir, {
+		skill: "configure-scoder-sandbox",
+		text: candidateList(candidates, selected),
+	});
+	// EM: Live: an edit to .sandbox/skills or the baseline's skills file
+	// EM: re-selects into the bound directory; the agent's own reload picks
+	// EM: the change up. Not under --dry-run, which launches nothing.
+	if (!dryRun) {
+		watchSkills(projectRoot, realHome, binds[0].source, selected);
+	}
+	return binds;
+}

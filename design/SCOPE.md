@@ -33,7 +33,7 @@ localhost services by default.
 
 [HAS_FEATURE](./features/live-file-overlays.md) - A host file presented inside the sandbox with sandbox-only content added, read-only, and re-rendered whenever the host file changes.
 
-[HAS_FEATURE](./features/agents-skills-snapshot.md) - Startup-time snapshot of ~/.agents with symlink resolution for read-only sandbox access.
+[HAS_FEATURE](./features/agents-skills-snapshot.md) - Agent skills: every skill on the machine found at start-up, selected by `.sandbox/skills`, copied with symlinks resolved and bound read-only where the main agent reads skills.
 
 [HAS_FEATURE](./features/apparmor-compatibility.md) - Automatic AppArmor profile installation for Ubuntu 24.04+ systems with restricted user namespaces.
 
@@ -57,7 +57,8 @@ localhost services by default.
 
 [HAS_FEATURE](./features/xpra-gui-isolation.md) - GUI presets run under an xpra server inside the sandbox, which forwards their windows to the host over a unix socket; the host's X11 socket, XAUTHORITY and DISPLAY are no longer exposed.
 
-[HAS_FEATURE](./features/config-defaults.md) - `.sandbox/` files are seeded from the user's `~/.config/scoder/`, itself seeded from defaults shipped in the binary; `.sandbox/env` lists the host environment variables passed into the sandbox.
+[HAS_FEATURE](./features/config-defaults.md) - the user's baseline grants for every sandbox in `~/.config/scoder/sandbox/` (seeded from `src/defaults/sandbox/`, not overridable by a project) plus each project's `.sandbox/` additions; starter recipes seeded into `~/.config/scoder/recipes/`.
+[HAS_FEATURE](./features/configure-mode.md) - `--configure`: an agent-guided session that writes `.sandbox/` (and `.mcp.json`) from the user's recipes, applied only after a host-side review; runs automatically on an interactive start when a key file is missing.
 
 [HAS_FEATURE](./features/clipboard-sharing.md) - Copying out of the sandbox: OSC 52 from the terminal works (the user's pty is bound at `/dev/tty`), xpra syncs GUI clipboards; `xclip`-style commands are planned via a one-way copy channel.
 

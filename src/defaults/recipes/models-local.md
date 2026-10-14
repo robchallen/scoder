@@ -23,6 +23,10 @@ None.
 
 None.
 
+## Skills
+
+None.
+
 ## MCP servers
 
 None.

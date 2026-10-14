@@ -28,3 +28,8 @@ declare module "*/defaults/readwrite" {
 	const content: string;
 	export default content;
 }
+
+declare module "*/defaults/skills" {
+	const content: string;
+	export default content;
+}

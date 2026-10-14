@@ -5,7 +5,6 @@ import { getProjDir } from "../git/worktree.ts";
 import { BROWSER_DEST } from "../sandbox/browser.ts";
 import type { LiveOverlay } from "../sandbox/overlays.ts";
 import { stageXpraDir } from "../sandbox/xpra.ts";
-import { SCODER_SKILLS } from "../skills.ts";
 import type { BindMount, ToolBindSpec, ToolPreset } from "../types.ts";
 import { error, info, warning } from "../utils/logger.ts";
 import {
@@ -1310,47 +1309,8 @@ export const TOOL_PRESETS: Record<string, ToolPreset> = {
 			// ~/.local/bin/claude at it. Without this bind that symlink dangles
 			// inside the sandbox. Read-only, so the sandbox cannot self-update
 			// the host's installation.
-			// EM: scoder's own skill, for Claude Code, which reads
-			// EM: ~/.claude/skills rather than ~/.agents/skills (where the
-			// EM: snapshot already carries it). A staged copy bound read-only
-			// EM: over the read-write ~/.claude, so nothing is written into the
-			// EM: user's real skills — except, accepted knowingly, the empty
-			// EM: directory bwrap creates there as the mountpoint, the first
-			// EM: time. Skipped when the user's own copy is there: a SKILL.md,
-			// EM: not merely the path, since our own leftover mountpoint is an
-			// EM: empty directory and must not count as "installed".
-			// EM: Not through a symlink. Reported: launch failed with `Can't
-			// EM: mkdir ~/.claude/skills/working-in-a-scoder-sandbox: No such
-			// EM: file or directory` — ~/.claude/skills is commonly a symlink
-			// EM: (often to ~/.agents/skills), and at the moment this bind is
-			// EM: applied its target is not mounted yet, so bwrap cannot make
-			// EM: the mountpoint through it. A symlinked skills dir pointing at
-			// EM: ~/.agents/skills already shows Claude the skill via the
-			// EM: snapshot; one pointing elsewhere is the user's arrangement to
-			// EM: keep. Either way: leave it alone.
-			for (const skill of SCODER_SKILLS) {
-				const skillRel = `.claude/skills/${skill.name}`;
-				if (
-					(await dirExists(claudeDir)) &&
-					!(await isSymlink(`${realHome}/.claude/skills`)) &&
-					!(await isSymlink(`${realHome}/${skillRel}`)) &&
-					!(await fileExists(`${realHome}/${skillRel}/SKILL.md`))
-				) {
-					// EM: Make the parent ourselves, as cheap insurance: a bind's
-					// EM: mountpoint needs its parent, and on some bwrap versions a
-					// EM: missing one is an error rather than created. The empty
-					// EM: skills dir is the same side effect already accepted for
-					// EM: the mountpoint itself.
-					await ensureDir(`${realHome}/.claude/skills`);
-					const staged = await stageFile(`${sandboxHome}/${skillRel}/SKILL.md`);
-					await Bun.write(staged, skill.text);
-					binds.push({
-						type: "ro-bind",
-						source: dirname(staged),
-						dest: `${sandboxHome}/${skillRel}`,
-					});
-				}
-			}
+			// EM: Skills: bound over ~/.claude/skills by index.ts's skillsBind
+			// EM: (src/sandbox/skills.ts), scoder's own included.
 
 			const claudeDataDir = `${realHome}/.local/share/claude`;
 			if (await dirExists(claudeDataDir)) {
@@ -2041,14 +2001,6 @@ function vscodeFamilyPreset(flavor: VscodeFlavor): ToolPreset {
 			return [...scoderArgs, sandboxProjectDir];
 		},
 	};
-}
-
-async function isSymlink(path: string): Promise<boolean> {
-	try {
-		return (await lstat(path)).isSymbolicLink();
-	} catch {
-		return false;
-	}
 }
 
 // ### piConfigBinds

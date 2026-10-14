@@ -35,7 +35,24 @@ None.
 A directory outside the project for downloaded sources, if wanted:
 `$HOME/<path>`.
 
+## Skills
+
+This recipe is mostly about skills: research work leans on them more than
+on toolchains. Pick from the candidates on this machine that match, and
+ask about the rest:
+
+```
+web-search|web-fetch
+.*research.*
+arxiv.*|pubmed.*|semantic-scholar.*
+citation.*|bibtex.*|zotero.*
+pdf.*
+```
+
+Patterns that match nothing do no harm, but keep the file to what the
+user actually has.
+
 ## MCP servers
 
 The user's own research MCP servers, from their recipes in
-`~/.config/scoder/`.
+`~/.config/scoder/recipes/`.

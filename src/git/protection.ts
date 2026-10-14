@@ -9,7 +9,6 @@ import {
 import { resolvConfDest } from "../sandbox/builder.ts";
 import type { LiveOverlay } from "../sandbox/overlays.ts";
 import { renderOverlay } from "../sandbox/overlays.ts";
-import { SCODER_SKILLS } from "../skills.ts";
 import type { BindMount } from "../types.ts";
 import { error, info, warning } from "../utils/logger.ts";
 import {
@@ -140,11 +139,10 @@ export interface ProtectionConfig {
 	// Host env var names passed into the sandbox when set: .sandbox/env's
 	// entries. Replaces the list builder.ts used to hardcode.
 	envPassThrough: string[];
-	// .sandbox/readonly grants under ~/.local/bin and ~/.agents/skills: entry
-	// and skill names, or "*" for the whole directory. Taken by the
-	// snapshots rather than bound, since scoder binds those paths itself.
+	// .sandbox/readonly grants under ~/.local/bin: entry names, or "*" for
+	// the whole directory. Taken by the snapshot rather than bound, since
+	// scoder binds that path itself.
 	localBinGrants: string[];
-	skillGrants: string[];
 	// The sandbox destinations of every $HOME grant, read-only and
 	// read-write, for resolving ~/.local/bin symlinks into them.
 	homeGrants: string[];
@@ -163,7 +161,6 @@ export async function setupProtection(
 	const dirs: string[] = [];
 	const dependencyDirs: string[] = [];
 	const localBinGrants: string[] = [];
-	const skillGrants: string[] = [];
 	// EM: A missing file reads as the shipped default rather than no
 	// EM: protection at all.
 	const content = await readConfigText(sourceDir, "readonly");
@@ -176,7 +173,7 @@ export async function setupProtection(
 		}
 
 		if (line.startsWith("$HOME/")) {
-			if (snapshotGrant(line.trim(), localBinGrants, skillGrants)) {
+			if (snapshotGrant(line.trim(), localBinGrants)) {
 				continue;
 			}
 			await registerAgentreadonlyHomeBind(
@@ -240,21 +237,16 @@ export async function setupProtection(
 		dependencyDirs,
 		envPassThrough: await readEnvPassThrough(sourceDir),
 		localBinGrants,
-		skillGrants,
 		homeGrants: [...dependencyDirs, ...(await readWriteGrants(sourceDir))],
 	};
 }
 
 // ### snapshotGrant
-// A .sandbox/readonly line under ~/.local/bin or ~/.agents is a grant to
-// the snapshot scoder builds there, not a bind of its own: `$HOME/.local/bin`
-// (everything) or `$HOME/.local/bin/<name>`; `$HOME/.agents` (everything)
-// or `$HOME/.agents/skills/<name>`. True if the line was one.
-function snapshotGrant(
-	line: string,
-	localBinGrants: string[],
-	skillGrants: string[],
-): boolean {
+// A .sandbox/readonly line under ~/.local/bin is a grant to the snapshot
+// scoder builds there, not a bind of its own: `$HOME/.local/bin`
+// (everything) or `$HOME/.local/bin/<name>`. True if the line was one.
+// Skills are chosen in .sandbox/skills, not here.
+function snapshotGrant(line: string, localBinGrants: string[]): boolean {
 	const rel = line.slice("$HOME/".length).replace(/\/+$/, "");
 	if (rel === ".local/bin") {
 		localBinGrants.push("*");
@@ -264,17 +256,9 @@ function snapshotGrant(
 		localBinGrants.push(rel.slice(".local/bin/".length).split("/")[0]);
 		return true;
 	}
-	if (rel === ".agents" || rel === ".agents/skills") {
-		skillGrants.push("*");
-		return true;
-	}
-	if (rel.startsWith(".agents/skills/")) {
-		skillGrants.push(rel.slice(".agents/skills/".length).split("/")[0]);
-		return true;
-	}
-	if (rel.startsWith(".agents/")) {
+	if (rel === ".agents" || rel.startsWith(".agents/")) {
 		error(
-			`.sandbox/readonly: grant ~/.agents whole or by skill ($HOME/.agents/skills/<name>): ${line}`,
+			`.sandbox/readonly: skills are chosen in .sandbox/skills, not granted here: ${line}`,
 		);
 		process.exit(1);
 	}
@@ -833,51 +817,6 @@ export async function removeGitExclude(
 	await proc.exited;
 }
 
-async function safeCopyDirRecursive(
-	src: string,
-	dest: string,
-	visited: Set<string> = new Set(),
-): Promise<void> {
-	let realSrc: string;
-	try {
-		realSrc = await fsRealpath(src);
-	} catch {
-		return;
-	}
-
-	if (visited.has(realSrc)) {
-		return;
-	}
-	visited.add(realSrc);
-
-	let srcStat: import("node:fs").Stats | undefined;
-	try {
-		srcStat = await stat(realSrc);
-	} catch {
-		visited.delete(realSrc);
-		return;
-	}
-
-	if (srcStat.isDirectory()) {
-		await mkdir(dest, { recursive: true });
-		const entries = await readdir(realSrc, { withFileTypes: true });
-		for (const entry of entries) {
-			const entrySrc = `${realSrc}/${entry.name}`;
-			const entryDest = `${dest}/${entry.name}`;
-			await safeCopyDirRecursive(entrySrc, entryDest, visited);
-		}
-	} else if (srcStat.isFile()) {
-		const lastSlash = dest.lastIndexOf("/");
-		if (lastSlash !== -1) {
-			const parentDir = dest.slice(0, lastSlash);
-			await mkdir(parentDir, { recursive: true });
-		}
-		await Bun.write(dest, Bun.file(realSrc));
-	}
-
-	visited.delete(realSrc);
-}
-
 // ### setupLocalBinSnapshot
 // [IMPLEMENTS](/design/features/local-bin-resolution.md)
 export async function setupLocalBinSnapshot(
@@ -1062,61 +1001,6 @@ function isSandboxResolvable(
 	}
 
 	return isUnderAny(sandboxPath, sandboxPrefixes);
-}
-
-// [IMPLEMENTS](/design/features/agents-skills-snapshot.md)
-export async function setupAgentsSnapshot(
-	grants: string[] = ["*"],
-): Promise<BindMount | null> {
-	const realHome = getRealHome();
-	const agentsSrc = `${realHome}/.agents`;
-
-	const snapshotDir = await stageDir(`${realHome}/.agents`);
-
-	// EM: Granted per skill: only the named skills are copied. "*" (a grant
-	// EM: of ~/.agents itself) copies everything, as before grants.
-	if (!grants.includes("*")) {
-		for (const name of grants) {
-			const src = `${agentsSrc}/skills/${name}`;
-			if (await fileOrDirExists(src)) {
-				await safeCopyDirRecursive(src, `${snapshotDir}/skills/${name}`);
-			} else {
-				warning(
-					`.sandbox/readonly grants skill ${name}, which is not in ~/.agents/skills`,
-				);
-			}
-		}
-	} else if (await fileOrDirExists(agentsSrc)) {
-		try {
-			await safeCopyDirRecursive(agentsSrc, snapshotDir);
-		} catch (err) {
-			error(`Failed to snapshot ~/.agents: ${err}`);
-			error(
-				"scoder copies ~/.agents at startup so symlinked skills resolve in the sandbox",
-			);
-			process.exit(1);
-		}
-		info(`Snapshotting ${agentsSrc} to ${snapshotDir}`);
-	}
-
-	// EM: scoder's own skill, carried in the binary and added to the copy
-	// EM: unless the user installed one (theirs, e.g. a symlink into their
-	// EM: clone, wins). It used to be fetched by the agent with `npx skills
-	// EM: add`, which cannot work from inside: ~/.agents is this read-only
-	// EM: snapshot. A user with no ~/.agents at all still gets one holding
-	// EM: just the skill. Only the snapshot changes — never the host's.
-	for (const skill of SCODER_SKILLS) {
-		const skillFile = `${snapshotDir}/skills/${skill.name}/SKILL.md`;
-		if (!(await fileOrDirExists(skillFile))) {
-			await Bun.write(skillFile, skill.text);
-		}
-	}
-
-	return {
-		type: "ro-bind",
-		source: snapshotDir,
-		dest: `${realHome}/.agents`,
-	};
 }
 
 // ### resolveResolvConfSource

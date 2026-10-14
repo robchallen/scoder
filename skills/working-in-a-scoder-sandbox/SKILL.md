@@ -44,9 +44,11 @@ missing, and how visibility/commits work — not a full description of scoder
 - **Most of `$HOME`**: only specific things are actually populated — the
   project itself, git and gh config, the tool's own config, and whatever
   `.sandbox/readonly` grants — toolchains (`~/.m2`, `~/R`, mise, uv,
-  rustup), `~/.local/bin` entries and `~/.agents` skills included. A
-  missing toolchain usually means the project has not granted it: suggest
-  `scoder --configure <agent>`. Everything else under `$HOME` that exists on the real host may
+  rustup) and `~/.local/bin` entries included. Skills are the ones
+  `.sandbox/skills` selects. A missing toolchain or skill usually means
+  the project has not granted it: suggest `scoder --configure <agent>`.
+  `.sandbox/` is meant to be committed with the project, so a change to it
+  is a reviewable diff; if it shows as untracked or modified, mention it. Everything else under `$HOME` that exists on the real host may
   simply not be there. An `.sandbox/readwrite` file, if the project has one,
   additionally opens specific `$HOME/...` directories read-write (a
   persistent cache or output location) — you can't add entries to it

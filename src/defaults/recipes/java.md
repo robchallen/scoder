@@ -35,6 +35,12 @@ Gradle's cache and wrapper distributions instead of (or as well as) `~/.m2`:
 $HOME/.gradle
 ```
 
+## Skills
+
+```
+java.*|maven.*|gradle.*|junit.*
+```
+
 ## MCP servers
 
 With `--ide eclipse`, AssistAI's endpoints — see the

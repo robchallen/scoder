@@ -35,6 +35,12 @@ uv's cache, if installs are slow without it:
 $HOME/.cache/uv
 ```
 
+## Skills
+
+```
+python.*|uv.*|pytest.*|jupyter.*
+```
+
 ## MCP servers
 
 With `--ide jupyterlab`: jupyter-ai's MCP server — the session's

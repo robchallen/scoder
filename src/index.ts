@@ -15,7 +15,9 @@ import {
 	readMcpJson,
 	relaunchArgs,
 	reviewConfigure,
+	stageRecipes,
 	stageWorkingCopy,
+	type WorkingCopy,
 } from "./configure/configure.ts";
 import {
 	addGitExclude,
@@ -25,13 +27,12 @@ import {
 	type ProtectionConfig,
 	readAgentPorts,
 	removeGitExclude,
-	setupAgentsSnapshot,
 	setupLocalBinSnapshot,
 	setupProtection,
 	setupReadWriteAccess,
 	setupResolvConf,
 } from "./git/protection.ts";
-import { prepareConfigDir, userConfigDir } from "./git/sandbox-config.ts";
+import { prepareConfigDir, recipesDir } from "./git/sandbox-config.ts";
 import {
 	commitAllChanges,
 	getCommitCount,
@@ -54,6 +55,15 @@ import {
 } from "./sandbox/identity.ts";
 import { describeLaunch, launchSandbox } from "./sandbox/launch.ts";
 import { setupOverlays } from "./sandbox/overlays.ts";
+import {
+	AGENT_SKILLS_DIRS,
+	candidateList,
+	DEFAULT_SKILLS_DIR,
+	discoverSkills,
+	readSkillPatterns,
+	selectSkills,
+	setupSkills,
+} from "./sandbox/skills.ts";
 import {
 	describeSshAccess,
 	type SshTunnel,
@@ -467,6 +477,7 @@ async function main(): Promise<void> {
 	let worktreeInfo: GitWorktreeInfo | null = null;
 	let protectionConfig: ProtectionConfig | undefined;
 	let configureWorkingCopy: string | undefined;
+	let recipesWorkingCopy: WorkingCopy | undefined;
 	let sandboxProjDir = "";
 	let identity: SandboxIdentity | undefined;
 	let sshTunnel: SshTunnel | null = null;
@@ -515,12 +526,9 @@ async function main(): Promise<void> {
 			companionIde,
 		);
 
-		const agentsSnapshotBind = await setupAgentsSnapshot(
-			protectionConfig.skillGrants,
+		protectionConfig.safeBinds.push(
+			await skillsBind(worktreeInfo.worktreeDir, toolName, realHome, false),
 		);
-		if (agentsSnapshotBind && protectionConfig) {
-			protectionConfig.safeBinds.push(agentsSnapshotBind);
-		}
 
 		const localBinBind = await setupLocalBinSnapshot(
 			[...toolBinds.map((bind) => bind.dest), ...protectionConfig.homeGrants],
@@ -585,14 +593,12 @@ async function main(): Promise<void> {
 			configureMode ? CONFIGURE_NOTE : undefined,
 		);
 
-		// EM: A configure session sees ~/.agents and ~/.local/bin whole (and
-		// EM: the latter unresolved, so symlinks can be read) to grant from.
-		const agentsSnapshotBind = await setupAgentsSnapshot(
-			configureMode ? ["*"] : protectionConfig.skillGrants,
+		protectionConfig.safeBinds.push(
+			await skillsBind(cwd, toolName, realHome, configureMode),
 		);
-		if (agentsSnapshotBind && protectionConfig) {
-			protectionConfig.safeBinds.push(agentsSnapshotBind);
-		}
+
+		// EM: A configure session sees ~/.local/bin whole (and unresolved, so
+		// EM: symlinks can be read) to grant from.
 
 		const localBinBind = configureMode
 			? await realLocalBinBind()
@@ -773,12 +779,14 @@ async function main(): Promise<void> {
 		if (agentPortsBind) {
 			protectionConfig.safeBinds.push(agentPortsBind);
 		}
-		// EM: The user's recipes, read-only, for the configure skill to read.
-		if (configureMode && (await isDir(userConfigDir()))) {
+		// EM: The user's recipes, as a working copy the configure session can
+		// EM: edit; changes reach the real directory only after review.
+		if (configureMode && (await isDir(recipesDir()))) {
+			recipesWorkingCopy = await stageRecipes(recipesDir());
 			protectionConfig.safeBinds.push({
-				type: "ro-bind",
-				source: userConfigDir(),
-				dest: userConfigDir(),
+				type: "bind",
+				source: recipesWorkingCopy.staged,
+				dest: recipesDir(),
 			});
 		}
 
@@ -1029,6 +1037,8 @@ async function main(): Promise<void> {
 			process.cwd(),
 			configureWorkingCopy,
 			mcpBefore,
+			undefined,
+			recipesWorkingCopy,
 		);
 		if (review.applied) {
 			info("Starting the session with the new configuration");
@@ -1258,4 +1268,26 @@ function ownLocalBinEntries(
 	return bins.flatMap((bin) =>
 		bin?.startsWith(localBin) ? [bin.slice(localBin.length).split("/")[0]] : [],
 	);
+}
+
+// ### skillsBind
+// The session's skills, bound where its main agent reads them: those
+// .sandbox/skills selects, or in a configure session every candidate, with
+// the list appended to the configure skill.
+async function skillsBind(
+	projectRoot: string,
+	toolName: string,
+	realHome: string,
+	configure: boolean,
+): Promise<BindMount> {
+	const candidates = await discoverSkills(projectRoot, realHome);
+	const dir = AGENT_SKILLS_DIRS[toolName] ?? DEFAULT_SKILLS_DIR;
+	if (configure) {
+		return setupSkills(candidates, realHome, dir, {
+			skill: "configure-scoder-sandbox",
+			text: candidateList(candidates),
+		});
+	}
+	const patterns = await readSkillPatterns(projectRoot);
+	return setupSkills(selectSkills(candidates, patterns), realHome, dir);
 }

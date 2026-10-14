@@ -26,6 +26,10 @@ The file `GOOGLE_APPLICATION_CREDENTIALS` points at, if it is under
 
 None.
 
+## Skills
+
+None.
+
 ## MCP servers
 
 None.

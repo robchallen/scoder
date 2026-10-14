@@ -184,11 +184,10 @@ jupyter-ai's MCP endpoint.
    `/run/user/<uid>` created mode `0700`; nothing in the sandbox can reach
    your desktop's D-Bus session or system bus, keyring included. GUI presets
    get a private session bus of their own.
-- **Agent skills snapshot** — the skills a project grants in
-  `.sandbox/readonly` (`$HOME/.agents/skills/<name>`, or `$HOME/.agents` for
-  all) are copied at sandbox start and bound read-only at `~/.agents`, so
-  symlinked skills resolve as a stable snapshot; scoder's own skills are
-  always there.
+- **Agent skills** — see [skills](#agent-skills-sandboxskills): the
+  machine's skills that `.sandbox/skills` selects, plus scoder's own, are
+  copied at start (symlinks resolved) and bound read-only where the agent
+  reads skills.
 - **Sandbox AGENTS.md notice** — the repository `AGENTS.md` seen inside the
   sandbox is overlaid with an extra scoder section so the agent knows it is
   running in an isolated worktree with an ephemeral home. The overlay is
@@ -442,17 +441,10 @@ The skill (`skills/working-in-a-scoder-sandbox/` in this repository)
 teaches an agent how a scoder sandbox behaves — what is read-only, how
 worktrees work, how to set up MCP — so it can help instead of guessing.
 
-**Agents that read `~/.agents/skills` (pi and others) get it automatically**:
-scoder carries the skill and adds it to the session's copy of `~/.agents`,
-nothing written to your real one. If you have installed your own copy
-there and the project grants it, yours is used instead.
-
-**Claude Code** reads `~/.claude/skills` instead, and gets it there too: a
-read-only copy is mounted at `~/.claude/skills/working-in-a-scoder-sandbox`
-inside the session. Your real `~/.claude` is untouched except for one
-thing — the empty `working-in-a-scoder-sandbox` directory left as the mount
-point (it needs somewhere to attach). If you install your own copy there,
-with a `SKILL.md`, yours is used instead. If your `~/.claude/skills` is a symlink (to `~/.agents/skills`, say), it is left alone — pointing at `~/.agents/skills`, Claude sees the skill there anyway.
+Nothing to install: scoder carries it (and `configure-scoder-sandbox`) and
+adds both to every session's skills, wherever the agent reads them —
+nothing written to your real skill directories. A copy of your own with
+the same name, if selected, is used instead.
 
 With `--ide`, scoder also tells the agent (through the sandbox's
 `AGENTS.md` note) which IDE is running beside it, and asks it to offer once
@@ -618,21 +610,46 @@ scoder --configure claude     # or pi, opencode, copilot
 starts the agent with the `configure-scoder-sandbox` skill to work out,
 with you, what this project needs inside the sandbox — environment
 variables, host ports, read-only and read-write paths, MCP servers — and
-write `.sandbox/` (and `.mcp.json`). The agent edits a working copy; when
-you exit, scoder shows you every change, checks it, and applies it only if
-you say yes, then starts a normal session.
+write `.sandbox/` (and `.mcp.json`). The agent edits working copies of
+`.sandbox/` and of your recipes; when you exit, scoder lists each changed
+file in one line, checks them, and applies them only if you say yes — the
+recipes backed up first — then starts a normal session. Commit `.sandbox/`
+before and after: it is meant to live in version control with the project.
 
 An interactive start in a project whose `.sandbox/` lacks any of `env`,
 `readonly`, `readwrite` or `ports` does this automatically. Scripts and
 piped runs never do; they use the built-in defaults.
 
 The agent works from your **recipes**: markdown files in
-`~/.config/scoder/` (or `$XDG_CONFIG_HOME/scoder/`), any number, any
-names, each with *When to use*, *Env*, *Ports*, *Read-only binds*,
-*Read-write binds* and *MCP servers* sections. scoder writes a starter set
+`~/.config/scoder/recipes/` (or `$XDG_CONFIG_HOME/scoder/recipes/`), any
+number, any names, each with *When to use*, *Env*, *Ports*, *Read-only
+binds*, *Read-write binds*, *Skills* and *MCP servers* sections. scoder writes a starter set
 there (base, Java/Gradle, TypeScript, R, Python, polyglot, web search,
-model hosting) and never overwrites a file you have edited — edit them to
-describe your machine.
+model hosting) and never overwrites a file you have edited — edit them, or
+ask the agent to during `--configure`, to describe your machine.
+
+## Agent skills (`.sandbox/skills`)
+
+At start-up scoder finds every skill on the machine — in the project's
+`.agents/skills`, `.claude/skills`, `.github/skills`, ... and your
+`~/.agents/skills`, `~/.claude/skills`, `~/.copilot/skills`,
+`~/.config/opencode/skills`, `~/.pi/agent/skills` — a project skill
+shadowing one of yours with the same name. `.sandbox/skills` picks the
+ones this project's sessions get: one regular expression per line, matched
+against the whole skill name.
+
+```
+# .sandbox/skills
+web-search
+.*research.*
+```
+
+Without the file every skill is included (`.*`). The selection, plus
+scoder's own skills, is bound read-only where the session's agent looks
+for skills — `~/.claude/skills` for Claude Code, `~/.pi/agent/skills` for
+pi, `~/.config/opencode/skills` for opencode, `~/.copilot/skills` for
+Copilot, `~/.agents/skills` otherwise — and only for that agent, not for
+presets added with `--bind`.
 
 ## Environment passthrough (`.sandbox/env`)
 

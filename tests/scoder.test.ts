@@ -2658,7 +2658,7 @@ test("env-file-controls-passthrough: only names listed in .sandbox/env reach the
 // EM: only — an edited recipe is never overwritten — and nothing is copied
 // EM: into the project's .sandbox/ any more. In-process, with
 // EM: XDG_CONFIG_HOME pointed at a fresh directory for this test alone.
-test("user-config-seeds-starter-recipes: missing starter recipes are added to ~/.config/scoder, edited ones kept, .sandbox/ gets only a README", async () => {
+test("user-config-seeds-starter-recipes: missing starter recipes are added to ~/.config/scoder/recipes, edited ones kept, .sandbox/ gets only a README", async () => {
 	const repoDir = await createTempRepo();
 	tempRepos.push(repoDir);
 	const savedXdg = process.env.XDG_CONFIG_HOME;
@@ -2668,7 +2668,7 @@ test("user-config-seeds-starter-recipes: missing starter recipes are added to ~/
 		process.env.XDG_CONFIG_HOME = xdg;
 		const userDir = userConfigDir();
 		expect(userDir).toBe(`${xdg}/scoder`);
-		await Bun.write(`${userDir}/java.md`, "my java\n");
+		await Bun.write(`${userDir}/recipes/java.md`, "my java\n");
 
 		await prepareConfigDir(repoDir, false);
 
@@ -2681,7 +2681,9 @@ test("user-config-seeds-starter-recipes: missing starter recipes are added to ~/
 					: await Bun.file(
 							`${import.meta.dir}/../src/defaults/recipes/${name}`,
 						).text();
-			expect(await Bun.file(`${userDir}/${name}`).text()).toBe(expected);
+			expect(await Bun.file(`${userDir}/recipes/${name}`).text()).toBe(
+				expected,
+			);
 		}
 		expect(readdirSync(`${repoDir}/.sandbox`)).toEqual(["README.md"]);
 	} finally {
@@ -2963,118 +2965,116 @@ test("dev-console-is-dev-null: /dev/console inside the sandbox is /dev/null, bou
 	}
 });
 
-// ### Test: scoder-skill-injected-into-agents-snapshot
-// EM: The skill used to be fetched by the agent with `npx skills add`, which
-// EM: cannot work inside: ~/.agents is a read-only snapshot. scoder now adds
-// EM: its own copy to the snapshot — even when the host has no ~/.agents —
-// EM: unless the user installed one, which wins. The host is never written.
-test("scoder-skill-injected-into-agents-snapshot: the bundled skill is added to the ~/.agents snapshot unless the user has their own", async () => {
+// ### Test: skills-bound-where-the-agent-reads-them
+// EM: Every skill on the machine is a candidate, a project skill shadowing a
+// EM: user one of the same name; .sandbox/skills selects by whole-name
+// EM: regex; the selection plus scoder's own skills is staged and bound
+// EM: read-only where the agent reads skills (~/.agents/skills for a plain
+// EM: tool). A user's own copy of a scoder skill wins.
+test("skills-bound-where-the-agent-reads-them: candidates deduplicated (project first), filtered by .sandbox/skills, scoder skills always", async () => {
 	const repoDir = await createTempRepo();
 	tempRepos.push(repoDir);
-	const bundled = await Bun.file(
-		`${import.meta.dir}/../skills/working-in-a-scoder-sandbox/SKILL.md`,
-	).text();
-	const homes: string[] = [];
+	const home = `/tmp/scoder-skills-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
 	const kept: string[] = [];
-	const snapshotSkill = (flat: string, home: string) => {
-		const m = flat.match(
+	const staged = (out: string, dest: string) => {
+		const m = flattenDryRun(out).match(
 			new RegExp(
-				`--ro-bind (/tmp/scoder-[0-9a-f]{8}${home}/\\.agents) ${home}/\\.agents`,
+				`--ro-bind\\s+(/tmp/scoder-[0-9a-f]{8}\\S*)\\s+${dest}(\\s|$)`,
 			),
 		);
 		expect(m).not.toBeNull();
 		kept.push(m![1]);
-		return `${m![1]}/skills/working-in-a-scoder-sandbox/SKILL.md`;
+		return m![1];
 	};
-
 	try {
-		// No ~/.agents on the host at all.
-		const bare = `/tmp/scoder-skillhome-${Date.now()}-a`;
-		homes.push(bare);
-		await Bun.write(`${bare}/.placeholder`, "");
-		const run1 = await runScoderRaw(repoDir, ["--dry-run", "/bin/bash"], {
-			HOME: bare,
-			SCODER_KEEP_SESSION_TMP: "1",
-		});
-		expect(run1.code).toBe(0);
-		expect(
-			await Bun.file(snapshotSkill(flattenDryRun(run1.stdout), bare)).text(),
-		).toBe(bundled);
-		expect(await dirExists(`${bare}/.agents`)).toBe(false);
-
-		// The user's own copy wins — when the project grants it (skills in
-		// ~/.agents are granted per skill since explicit grants).
-		const own = `/tmp/scoder-skillhome-${Date.now()}-b`;
-		homes.push(own);
+		await Bun.write(`${home}/.agents/skills/alpha/SKILL.md`, "home alpha");
+		await Bun.write(`${home}/.claude/skills/beta/SKILL.md`, "home beta");
 		await Bun.write(
-			`${own}/.agents/skills/working-in-a-scoder-sandbox/SKILL.md`,
+			`${home}/.agents/skills/working-in-a-scoder-sandbox/SKILL.md`,
 			"mine",
 		);
-		const ungranted = await runScoderRaw(repoDir, ["--dry-run", "/bin/bash"], {
-			HOME: own,
-			SCODER_KEEP_SESSION_TMP: "1",
-		});
-		expect(
-			await Bun.file(
-				snapshotSkill(flattenDryRun(ungranted.stdout), own),
-			).text(),
-		).toBe(bundled);
 		await Bun.write(
-			`${repoDir}/.sandbox/readonly`,
-			"$HOME/.agents/skills/working-in-a-scoder-sandbox\n",
+			`${repoDir}/.agents/skills/alpha/SKILL.md`,
+			"project alpha",
 		);
-		const run2 = await runScoderRaw(repoDir, ["--dry-run", "/bin/bash"], {
-			HOME: own,
-			SCODER_KEEP_SESSION_TMP: "1",
-		});
+		const env = { HOME: home, SCODER_KEEP_SESSION_TMP: "1" };
+
+		const all = staged(
+			(await runScoderRaw(repoDir, ["--dry-run", "/bin/bash"], env)).stdout,
+			`${home}/.agents/skills`,
+		);
+		expect(readdirSync(all).sort()).toEqual([
+			"alpha",
+			"beta",
+			"configure-scoder-sandbox",
+			"working-in-a-scoder-sandbox",
+		]);
+		expect(await Bun.file(`${all}/alpha/SKILL.md`).text()).toBe(
+			"project alpha",
+		);
 		expect(
-			await Bun.file(snapshotSkill(flattenDryRun(run2.stdout), own)).text(),
+			await Bun.file(`${all}/working-in-a-scoder-sandbox/SKILL.md`).text(),
 		).toBe("mine");
+
+		await Bun.write(`${repoDir}/.sandbox/skills`, "# only beta\nbet.\n");
+		const some = staged(
+			(await runScoderRaw(repoDir, ["--dry-run", "/bin/bash"], env)).stdout,
+			`${home}/.agents/skills`,
+		);
+		expect(readdirSync(some).sort()).toEqual([
+			"beta",
+			"configure-scoder-sandbox",
+			"working-in-a-scoder-sandbox",
+		]);
+		expect(
+			await Bun.file(`${some}/working-in-a-scoder-sandbox/SKILL.md`).text(),
+		).not.toBe("mine");
+		expect(
+			await dirExists(`${home}/.agents/skills/configure-scoder-sandbox`),
+		).toBe(false);
 	} finally {
 		for (const path of kept) await removeSessionRoot(path);
-		await Bun.spawn(["rm", "-rf", ...homes]).exited;
+		await Bun.spawn(["rm", "-rf", home]).exited;
 		await cleanupRepo(repoDir);
 	}
 });
 
-// ### Test: scoder-skill-bound-for-claude-code
-// EM: Claude Code reads ~/.claude/skills, bound read-write from the host, so
-// EM: the skill is a staged copy bound read-only over it — after the
-// EM: ~/.claude bind, or that would cover it — and skipped when the user's
-// EM: own SKILL.md is there. (An empty leftover mountpoint is not "own".)
-test("scoder-skill-bound-for-claude-code: claude sessions get the skill bound over ~/.claude/skills unless the user has their own", async () => {
+// ### Test: skills-bound-for-the-main-agent-only
+// EM: Claude Code gets the staged skills over ~/.claude/skills (after the
+// EM: read-write ~/.claude bind, which would otherwise cover it); pi gets
+// EM: them at ~/.pi/agent/skills, and `--bind claude` adds no skills bind
+// EM: for Claude. A symlinked skills directory is bound at its target.
+test("skills-bound-for-the-main-agent-only: claude at ~/.claude/skills, pi (with --bind claude) at ~/.pi/agent/skills only; through a symlink, at its target", async () => {
 	const repoDir = await createTempRepo();
 	tempRepos.push(repoDir);
-	const claudeBin = await createFakeToolDir("claude");
-	const home = `/tmp/scoder-claudeskill-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
-	const dest = `${home}/.claude/skills/working-in-a-scoder-sandbox`;
-	const env = { PATH: `${claudeBin}:${process.env.PATH}`, HOME: home };
-
+	const bin = await createFakeToolDir("claude");
+	await Bun.write(`${bin}/pi`, "#!/bin/sh\ntrue\n");
+	await Bun.spawn(["chmod", "+x", `${bin}/pi`]).exited;
+	const home = `/tmp/scoder-agentskills-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
+	const env = { PATH: `${bin}:${process.env.PATH}`, HOME: home };
+	const skillsBind = (dest: string) =>
+		new RegExp(`--ro-bind\\s+/tmp/scoder-[0-9a-f]{8}\\S*\\s+${dest}(\\s|$)`);
 	try {
 		await Bun.write(`${home}/.claude/settings.json`, "{}");
-		// A leftover empty mountpoint from an earlier session.
-		await Bun.spawn(["mkdir", "-p", dest]).exited;
-		const flat = flattenDryRun(
-			await runScoder(repoDir, ["--dry-run", "--no-worktree", "claude"], env),
+		await Bun.write(`${home}/.pi/agent/settings.json`, "{}");
+		const claude = flattenDryRun(
+			await runScoder(repoDir, ["--dry-run", "claude"], env),
 		);
-		const claudeBind = flat.indexOf(`--bind ${home}/.claude ${home}/.claude`);
-		const skillBind = flat.search(
-			new RegExp(`--ro-bind /tmp/scoder-[0-9a-f]{8}${dest} ${dest}`),
+		const claudeBind = claude.search(
+			new RegExp(`--bind\\s+${home}/\\.claude\\s+${home}/\\.claude`),
 		);
+		const skills = claude.search(skillsBind(`${home}/.claude/skills`));
 		expect(claudeBind).toBeGreaterThan(-1);
-		expect(skillBind).toBeGreaterThan(claudeBind);
+		expect(skills).toBeGreaterThan(claudeBind);
 
-		await Bun.write(`${dest}/SKILL.md`, "mine");
-		const own = flattenDryRun(
-			await runScoder(repoDir, ["--dry-run", "--no-worktree", "claude"], env),
+		const pi = flattenDryRun(
+			await runScoder(repoDir, ["--dry-run", "--bind", "claude", "pi"], env),
 		);
-		expect(own).not.toMatch(new RegExp(`--ro-bind \\S+ ${dest}`));
+		expect(pi).toMatch(skillsBind(`${home}/.pi/agent/skills`));
+		expect(pi).not.toMatch(skillsBind(`${home}/.claude/skills`));
+		expect(pi).not.toMatch(skillsBind(`${home}/.agents/skills`));
 
-		// A symlinked ~/.claude/skills (commonly to ~/.agents/skills): no
-		// bind. Reported: bwrap could not make the mountpoint through it, so
-		// the session failed to launch.
-		await Bun.spawn(["rm", "-rf", `${home}/.claude/skills`]).exited;
-		await Bun.write(`${home}/.agents/skills/.keep`, "");
+		await Bun.spawn(["mkdir", "-p", `${home}/.agents/skills`]).exited;
 		await Bun.spawn([
 			"ln",
 			"-s",
@@ -3082,11 +3082,12 @@ test("scoder-skill-bound-for-claude-code: claude sessions get the skill bound ov
 			`${home}/.claude/skills`,
 		]).exited;
 		const linked = flattenDryRun(
-			await runScoder(repoDir, ["--dry-run", "--no-worktree", "claude"], env),
+			await runScoder(repoDir, ["--dry-run", "claude"], env),
 		);
-		expect(linked).not.toMatch(new RegExp(`--ro-bind \\S+ ${dest}`));
+		expect(linked).toMatch(skillsBind(`${home}/.agents/skills`));
+		expect(linked).not.toMatch(skillsBind(`${home}/.claude/skills`));
 	} finally {
-		await Bun.spawn(["rm", "-rf", home, claudeBin]).exited;
+		await Bun.spawn(["rm", "-rf", home, bin]).exited;
 		await cleanupRepo(repoDir);
 	}
 });
@@ -8353,7 +8354,7 @@ test("configure-flag-parsed: --configure before the tool sets configure; after i
 // EM: agent's own initial-prompt form, .sandbox/ bound read-write from a
 // EM: staged working copy (never the real directory), the recipes directory
 // EM: bound read-only, and the configure note in the AGENTS.md overlay.
-test("configure-session-dry-run: each agent gets the prompt its own way, a writable .sandbox working copy, and read-only recipes", async () => {
+test("configure-session-dry-run: each agent gets the prompt its own way, and writable working copies of .sandbox and the recipes", async () => {
 	const repoDir = await createTempRepo();
 	tempRepos.push(repoDir);
 	const xdg = `${TEST_BASE}/xdg-cfg-${Date.now()}`;
@@ -8365,7 +8366,7 @@ test("configure-session-dry-run: each agent gets the prompt its own way, a writa
 	};
 
 	try {
-		await Bun.write(`${xdg}/scoder/base.md`, "# base\n");
+		await Bun.write(`${xdg}/scoder/recipes/base.md`, "# base\n");
 		for (const [tool, form] of Object.entries(forms)) {
 			const bin = await createFakeToolDir(tool);
 			try {
@@ -8388,7 +8389,9 @@ test("configure-session-dry-run: each agent gets the prompt its own way, a writa
 				);
 				expect(flat).not.toContain(`--ro-bind ${repoDir}/.sandbox`);
 				expect(flat).toMatch(
-					new RegExp(`--ro-bind\\s+${xdg}/scoder\\s+${xdg}/scoder`),
+					new RegExp(
+						`--bind\\s+/tmp/scoder-[0-9a-f]{8}\\S*\\s+${xdg}/scoder/recipes(\\s|$)`,
+					),
 				);
 				const staged = flat.match(
 					/--bind (\/tmp\/scoder-[0-9a-f]{8})\S*\/\.sandbox /,
@@ -8511,32 +8514,49 @@ test("configure-relaunch-args: --configure is dropped; the compiled binary's emb
 	).toEqual(["/x", "pi"]);
 });
 
-// ### Test: configure-skill-injected
-test("configure-skill-injected: both bundled skills are in the ~/.agents snapshot", async () => {
+// ### Test: configure-session-gets-every-skill-and-the-list
+// EM: A configure session ignores .sandbox/skills: every candidate is bound,
+// EM: and the configure skill's staged copy ends with the candidate list.
+test("configure-session-gets-every-skill-and-the-list: all candidates bound, listed at the end of the configure skill", async () => {
 	const repoDir = await createTempRepo();
 	tempRepos.push(repoDir);
-	const home = `/tmp/scoder-cfgskill-${Date.now()}`;
+	const bin = await createFakeToolDir("claude");
+	const home = `/tmp/scoder-cfgskill-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
 	try {
-		await Bun.write(`${home}/.placeholder`, "");
-		const run = await runScoderRaw(repoDir, ["--dry-run", "/bin/bash"], {
-			HOME: home,
-			SCODER_KEEP_SESSION_TMP: "1",
-		});
+		await Bun.write(`${home}/.claude/settings.json`, "{}");
+		await Bun.write(
+			`${home}/.agents/skills/gamma/SKILL.md`,
+			"---\nname: gamma\ndescription: Gamma does things\n---\n",
+		);
+		await Bun.write(`${repoDir}/.sandbox/skills`, "nothing-matches\n");
+		const run = await runScoderRaw(
+			repoDir,
+			["--dry-run", "--configure", "claude"],
+			{
+				PATH: `${bin}:${process.env.PATH}`,
+				HOME: home,
+				SCODER_KEEP_SESSION_TMP: "1",
+			},
+		);
 		const m = flattenDryRun(run.stdout).match(
 			new RegExp(
-				`--ro-bind (/tmp/scoder-[0-9a-f]{8}${home}/\\.agents) ${home}/\\.agents`,
+				`--ro-bind\\s+(/tmp/scoder-[0-9a-f]{8}\\S*)\\s+${home}/\\.claude/skills(\\s|$)`,
 			),
 		);
 		expect(m).not.toBeNull();
-		for (const name of [
-			"working-in-a-scoder-sandbox",
+		expect(readdirSync(m![1]).sort()).toEqual([
 			"configure-scoder-sandbox",
-		]) {
-			expect(await fileExists(`${m![1]}/skills/${name}/SKILL.md`)).toBe(true);
-		}
+			"gamma",
+			"working-in-a-scoder-sandbox",
+		]);
+		const text = await Bun.file(
+			`${m![1]}/configure-scoder-sandbox/SKILL.md`,
+		).text();
+		expect(text).toContain("## Skills on this machine");
+		expect(text).toContain("| `gamma` | home | Gamma does things |");
 		await removeSessionRoot(m![1]);
 	} finally {
-		await Bun.spawn(["rm", "-rf", home]).exited;
+		await Bun.spawn(["rm", "-rf", home, bin]).exited;
 		await cleanupRepo(repoDir);
 	}
 });
@@ -8661,5 +8681,52 @@ test("config-predating-grants-warned: config without .sandbox/version gets the s
 		expect(current.stderr).not.toContain("predates explicit grants");
 	} finally {
 		await cleanupRepo(repoDir);
+	}
+});
+
+// ### Test: configure-recipes-backed-up-and-applied
+// EM: Recipe edits from a configure session are applied with the rest on
+// EM: "yes", after a dated backup of the recipes directory; .sandbox/
+// EM: changes are summarised one line per file.
+test("configure-recipes-backed-up-and-applied: recipes are backed up, then synced; nothing happens on no", async () => {
+	const base = `${TEST_BASE}/cfg-recipes-${Date.now()}`;
+	const root = `${base}/proj`;
+	const recipes = {
+		real: `${base}/recipes`,
+		staged: `${base}/staged-recipes`,
+		label: "~/.config/scoder/recipes",
+	};
+	const staged = `${base}/staged/.sandbox`;
+	try {
+		await Bun.write(`${recipes.real}/base.md`, "old\n");
+		await Bun.write(`${recipes.staged}/base.md`, "new\n");
+		await Bun.write(`${recipes.staged}/mine.md`, "added\n");
+		await Bun.write(`${staged}/env`, "A\n");
+
+		const no = await reviewConfigure(
+			root,
+			staged,
+			null,
+			async () => false,
+			recipes,
+		);
+		expect(no.applied).toBe(false);
+		expect(await Bun.file(`${recipes.real}/base.md`).text()).toBe("old\n");
+
+		const yes = await reviewConfigure(
+			root,
+			staged,
+			null,
+			async () => true,
+			recipes,
+		);
+		expect(yes.applied).toBe(true);
+		expect(yes.recipesBackup).toBeDefined();
+		expect(await Bun.file(`${yes.recipesBackup}/base.md`).text()).toBe("old\n");
+		expect(readdirSync(recipes.real).sort()).toEqual(["base.md", "mine.md"]);
+		expect(await Bun.file(`${recipes.real}/base.md`).text()).toBe("new\n");
+		expect(await Bun.file(`${root}/.sandbox/env`).text()).toBe("A\n");
+	} finally {
+		await Bun.spawn(["rm", "-rf", base]).exited;
 	}
 });

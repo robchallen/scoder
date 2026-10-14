@@ -30,6 +30,10 @@ there).
 None — unless SSO token refresh inside the sandbox is needed, in which case
 `$HOME/.aws/sso/cache` read-write.
 
+## Skills
+
+None.
+
 ## MCP servers
 
 None.

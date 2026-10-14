@@ -27,6 +27,10 @@ credentials rather than a key.
 
 None.
 
+## Skills
+
+None.
+
 ## MCP servers
 
 None.

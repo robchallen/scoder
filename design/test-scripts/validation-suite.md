@@ -1423,7 +1423,7 @@ not; a line that is not a variable name is warned about and skipped.
 [TESTED_BY](/tests/scoder.test.ts#testUserConfigSeedsStarterRecipes)
 
 In-process with a fresh `XDG_CONFIG_HOME`: every starter recipe missing
-from `~/.config/scoder/` is written byte-identical to
+from `~/.config/scoder/recipes/` is written byte-identical to
 `src/defaults/recipes/`, an edited one is kept, and the project's
 `.sandbox/` gets only its README.
 
@@ -1523,13 +1523,15 @@ user-data-dir and `~/.positron/extensions`, seeded from
 shared btw hook (`if (interactive() ...) btw::btw_mcp_session()`); `vscode`
 does not touch it.
 
-### 151. scoder-skill-injected-into-agents-snapshot
-[TESTED_BY](/tests/scoder.test.ts#testScoderSkillInjectedIntoAgentsSnapshot)
+### 151. skills-bound-where-the-agent-reads-them
+[TESTED_BY](/tests/scoder.test.ts#testSkillsBoundWhereTheAgentReadsThem)
 
-With no `~/.agents` on the host, the snapshot is still bound and holds the
-bundled skill, byte-identical to the repository's, and nothing is created
-on the host; a user-installed `SKILL.md` in the same place is ignored
-until the project grants that skill, and then wins.
+For a plain tool, skills are staged and bound read-only at
+`~/.agents/skills`: candidates from the project and `$HOME` deduplicated
+by name with the project's copy winning, a user's own copy of a scoder
+skill winning over the bundled one, and scoder's skills always present;
+`.sandbox/skills` narrows the set by whole-name regex. Nothing is written
+on the host.
 
 ### 152. agents-md-overlay-names-companion-ide
 [TESTED_BY](/tests/scoder.test.ts#testAgentsMdOverlayNamesCompanionIde)
@@ -1538,13 +1540,12 @@ With `--ide rstudio`, the `AGENTS.md` overlay names RStudio and asks the
 agent to offer an MCP connection once; without `--ide` there is no such
 line. The old `npx skills add` instruction is gone.
 
-### 153. scoder-skill-bound-for-claude-code
-[TESTED_BY](/tests/scoder.test.ts#testScoderSkillBoundForClaudeCode)
+### 153. skills-bound-for-the-main-agent-only
+[TESTED_BY](/tests/scoder.test.ts#testSkillsBoundForTheMainAgentOnly)
 
-A `claude` session binds the staged skill read-only at
-`~/.claude/skills/working-in-a-scoder-sandbox`, after the read-write
-`~/.claude` bind, even when an empty leftover mountpoint is there; with the
-user's own `SKILL.md` in place, no such bind; nor when `~/.claude/skills` is a symlink (bwrap cannot make the mountpoint through it, which failed the launch).
+`claude` gets the skills bind at `~/.claude/skills`, after the read-write
+`~/.claude` bind; `--bind claude pi` binds them at `~/.pi/agent/skills`
+only; a symlinked `~/.claude/skills` is bound at its target.
 
 ### 154. llm-probe-requires-openai-models-list
 [TESTED_BY](/tests/scoder.test.ts#testLlmProbeRequiresOpenaiModelsList)
@@ -1678,11 +1679,12 @@ copy.
 The relaunch command line drops `--configure`, and the compiled binary's
 embedded entry point.
 
-### 171. configure-skill-injected
-[TESTED_BY](/tests/scoder.test.ts#testConfigureSkillInjected)
+### 171. configure-session-gets-every-skill-and-the-list
+[TESTED_BY](/tests/scoder.test.ts#testConfigureSessionGetsEverySkillAndTheList)
 
-Both bundled skills, `working-in-a-scoder-sandbox` and
-`configure-scoder-sandbox`, are in the `~/.agents` snapshot.
+`--configure claude` binds every candidate skill despite a
+`.sandbox/skills` that matches none, and the staged configure skill ends
+with the "Skills on this machine" table.
 
 ### 172. toolchain-paths-granted-not-implicit
 [TESTED_BY](/tests/scoder.test.ts#testToolchainPathsGrantedNotImplicit)
@@ -1709,6 +1711,14 @@ directory) is imported; a `pom.xml`-only tree and a plain one are not.
 
 A project with `.sandbox/` config but no `.sandbox/version` gets the
 start-up message; with the marker, none.
+
+### 176. configure-recipes-backed-up-and-applied
+[TESTED_BY](/tests/scoder.test.ts#testConfigureRecipesBackedUpAndApplied)
+
+Recipe changes from a configure session are listed one line per file
+with the `.sandbox/` changes; on "no" nothing changes; on "yes" the
+recipes directory is backed up (dated copy beside it), then made to match
+the working copy, and `.sandbox/` is applied.
 
 ## Current Network Coverage
 

@@ -41,6 +41,14 @@ ones that exist.
 
 None.
 
+## Skills
+
+`.sandbox/skills` — regular expressions matched against whole skill names,
+chosen from the skills on this machine (listed at the end of the
+`configure-scoder-sandbox` skill). scoder's own skills are always there.
+Collect the patterns the other matching recipes give; add any skill the
+user names. Only if the user wants every skill, `.*`.
+
 ## MCP servers
 
 None.

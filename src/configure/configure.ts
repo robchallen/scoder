@@ -6,6 +6,7 @@ import {
 	parseEnvNames,
 	readConfigText,
 } from "../git/sandbox-config.ts";
+import { skillPatternLines } from "../sandbox/skills.ts";
 import { error, info } from "../utils/logger.ts";
 import { getRealHome } from "../utils/paths.ts";
 import { stageDir } from "../utils/session.ts";
@@ -83,35 +84,43 @@ export async function readMcpJson(projectRoot: string): Promise<string | null> {
 export interface ReviewResult {
 	changed: boolean;
 	applied: boolean;
+	/** Where the recipes were backed up, when they changed and were applied. */
+	recipesBackup?: string;
+}
+
+/** A directory edited through a staged working copy. */
+export interface WorkingCopy {
+	real: string;
+	staged: string;
+	/** How its files are named in the summary, e.g. ".sandbox". */
+	label: string;
 }
 
 // ### reviewConfigure
-// After the configure session: show the changes, validate, ask, apply or
-// discard. `confirm` is injectable for tests; the default asks on the
-// terminal.
+// After the configure session: one line per changed file in .sandbox/, the
+// recipes and .mcp.json; validate; ask; apply or discard. The recipes are
+// backed up before they are changed (.sandbox/ is expected to be in git).
+// `confirm` is injectable for tests; the default asks on the terminal.
 export async function reviewConfigure(
 	projectRoot: string,
 	staged: string,
 	mcpBefore: string | null,
 	confirm: (question: string) => Promise<boolean> = askYesNo,
+	recipes?: WorkingCopy,
 ): Promise<ReviewResult> {
-	const real = `${projectRoot}/${CONFIG_DIR}`;
+	const sandbox: WorkingCopy = {
+		real: `${projectRoot}/${CONFIG_DIR}`,
+		staged,
+		label: CONFIG_DIR,
+	};
 	const mcpPath = `${projectRoot}/.mcp.json`;
 	const mcpAfter = await readMcpJson(projectRoot);
 
-	const names = [
-		...new Set([...(await listFiles(real)), ...(await listFiles(staged))]),
-	].sort();
-	const changes: string[] = [];
-	for (const name of names) {
-		const before = await textOrNull(`${real}/${name}`);
-		const after = await textOrNull(`${staged}/${name}`);
-		if (before !== after) {
-			changes.push(unifiedDiff(`${CONFIG_DIR}/${name}`, before, after));
-		}
-	}
+	const sandboxChanges = await summarise(sandbox);
+	const recipeChanges = recipes ? await summarise(recipes) : [];
+	const changes = [...sandboxChanges, ...recipeChanges];
 	if (mcpAfter !== mcpBefore) {
-		changes.push(unifiedDiff(".mcp.json", mcpBefore, mcpAfter));
+		changes.push(summaryLine(".mcp.json", mcpBefore, mcpAfter));
 	}
 
 	if (changes.length === 0) {
@@ -122,7 +131,7 @@ export async function reviewConfigure(
 	console.error("");
 	info("Changes from the configure session:");
 	for (const change of changes) {
-		console.error(change);
+		console.error(`  ${change}`);
 	}
 
 	const problems = await validateConfig(dirname(staged));
@@ -138,13 +147,90 @@ export async function reviewConfigure(
 
 	if (!(await confirm("Apply these changes? [y/N] "))) {
 		await restoreMcp(mcpPath, mcpBefore);
-		info("Discarded; .sandbox/ and .mcp.json are as they were.");
+		info("Discarded; nothing was changed.");
 		return { changed: true, applied: false };
 	}
 
-	await applyWorkingCopy(staged, real);
-	info(`Applied to ${real}${mcpAfter !== mcpBefore ? " and .mcp.json" : ""}.`);
-	return { changed: true, applied: true };
+	let recipesBackup: string | undefined;
+	if (recipes && recipeChanges.length > 0) {
+		recipesBackup = await backupDir(recipes.real);
+		await syncDir(recipes.staged, recipes.real);
+		info(`Recipes updated; the previous ones are in ${recipesBackup}`);
+	}
+	await applyWorkingCopy(staged, sandbox.real);
+	info(
+		`Applied. Commit ${CONFIG_DIR}/ to keep this configuration with the project.`,
+	);
+	return { changed: true, applied: true, recipesBackup };
+}
+
+// One line per added, removed or modified file.
+async function summarise(copy: WorkingCopy): Promise<string[]> {
+	const names = [
+		...new Set([
+			...(await listFiles(copy.real)),
+			...(await listFiles(copy.staged)),
+		]),
+	].sort();
+	const lines: string[] = [];
+	for (const name of names) {
+		const before = await textOrNull(`${copy.real}/${name}`);
+		const after = await textOrNull(`${copy.staged}/${name}`);
+		if (before !== after) {
+			lines.push(summaryLine(`${copy.label}/${name}`, before, after));
+		}
+	}
+	return lines;
+}
+
+function summaryLine(
+	label: string,
+	before: string | null,
+	after: string | null,
+): string {
+	if (before === null) return `added     ${label}`;
+	if (after === null) return `removed   ${label}`;
+	const a = before.split("\n");
+	const b = after.split("\n");
+	const inA = new Set(a);
+	const inB = new Set(b);
+	const added = b.filter((l) => !inA.has(l)).length;
+	const removed = a.filter((l) => !inB.has(l)).length;
+	return `modified  ${label} (+${added} -${removed})`;
+}
+
+// ### stageRecipes
+// A working copy of the recipes directory, for binding read-write over it
+// in a configure session.
+export async function stageRecipes(real: string): Promise<WorkingCopy> {
+	const staged = await stageDir(real);
+	for (const name of await listFiles(real)) {
+		await Bun.write(`${staged}/${name}`, Bun.file(`${real}/${name}`));
+	}
+	return { real, staged, label: real.replace(getRealHome(), "~") };
+}
+
+// A dated copy beside the directory.
+async function backupDir(dir: string): Promise<string> {
+	const stamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
+	const backup = `${dir}.bak-${stamp}`;
+	await mkdir(dirname(backup), { recursive: true });
+	await Bun.spawn(["cp", "-a", dir, backup]).exited;
+	return backup;
+}
+
+// Make `real` hold exactly the files in `staged`.
+async function syncDir(staged: string, real: string): Promise<void> {
+	await mkdir(real, { recursive: true });
+	const kept = new Set(await listFiles(staged));
+	for (const name of kept) {
+		await Bun.write(`${real}/${name}`, Bun.file(`${staged}/${name}`));
+	}
+	for (const name of await listFiles(real)) {
+		if (!kept.has(name)) {
+			await rm(`${real}/${name}`);
+		}
+	}
 }
 
 // ### validateConfig
@@ -168,6 +254,15 @@ export async function validateConfig(root: string): Promise<string[]> {
 			);
 		}
 	}
+	for (const line of skillPatternLines(await readConfigText(root, "skills"))) {
+		try {
+			new RegExp(line);
+		} catch {
+			problems.push(
+				`${CONFIG_DIR}/skills: "${line}" is not a regular expression`,
+			);
+		}
+	}
 	for (const line of lines(await readConfigText(root, "readonly"))) {
 		if (
 			line.startsWith("$HOME/") &&
@@ -187,16 +282,7 @@ export async function applyWorkingCopy(
 	staged: string,
 	real: string,
 ): Promise<void> {
-	await mkdir(real, { recursive: true });
-	const kept = new Set(await listFiles(staged));
-	for (const name of kept) {
-		await Bun.write(`${real}/${name}`, Bun.file(`${staged}/${name}`));
-	}
-	for (const name of await listFiles(real)) {
-		if (!kept.has(name)) {
-			await rm(`${real}/${name}`);
-		}
-	}
+	await syncDir(staged, real);
 	for (const name of CONFIG_KEY_FILES) {
 		const path = `${real}/${name}`;
 		if (!(await Bun.file(path).exists())) {
@@ -263,28 +349,4 @@ async function pathExists(path: string): Promise<boolean> {
 	} catch {
 		return false;
 	}
-}
-
-// A small line diff for the review: "-"/"+" lines with the file named; not a
-// minimal diff, but exact and readable for config files this size.
-function unifiedDiff(
-	label: string,
-	before: string | null,
-	after: string | null,
-): string {
-	const out = [
-		`--- ${before === null ? "/dev/null" : `a/${label}`}`,
-		`+++ ${after === null ? "/dev/null" : `b/${label}`}`,
-	];
-	const a = before === null ? [] : before.replace(/\n$/, "").split("\n");
-	const b = after === null ? [] : after.replace(/\n$/, "").split("\n");
-	const inA = new Set(a);
-	const inB = new Set(b);
-	for (const line of a) {
-		if (!inB.has(line)) out.push(`-${line}`);
-	}
-	for (const line of b) {
-		if (!inA.has(line)) out.push(`+${line}`);
-	}
-	return out.join("\n");
 }

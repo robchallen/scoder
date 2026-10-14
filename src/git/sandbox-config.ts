@@ -4,6 +4,7 @@ import defaultPorts from "../defaults/ports" with { type: "text" };
 import defaultReadme from "../defaults/README.md" with { type: "text" };
 import defaultReadonly from "../defaults/readonly" with { type: "text" };
 import defaultReadwrite from "../defaults/readwrite" with { type: "text" };
+import defaultSkills from "../defaults/skills" with { type: "text" };
 import { STARTER_RECIPES } from "../recipes.ts";
 import { info, warning } from "../utils/logger.ts";
 import { getRealHome } from "../utils/paths.ts";
@@ -35,6 +36,7 @@ export const CONFIG_FILES: Record<
 	readwrite: { path: `${CONFIG_DIR}/readwrite`, legacy: ".agentreadwrite" },
 	ports: { path: `${CONFIG_DIR}/ports`, legacy: ".agentports" },
 	env: { path: `${CONFIG_DIR}/env`, legacy: null },
+	skills: { path: `${CONFIG_DIR}/skills`, legacy: null },
 };
 
 // EM: The shipped defaults, embedded at build time like entrypoint.sh: the
@@ -47,6 +49,7 @@ const DEFAULT_FILES: Record<string, string> = {
 	readonly: defaultReadonly,
 	readwrite: defaultReadwrite,
 	ports: defaultPorts,
+	skills: defaultSkills,
 };
 
 // ### defaultConfigText
@@ -192,12 +195,18 @@ export function userConfigDir(): string {
 	return `${base}/scoder`;
 }
 
+// ### recipesDir
+// The configure skill's recipes: `~/.config/scoder/recipes/`.
+export function recipesDir(): string {
+	return `${userConfigDir()}/recipes`;
+}
+
 // ### seedRecipes
-// Copy each starter recipe missing from the user's config directory, by
-// file name. Never overwrites: a user's edits, and their own recipes beside
+// Copy each starter recipe missing from the recipes directory, by file
+// name. Never overwrites: a user's edits, and their own recipes beside
 // these, stand. Returns the directory.
 export async function seedRecipes(): Promise<string> {
-	const dir = userConfigDir();
+	const dir = recipesDir();
 	await mkdir(dir, { recursive: true });
 	for (const [name, content] of Object.entries(STARTER_RECIPES)) {
 		const path = `${dir}/${name}`;

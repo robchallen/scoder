@@ -33,7 +33,7 @@ localhost services by default.
 
 [HAS_FEATURE](./features/live-file-overlays.md) - A host file presented inside the sandbox with sandbox-only content added, read-only, and re-rendered whenever the host file changes.
 
-[HAS_FEATURE](./features/agents-skills-snapshot.md) - Startup-time snapshot of ~/.agents with symlink resolution for read-only sandbox access.
+[HAS_FEATURE](./features/agents-skills-snapshot.md) - Agent skills: every skill on the machine found at start-up, selected by `.sandbox/skills`, copied with symlinks resolved and bound read-only where the main agent reads skills.
 
 [HAS_FEATURE](./features/apparmor-compatibility.md) - Automatic AppArmor profile installation for Ubuntu 24.04+ systems with restricted user namespaces.
 

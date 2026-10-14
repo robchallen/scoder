@@ -11,9 +11,10 @@ tags: [feature, config, sandbox, skills]
 `scoder --configure <agent>` starts an agent session whose job is to set
 up the project's `.sandbox/` files (and `.mcp.json`) with the user, guided
 by the bundled `configure-scoder-sandbox` skill and the user's markdown
-recipes in `~/.config/scoder/`. The agent edits a working copy; when the
-session ends scoder shows every change on the host, validates it, applies
-it only if the user accepts, and then starts the normal session.
+recipes in `~/.config/scoder/recipes/`. The agent edits working copies of
+`.sandbox/` and the recipes; when the session ends scoder lists each
+changed file on the host, validates, applies only if the user accepts
+(backing up the recipes first), and then starts the normal session.
 
 An interactive start in a project whose `.sandbox/` is missing any of
 `env`, `readonly`, `readwrite` or `ports` runs configure first,
@@ -42,18 +43,29 @@ never writes the real files.
 - **Working copy.** `.sandbox/` is copied into the session staging root
   and bound read-write at `.sandbox/`, in place of the usual read-only
   bind. `.mcp.json` is snapshotted before the session.
-- **Recipes.** `~/.config/scoder/` (or `$XDG_CONFIG_HOME/scoder/`) is bound
-  read-only. Any number of markdown files, any names; the skill reads them
+- **Recipes.** `~/.config/scoder/recipes/` (under `$XDG_CONFIG_HOME` when
+  set) is staged and bound read-write as a working copy, so the agent can
+  refine or add recipes with the user. Any number of markdown files, any names; the skill reads them
   all. The starter set (`src/defaults/recipes/`) is written there by file
   name on each real run, never overwriting a file the user has.
   `--configure` never edits the recipes.
 - **Note and prompt.** The AGENTS.md overlay says this is a configure
   session; the agent starts with a prompt to use the skill.
-- **Review.** After the session: a line diff of every changed file in
-  `.sandbox/` and of `.mcp.json`; validation (the port list parses,
+- **Skills.** Every skill on the machine is bound, and the list is
+  appended to the configure skill (see
+  [agent skills](./agents-skills-snapshot.md)); the agent writes
+  `.sandbox/skills`.
+- **Version control.** `.sandbox/` is expected to be committed. The skill
+  asks for a commit before changing it and reminds the user to commit
+  after; the recipes, outside any repository, are backed up instead.
+- **Review.** After the session: one line per added, removed or modified
+  file in `.sandbox/`, the recipes and `.mcp.json` (with line counts);
+  validation (the port list parses, `skills` patterns compile,
   `readwrite` lines are under `$HOME`, `readonly` `$HOME` paths exist);
   then "Apply these changes? [y/N]". Invalid or declined: nothing applied
-  and `.mcp.json` restored. Accepted: the working copy replaces
+  and `.mcp.json` restored. Accepted: the recipes are backed up
+  (`recipes.bak-<timestamp>` beside them) and replaced by their working
+  copy if they changed; the working copy replaces
   `.sandbox/` (deleted files removed), any still-missing key file is
   written as an all-comment stub so the next start does not configure
   again, and the original command line is re-run without `--configure`.
@@ -71,8 +83,9 @@ are no longer bound for everyone.
 - **`~/.local/bin`** per entry (`$HOME/.local/bin/<name>`) or whole; the
   session's own tool and IDE, when installed there, are always included.
   Symlinks resolve into granted paths (e.g. a uv tool's venv).
-- **`~/.agents`** per skill (`$HOME/.agents/skills/<name>`) or whole;
-  scoder's own skills always.
+- **Skills** are selected in `.sandbox/skills`, not granted in `readonly`
+  (a `$HOME/.agents/...` line there is an error); see
+  [agent skills](./agents-skills-snapshot.md).
 - **Always bound:** system and sandbox mechanics, fonts, themes, icons, GTK
   config, `mimeapps.list`, `~/.gitconfig`, `~/.config/gh`, worktrunk config,
   the presets' own paths, and `--bind`.
@@ -98,13 +111,14 @@ embedded via `src/skills.ts`, the recipes via `src/recipes.ts`.
 `configure-flag-parsed`, `configure-session-dry-run`,
 `configure-not-automatic-without-a-terminal`,
 `configure-review-applies-only-on-confirm`, `configure-validate-and-apply`,
-`configure-relaunch-args`, `configure-skill-injected`,
+`configure-relaunch-args`, `configure-session-gets-every-skill-and-the-list`,
+`configure-recipes-backed-up-and-applied`,
 `user-config-seeds-starter-recipes`, `toolchain-paths-granted-not-implicit`,
 `local-bin-granted-per-entry`,
 `eclipse-imports-only-dirs-with-a-project-file`,
 `config-predating-grants-warned` — see
 [validation-suite](../test-scripts/validation-suite.md) cases 138 and
-165-175.
+165-176.
 
 [HAS_FEATURE](./config-defaults.md)
 [HAS_FEATURE](./agents-skills-snapshot.md)

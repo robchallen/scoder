@@ -28,6 +28,12 @@ with the btw session hook for `rstudio`/`positron`.)
 
 None — install packages on the host.
 
+## Skills
+
+```
+r-.*|tidyverse.*|shiny.*|quarto.*
+```
+
 ## MCP servers
 
 With `--ide rstudio` or `--ide positron`: btw (`btw::btw_mcp_server()`) —

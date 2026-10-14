@@ -31,6 +31,12 @@ $HOME/.npm
 (`$HOME/.cache/pnpm` or `$HOME/.yarn` for those managers.) Also helps
 `npx`-launched MCP bridges, which otherwise re-download every session.
 
+## Skills
+
+```
+typescript.*|node.*|npm.*|vitest.*|jest.*
+```
+
 ## MCP servers
 
 With `--ide vscode` / `vscodium`: vscode-mcp-server — see the

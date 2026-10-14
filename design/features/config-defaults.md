@@ -11,9 +11,9 @@ tags: [feature, config, sandbox, environment]
 scoder's per-project configuration lives in `.sandbox/`. Since
 [configure mode](./configure-mode.md) it is written by a configure session
 (or by hand), not copied from defaults; a project without a file runs on
-the shipped default for it (`src/defaults/`). `~/.config/scoder/` (or
-`$XDG_CONFIG_HOME/scoder/`) now holds markdown recipes for the configure
-skill. A fourth file, `.sandbox/env`, lists the host environment
+the shipped default for it (`src/defaults/`). `~/.config/scoder/recipes/`
+(under `$XDG_CONFIG_HOME` when set) holds markdown recipes for the
+configure skill. A fourth file, `.sandbox/env`, lists the host environment
 variables passed into the sandbox, replacing the list that used to be
 hardcoded in `src/sandbox/builder.ts`.
 
@@ -38,9 +38,10 @@ files) was retired with `--configure`. What remains:
 1. **Shipped defaults** — `src/defaults/` (`README.md`, `env`, `readonly`,
    `readwrite`, `ports`), embedded in the binary with Bun's
    `with { type: "text" }` imports. `prepareConfigDir` writes only
-   `.sandbox/README.md`.
+   `.sandbox/README.md`. `skills` (default `.*`) joined the set with
+   [agent skills](./agents-skills-snapshot.md).
 2. **Recipes** — `src/defaults/recipes/*.md` are written into
-   `~/.config/scoder/` by file name when missing (`seedRecipes`); a user's
+   `~/.config/scoder/recipes/` by file name when missing (`seedRecipes`); a user's
    edit is kept.
 
 `readonly`, `readwrite` and `ports` are read from `.sandbox/` exactly as

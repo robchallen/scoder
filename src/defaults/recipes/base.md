@@ -36,7 +36,10 @@ MINIMAX_API_KEY
 XIAOMI_API_KEY
 ```
 
-Remember users previous choices and offer those first.
+This setting is possibly configured already in `~/.config/scoder/sandbox/env`, so 
+check you are not duplicating. Remember users previous choices and offer those 
+first. Discuss with the user whether this is a user level choice `~/.config/scoder/sandbox/env`
+or a project level choice `<project>/.sandbox/env`.
 
 ## Web search provider env
 
@@ -54,14 +57,16 @@ JINA_API_KEY
 PERPLEXITY_API_KEY
 ```
 
-Remember users previous choices and offer those first.
+As above, check it is not already configured, discuss if this is a user level choice `~/.config/scoder/sandbox/env`
+or a project level choice `<project>/.sandbox/env`.
 
 ## Decision model providers
 
 Are there decision models being used? If so `TYPESAFE_API_KEY` and for pi 
 support specifically `PI_JEV_*`
 
-Remember users previous choices and offer that first.
+As above, check it is not already configured, discuss if this is a user level choice `~/.config/scoder/sandbox/env`
+or a project level choice `<project>/.sandbox/env`.
 
 ## Read-only binds
 
@@ -106,6 +111,9 @@ pi can resolve locally hosted models using a plugin, `git:github.com/ai4ci/pi-vl
 decision models may be locally hosted and need `TYPESAFE_BASE_URL` to be passed
 through to the sandbox.
 
+As above, check it is not already configured, discuss if this is a user level choice `~/.config/scoder/sandbox/env`
+or a project level choice `<project>/.sandbox/env`.
+
 ### Locally hosted ports
 
 Usually nothing to add: scoder auto-detects a server on `11434` (any
@@ -127,6 +135,9 @@ AZURE_OPENAI_API_VERSION
 AZURE_OPENAI_DEPLOYMENT_NAME_MAP
 ```
 
+As above, check it is not already configured, discuss if this is a user level choice `~/.config/scoder/sandbox/env`
+or a project level choice `<project>/.sandbox/env`.
+
 ### Azure specific read-only binds
 
 `$HOME/.azure` only if the agent authenticates through the Azure CLI's
@@ -141,6 +152,9 @@ AWS_ACCESS_KEY_ID
 AWS_SECRET_ACCESS_KEY
 AWS_BEARER_TOKEN_BEDROCK
 ```
+
+As above, check it is not already configured, discuss if this is a user level choice `~/.config/scoder/sandbox/env`
+or a project level choice `<project>/.sandbox/env`.
 
 ### AWS specific read-only binds
 
@@ -160,6 +174,10 @@ GOOGLE_CLOUD_LOCATION
 GOOGLE_APPLICATION_CREDENTIALS
 GEMINI_API_KEY
 ```
+
+As above, check it is not already configured, discuss if this is a user level choice `~/.config/scoder/sandbox/env`
+or a project level choice `<project>/.sandbox/env`.
+
 ## Google cloud specific read-only binds
 
 The file `GOOGLE_APPLICATION_CREDENTIALS` points at, if it is under

@@ -192,6 +192,21 @@ async function guiDisplayBinds(
 		}
 	}
 
+	// EM: Accessibility is off in GUI sessions, by decision, xpra and
+	// EM: --native-display alike. The AT-SPI bridge looks for the host's
+	// EM: accessibility bus, which the sandbox cannot reach: /run is a tmpfs
+	// EM: and the session bus is private. Under --native-display it is worse
+	// EM: than unreachable: the bridge reads the bus address from the host X
+	// EM: root window (AT_SPI_BUS), a socket that does not exist in here.
+	// EM: Reported: Eclipse (SWT, GTK 3) crashed with SIGSEGV in
+	// EM: libatk-bridge's spi_register_object_to_path on Ubuntu 26.04 under
+	// EM: --native-display; NO_AT_BRIDGE=1 fixed it. xpra forwards no
+	// EM: accessibility either, so nothing that works is lost. GTK_A11Y=none
+	// EM: is the GTK 4 spelling. See
+	// EM: design/implementation/issues/atk-bridge-crash-under-native-display.md.
+	env.NO_AT_BRIDGE = "1";
+	env.GTK_A11Y = "none";
+
 	if (await dirExists("/dev/dri")) {
 		binds.push({
 			type: "dev-bind",

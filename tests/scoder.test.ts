@@ -8907,3 +8907,47 @@ test("skill-descriptions-parsed-as-yaml: folded, literal, quoted, plain and inva
 	).toBe("Use when: this: breaks YAML");
 	expect(skillDescription("no frontmatter")).toBe("");
 });
+
+// ### Test: gui-presets-disable-the-accessibility-bridge
+// EM: Reported: Eclipse crashed in libatk-bridge under --native-display on
+// EM: Ubuntu 26.04, the bridge following the host X root window's AT_SPI_BUS
+// EM: to a socket the sandbox cannot reach. Accessibility is off in every
+// EM: GUI session by decision, xpra and native alike; non-GUI sessions are
+// EM: untouched.
+test("gui-presets-disable-the-accessibility-bridge: NO_AT_BRIDGE=1 and GTK_A11Y=none under xpra and --native-display, not for a terminal tool", async () => {
+	const repoDir = await createTempRepo();
+	tempRepos.push(repoDir);
+	const fakeBinDir = await createFakeToolDir("rstudio");
+	const x11 = await createFakeX11HostState();
+	const env = {
+		PATH: `${fakeBinDir}:${process.env.PATH}`,
+		DISPLAY: ":42",
+		XAUTHORITY: x11.cookiePath,
+	};
+	const off = (flat: string) =>
+		/--setenv\s+NO_AT_BRIDGE\s+1(\s|$)/.test(flat) &&
+		/--setenv\s+GTK_A11Y\s+none(\s|$)/.test(flat);
+
+	try {
+		const xpra = flattenDryRun(
+			await runScoder(repoDir, ["--dry-run", "rstudio"], env),
+		);
+		expect(off(xpra)).toBe(true);
+		const native = flattenDryRun(
+			await runScoder(
+				repoDir,
+				["--native-display", "--dry-run", "rstudio"],
+				env,
+			),
+		);
+		expect(off(native)).toBe(true);
+		const terminal = flattenDryRun(
+			await runScoder(repoDir, ["--dry-run", "/bin/bash"], env),
+		);
+		expect(terminal).not.toContain("NO_AT_BRIDGE");
+	} finally {
+		await x11.cleanup();
+		await Bun.spawn(["rm", "-rf", fakeBinDir]).exited;
+		await cleanupRepo(repoDir);
+	}
+});

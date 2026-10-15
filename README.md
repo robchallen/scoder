@@ -249,6 +249,8 @@ to keep them true for your machine:
 - **Clipboard**: copying out works from terminal programs that use OSC 52
   (pi, Claude Code, vim, tmux), in a terminal that supports it — GNOME
   Terminal does not. `xclip` and `wl-copy` do not work.
+- **No accessibility in GUI presets**: screen readers and other assistive
+  technology cannot see sandboxed IDE windows.
 - **GUI windows go through xpra**, which can misplace hovers, popups and
   dialogs, especially in Eclipse. `--native-display` avoids it, but gives
   the program access to your whole X session; read its warning first.

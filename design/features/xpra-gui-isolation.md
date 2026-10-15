@@ -199,6 +199,15 @@ unrestricted clipboard access along with everything else, so proxying it is
 the same capability with a name and an off switch, not a regression. Worth
 exposing as a flag.
 
+Accessibility is **off**, by decision, in every GUI session, xpra and
+`--native-display` alike: GUI presets set `NO_AT_BRIDGE=1` and
+`GTK_A11Y=none`. xpra forwards no accessibility information, and the
+host's accessibility bus is unreachable (no host D-Bus, ADR 0004). Under
+`--native-display` the bridge did worse than fail: it read the host X root
+window's `AT_SPI_BUS` address, a socket absent from the sandbox, and on
+Ubuntu 26.04 crashed Eclipse in `libatk-bridge`
+(`design/implementation/issues/atk-bridge-crash-under-native-display.md`).
+
 ### Two transports, and mmap is the right default
 
 xpra 6.5.4 will use **either** mmap **or** its scroll-delta encoding for a

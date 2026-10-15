@@ -1751,6 +1751,14 @@ and literal (`|`) block scalars, quoted and plain strings give their text
 on one line; frontmatter that is not valid YAML falls back to reading the
 field and its indented continuation lines; no frontmatter gives nothing.
 
+### 182. gui-presets-disable-the-accessibility-bridge
+[TESTED_BY](/tests/scoder.test.ts#testGuiPresetsDisableTheAccessibilityBridge)
+
+A GUI preset gets `NO_AT_BRIDGE=1` and `GTK_A11Y=none` under xpra and
+under `--native-display`; a terminal tool gets neither. Regression for
+Eclipse crashing in `libatk-bridge` under `--native-display` on Ubuntu
+26.04 (see `design/implementation/issues/atk-bridge-crash-under-native-display.md`).
+
 ## Current Network Coverage
 
 - Host loopback access is blocked (`host-loopback-blocked`)

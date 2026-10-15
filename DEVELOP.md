@@ -832,7 +832,8 @@ the sandbox's own; and `SUDO_USER`/`SUDO_UID`/`SUDO_GID`, so that under
 `scoder -w` refuses to run; `--no-worktree` still works),
 `SCODER_CONFIGURE=1` in a configure session, `HOME`, `PATH`,
 `USER`, `LOGNAME`, `TERM` and `LANG`, plus `MCPTOOLS_SOCKET_DIR` for
-`rstudio`. Everything else in the sandbox's environment — `SHELL` and
+`rstudio`, and `NO_AT_BRIDGE=1` and `GTK_A11Y=none` for GUI presets
+(accessibility is not supported in scoder GUI sessions). Everything else in the sandbox's environment — `SHELL` and
 `EDITOR` included — is there because `.sandbox/env` lists it.
 
 ## Worktrees inside a session (worktrunk)
